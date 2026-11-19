@@ -6,6 +6,7 @@ import {
   newTab,
   selectTabAt,
   splitPane,
+  toggleMaximizePane,
 } from "./actions";
 import { editingElsewhere } from "./layout/dock";
 
@@ -25,6 +26,7 @@ const SHORTCUTS: Shortcut[] = [
   { code: "KeyW", shift: true, run: () => closeTab() },
   { code: "KeyD", run: () => splitPane("right") },
   { code: "KeyD", shift: true, run: () => splitPane("bottom") },
+  { code: "Enter", shift: true, run: () => toggleMaximizePane() },
   { code: "BracketLeft", shift: true, run: () => cycleTab(-1) },
   { code: "BracketRight", shift: true, run: () => cycleTab(1) },
   { code: "ArrowLeft", alt: true, run: () => focusNeighbourPane("left") },

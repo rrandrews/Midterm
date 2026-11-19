@@ -1,5 +1,7 @@
 import { Search } from "lucide-react";
+import { useEffect, useState } from "react";
 import { closeTab, newTab, newWorkspace, splitPane } from "../../actions";
+import { watchFullscreen } from "../../ipc/window";
 import { refocusPane } from "../../layout/dock";
 import { DotsIcon } from "../ui/icons";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "../ui/Menu";
@@ -43,15 +45,23 @@ function AppMenu() {
 
 /**
  * The window's title bar, which is also the tab bar. Empty areas drag the
- * window; the native traffic lights sit over the gutter on the left.
+ * window; the native traffic lights sit over the gutter on the left, which
+ * collapses in fullscreen, where macOS hides them.
  */
 export function TitleBar() {
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => watchFullscreen(setFullscreen), []);
+
   return (
     <header
       data-tauri-drag-region
       className="box-content flex h-(--titlebar-height) flex-none items-stretch border-b border-line"
     >
-      <div data-tauri-drag-region className="w-[82px] flex-none" aria-hidden="true" />
+      <div
+        data-tauri-drag-region
+        className={fullscreen ? "w-1.5 flex-none" : "w-[82px] flex-none"}
+        aria-hidden="true"
+      />
       <WorkspaceSwitcher />
       <TabStrip />
       <div data-tauri-drag-region className="min-w-4 flex-1" aria-hidden="true" />

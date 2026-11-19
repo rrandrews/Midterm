@@ -115,3 +115,11 @@ Tabs themselves are reordered by dragging (dnd-kit sortable, in
 `TabStrip.tsx`; a 5px move threshold keeps clicks and double-clicks
 working). When they do not fit, the strip scrolls sideways (wheel or
 trackpad) and keeps the active tab in view.
+
+## Maximizing a pane
+
+⇧⌘↩ or the pane menu toggles `toggleMaximizePane` (the library's
+`maximizeTabset` / `restoreTabset`). The maximized frame is marked
+`data-tabset-maximized`; `dock.css` hides the other frames and the
+separators while it is, since some of their layers would paint over it.
+The state is part of the layout model (`maximizedTabsetId`), so it is saved.

@@ -38,6 +38,16 @@
   pointer-events: none;
 }
 
+/*
+ * A maximized pane covers the others. Hide them and the separators outright:
+ * some of their layers (hairlines, hover controls) paint above it otherwise.
+ * Only one layout is mounted at a time, so this can look at the whole page.
+ */
+body:has([data-tabset-maximized]) .pane-separator,
+body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
+  visibility: hidden;
+}
+
 .pane-frame[data-tabset-dragging] {
   opacity: 0.45;
 }

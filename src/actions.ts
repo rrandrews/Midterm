@@ -128,6 +128,16 @@ export function closePane(paneId = activePaneId()): void {
   if (wasActive) focusPane(focused === paneId ? neighbour : focused);
 }
 
+/** Maximizes a pane within its tab, or restores the layout if it is maximized. */
+export function toggleMaximizePane(paneId = activePaneId()): void {
+  const { dock, layout } = activeLayout();
+  const frameId = paneId && frameIdOf(layout, paneId);
+  if (!dock || !frameId || countPanes(layout) <= 1) return;
+  if (layout.maximizedTabsetId === frameId) dock.restoreTabset();
+  else dock.maximizeTabset(frameId);
+  focusPane(paneId);
+}
+
 export function setPaneKind(paneId: string, kind: PaneKind): void {
   const { dock, layout } = activeLayout();
   const pane = listPanes(layout).find((candidate) => candidate.id === paneId);

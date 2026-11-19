@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { TabsetDragHandle } from "react-resizable-panels";
-import { closePane, movePaneToNewTab, setPaneKind, splitPane } from "../../actions";
+import { TabsetDragHandle, useParentTabsetState } from "react-resizable-panels";
+import { closePane, movePaneToNewTab, setPaneKind, splitPane, toggleMaximizePane } from "../../actions";
 import { notePaneFocused, refocusPane } from "../../layout/dock";
 import { useAppStore } from "../../state/store";
 import { PANE_LABELS } from "../../state/layout";
@@ -26,6 +26,7 @@ type PaneToolbarProps = {
 /** A pane's hover controls: the drag handle and the options menu. */
 export function PaneToolbar({ pane, alone }: PaneToolbarProps) {
   const [open, setOpen] = useState(false);
+  const maximized = useParentTabsetState()?.isMaximized ?? false;
 
   return (
     <div className="flex gap-0.5">
@@ -82,6 +83,9 @@ export function PaneToolbar({ pane, alone }: PaneToolbarProps) {
               ))}
             </MenuSubContent>
           </MenuSub>
+          <MenuItem shortcut="⇧⌘↩" disabled={alone} onSelect={() => toggleMaximizePane(pane.id)}>
+            {maximized ? "Restore pane" : "Maximize pane"}
+          </MenuItem>
           <MenuItem disabled={alone} onSelect={() => movePaneToNewTab(pane.id)}>
             Move to new tab
           </MenuItem>
