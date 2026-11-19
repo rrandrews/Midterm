@@ -14,8 +14,8 @@ import { branchOf } from "./gitBranch";
 import { registerFileLinks } from "./fileLinkProvider";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
-import type { Settings } from "../settings/schema";
 import { getSettings } from "../settings/settings";
+import { type TerminalConfig, terminalConfig, terminalSettings } from "./settings";
 import { TERMINAL_OPTIONS, terminalOptions } from "./theme";
 
 export type SessionEvents = {
@@ -67,7 +67,7 @@ type Input = { binary: boolean; data: string };
  */
 export class TerminalSession {
   private readonly host = document.createElement("div");
-  private readonly term = new Terminal({ ...TERMINAL_OPTIONS, ...terminalOptions(getSettings()) });
+  private readonly term = new Terminal({ ...TERMINAL_OPTIONS, ...terminalOptions(terminalConfig()) });
   private readonly search = new SearchAddon();
   private copyTimer: ReturnType<typeof setTimeout> | undefined;
   private bellTimer: ReturnType<typeof setTimeout> | undefined;
@@ -120,7 +120,7 @@ export class TerminalSession {
 
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.search);
-    this.host.classList.toggle("is-solid", getSettings().terminalBackground === "solid");
+    this.host.classList.toggle("is-solid", terminalSettings().terminalBackground === "solid");
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11";
     this.term.loadAddon(
@@ -147,7 +147,7 @@ export class TerminalSession {
     // Copy on select: only selections made with the mouse (the search addon
     // selects its matches too, and those must not reach the clipboard).
     this.host.addEventListener("mouseup", () => {
-      if (!getSettings().copyOnSelect) return;
+      if (!terminalSettings().copyOnSelect) return;
       // After xterm has finished the selection (a double click selects a word on release).
       clearTimeout(this.copyTimer);
       this.copyTimer = setTimeout(() => {
@@ -161,7 +161,7 @@ export class TerminalSession {
   }
 
   /** Applies changed settings to the live terminal (fonts, cursor, colors, scrollback). */
-  applySettings(settings: Settings): void {
+  applySettings(settings: TerminalConfig): void {
     if (this.disposed) return;
     const next = terminalOptions(settings);
     const current = this.term.options;
@@ -220,7 +220,7 @@ export class TerminalSession {
    * of bells gives one flash: nothing is touched while one is showing.
    */
   private ring(): void {
-    const { bell } = getSettings();
+    const { bell } = terminalSettings();
     if (bell === "visual") {
       if (this.bellTimer !== undefined || !this.attached) return;
       // The pane, not the host, which is invisible in blocks mode.
@@ -367,7 +367,7 @@ export class TerminalSession {
     if (this.phase !== "idle") return;
     this.phase = "starting";
 
-    const { shell, shellArgs } = getSettings();
+    const { shell, shellArgs } = terminalSettings();
     spawnPty({
       cwd: this.currentCwd,
       shell: shell || undefined,

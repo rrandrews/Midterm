@@ -86,20 +86,12 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
   outline: none;
   contain: size;
 }
-.pane-terminal {
-  background: var(--pane-terminal);
+/* Each plugin declares its pane background (`pane.background` in the plugin), set as `--pane-bg` by PaneHost. */
+.pane {
+  background: var(--pane-bg, var(--pane-default));
 }
-.pane-terminal.is-active {
-  background: var(--pane-terminal-active);
-}
-.pane-explorer {
-  background: var(--pane-explorer);
-}
-.pane-editor {
-  background: var(--pane-editor);
-}
-.pane-viewer {
-  background: var(--pane-viewer);
+.pane.is-active {
+  background: var(--pane-bg-active, var(--pane-bg, var(--pane-default)));
 }
 
 /* Hairline between panes, with an accent grip while hovered or dragged. */

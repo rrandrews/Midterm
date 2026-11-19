@@ -2,17 +2,18 @@ import { isWithin } from "../explorer/tree";
 import { viewerModeFor } from "../files/kinds";
 import { getSettings, useSettings } from "../settings/settings";
 import { monoFontStack } from "../settings/schema";
+import { createPaneState } from "../plugins/paneState";
 import { selectAllPanes, useAppStore } from "../state/store";
+import { editorOptions, markdownMode } from "./settings";
 import { ViewerModel } from "../viewer/model";
 import { EditorModel } from "./model";
 
 /*
- * Registry of the models behind editor and viewer panes, keyed by pane id.
- * Same lifetime rule as terminal sessions and explorers: a model is
- * disposed once no pane of its kind showing its file is left in the store
- * and it is off screen. So an editor in a background tab keeps its unsaved
- * changes, and only closing the pane (which asks first, see closing.ts)
- * discards them.
+ * The models behind editor and viewer panes, keyed by pane id (a shared
+ * pane state, see src/plugins/paneState.ts): a model is disposed once no
+ * pane of its kind showing its file is left in the store and nothing shows
+ * it. So an editor in a background tab keeps its unsaved changes, and only
+ * closing the pane (which asks first, see closing.ts) discards them.
  *
  * Editors get an EditorModel; viewers get a ViewerModel for Markdown and
  * images, and a read-only EditorModel for other text.
@@ -23,16 +24,26 @@ type FileKind = "editor" | "viewer";
 /** Which model a pane needs; a change means a new model. */
 type Shape = "editor" | "readOnly" | "markdown" | "image";
 
-/** `holds`: mounted components using the model (it is never disposed while held). */
-type Entry = { model: FileModel; kind: FileKind; shape: Shape; holds: number };
+type Entry = { model: FileModel; kind: FileKind; shape: Shape };
 
-const entries = new Map<string, Entry>();
+const entries = createPaneState<Entry>({
+  isLive: (pane, entry) => pane.data.kind === entry.kind && pane.data.path === entry.model.path,
+  dispose: (entry, paneId) => {
+    entry.model.dispose();
+    if (!livePaneIds().has(paneId)) pendingReveals.delete(paneId);
+  },
+});
 /** Lines to show once a pane's file is open (from `revealInPane`). */
 const pendingReveals = new Map<string, { path: string; line: number; column?: number }>();
+
+function livePaneIds(): Set<string> {
+  return new Set(selectAllPanes(useAppStore.getState()).map((pane) => pane.id));
+}
 
 function shapeFor(kind: FileKind, path: string): Shape {
   if (kind === "editor") return "editor";
   const mode = viewerModeFor(path);
+  if (mode === "markdown" && markdownMode() === "source") return "readOnly";
   return mode === "text" ? "readOnly" : mode;
 }
 
@@ -41,6 +52,7 @@ function create(paneId: string, path: string, shape: Shape): FileModel {
   const model = new EditorModel(paneId, path, shape === "readOnly");
   const { fontFamily, fontSize } = getSettings();
   model.setFont(monoFontStack(fontFamily), fontSize);
+  model.setOptions(editorOptions());
   return model;
 }
 
@@ -50,18 +62,12 @@ function create(paneId: string, path: string, shape: Shape): FileModel {
  */
 export function acquireFileModel(paneId: string, kind: FileKind, path: string): FileModel {
   const shape = shapeFor(kind, path);
-  let entry = entries.get(paneId);
-  if (entry && (entry.shape !== shape || entry.model.path !== path)) {
-    // The pane's kind or file changed (the old component released it).
-    entries.delete(paneId);
-    entry.model.dispose();
-    entry = undefined;
-  }
-  if (!entry) {
-    entry = { model: create(paneId, path, shape), kind, shape, holds: 0 };
-    entries.set(paneId, entry);
-  }
-  entry.holds++;
+  // A new kind or file means a new model (the old component released it).
+  const entry = entries.acquire(
+    paneId,
+    () => ({ model: create(paneId, path, shape), kind, shape }),
+    (existing) => existing.shape === shape && existing.model.path === path,
+  );
   const reveal = pendingReveals.get(paneId);
   if (reveal?.path === path) {
     pendingReveals.delete(paneId);
@@ -73,8 +79,7 @@ export function acquireFileModel(paneId: string, kind: FileKind, path: string): 
 /** A component is done with a model; it is disposed only if its pane is gone. */
 export function releaseFileModel(model: FileModel): void {
   const entry = entries.get(model.paneId);
-  if (entry?.model === model) entry.holds = Math.max(0, entry.holds - 1);
-  scheduleReconcile();
+  if (entry?.model === model) entries.release(model.paneId, entry);
 }
 
 /** The editor (or read-only text viewer) model of a pane, if it has one. */
@@ -109,38 +114,27 @@ export function revealInPane(paneId: string, path: string, line: number, column?
 
 /** Keeps models in step with a rename of `from` (a file, or a directory containing files) to `to`. */
 export function renameOpenModels(from: string, to: string): void {
-  for (const { model } of entries.values()) {
+  for (const [, { model }] of entries.entries()) {
     if (isWithin(model.path, from)) model.setPath(to + model.path.slice(from.length));
   }
 }
-
-function reconcile(): void {
-  const live = new Map<string, { kind: string; path?: string }>();
-  for (const pane of selectAllPanes(useAppStore.getState())) live.set(pane.id, pane.data);
-  for (const [paneId, entry] of entries) {
-    const pane = live.get(paneId);
-    const current = pane && pane.kind === entry.kind && pane.path === entry.model.path;
-    if (current || entry.holds > 0) continue;
-    entries.delete(paneId);
-    entry.model.dispose();
-  }
-  for (const paneId of pendingReveals.keys()) if (!live.has(paneId)) pendingReveals.delete(paneId);
-}
-
-let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
-
-function scheduleReconcile(): void {
-  clearTimeout(reconcileTimer);
-  reconcileTimer = setTimeout(reconcile, 0);
-}
-
-useAppStore.subscribe(scheduleReconcile);
 
 let lastFont = { family: getSettings().fontFamily, size: getSettings().fontSize };
 useSettings.subscribe(({ fontFamily, fontSize }) => {
   if (fontFamily === lastFont.family && fontSize === lastFont.size) return;
   lastFont = { family: fontFamily, size: fontSize };
-  for (const { model } of entries.values()) {
+  for (const [, { model }] of entries.entries()) {
     if (model instanceof EditorModel) model.setFont(monoFontStack(fontFamily), fontSize);
+  }
+});
+
+let lastOptions = JSON.stringify(editorOptions());
+useSettings.subscribe(() => {
+  const options = editorOptions();
+  const json = JSON.stringify(options);
+  if (json === lastOptions) return;
+  lastOptions = json;
+  for (const [, { model }] of entries.entries()) {
+    if (model instanceof EditorModel) model.setOptions(options);
   }
 });

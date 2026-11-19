@@ -3,8 +3,7 @@ import { homeDirectory } from "../ipc/system";
 import { getDock } from "../layout/dock";
 import { listPanes } from "../state/layout";
 import { selectActiveTab, useAppStore } from "../state/store";
-import type { PaneNode } from "../state/types";
-import { peekSession } from "../terminal/sessions";
+import { directoryOf } from "../plugins/panes";
 
 /*
  * Where the palette's lists come from: the project root of the active tab,
@@ -12,27 +11,13 @@ import { peekSession } from "../terminal/sessions";
  * (saved to `recent.json`).
  */
 
-const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/";
-
-/** The directory a pane is "in": a terminal's cwd, an explorer's root, a file's folder. */
-export function directoryOfPane(pane: PaneNode): string | undefined {
-  switch (pane.data.kind) {
-    case "terminal":
-      return peekSession(pane.id)?.cwd ?? pane.data.cwd;
-    case "explorer":
-      return pane.data.root;
-    default:
-      return pane.data.path ? parentOf(pane.data.path) : undefined;
-  }
-}
-
 /** The active pane's directory, else the first directory any pane in the active tab is in. */
 export function activeDirectory(): string | undefined {
   const tab = selectActiveTab(useAppStore.getState());
   const panes = listPanes(getDock(tab)?.getModel() ?? tab.layout);
   const active = panes.find((pane) => pane.id === tab.activePaneId);
   for (const pane of active ? [active, ...panes] : panes) {
-    const dir = directoryOfPane(pane);
+    const dir = directoryOf(pane);
     if (dir) return dir;
   }
   return undefined;

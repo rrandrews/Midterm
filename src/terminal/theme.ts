@@ -1,5 +1,6 @@
 import type { ITerminalOptions, ITheme } from "@xterm/xterm";
-import { type Settings, monoFontStack } from "../settings/schema";
+import { monoFontStack } from "../settings/schema";
+import type { TerminalConfig } from "./settings";
 
 /* xterm appearance. Colors mirror the tokens in src/styles/index.css. */
 
@@ -59,7 +60,7 @@ export const SOLID_BACKGROUND = "#0e0f12";
 const withAlpha = (hex: string, alpha: string) => `${hex.slice(0, 7)}${alpha}`;
 
 /** The colors for the given settings: the accent drives the cursor and selection. */
-export function terminalTheme(settings: Pick<Settings, "accent" | "terminalBackground">): ITheme {
+export function terminalTheme(settings: Pick<TerminalConfig, "accent" | "terminalBackground">): ITheme {
   const accent = settings.accent.toLowerCase();
   return {
     ...TERMINAL_THEME,
@@ -71,7 +72,7 @@ export function terminalTheme(settings: Pick<Settings, "accent" | "terminalBackg
 }
 
 /** The xterm options that follow the settings. Everything else stays as in `TERMINAL_OPTIONS`. */
-export function terminalOptions(settings: Settings): ITerminalOptions {
+export function terminalOptions(settings: TerminalConfig): ITerminalOptions {
   return {
     theme: terminalTheme(settings),
     allowTransparency: settings.terminalBackground === "transparent",

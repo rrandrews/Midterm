@@ -6,6 +6,7 @@ import { copyText } from "../../ipc/clipboard";
 import type { FsEntry } from "../../ipc/fs";
 import { revealInFileManager } from "../../ipc/shell";
 import { confirm } from "../ui/ConfirmDialog";
+import type { MenuItemSpec } from "../../plugins/types";
 import { MenuItem, MenuSeparator } from "../ui/Menu";
 
 /** Asks, then moves entries to the Trash. */
@@ -79,43 +80,37 @@ export function EntryMenuItems({ paneId, model, entry, root, onOpen }: EntryMenu
 
 /**
  * Commands for the explorer as a whole: its empty area's right-click menu,
- * and the kind-specific part of the pane's menu.
+ * and the plugin's part of the pane's menu.
  */
-export function ExplorerMenuItems({ model }: { model: ExplorerModel }) {
+export function explorerMenu(model: ExplorerModel): MenuItemSpec[] {
   const snap = model.snapshot();
   const root = snap.root;
-  return (
-    <>
-      <MenuItem onSelect={() => model.startCreate(root, "file")}>New file…</MenuItem>
-      <MenuItem onSelect={() => model.startCreate(root, "dir")}>New folder…</MenuItem>
-      <MenuSeparator />
-      <MenuItem
-        checked={snap.pinned}
-        onSelect={() => {
-          model.setPinned(!snap.pinned);
-          // Unpinned: jump to the focused terminal's directory now.
-          if (snap.pinned) refollow(model.paneId);
-        }}
-      >
-        Pin folder
-      </MenuItem>
-      <MenuItem
-        disabled={root === "/"}
-        onSelect={() => {
-          model.setPinned(true);
-          model.setRoot(parentPath(root));
-        }}
-      >
-        Go to parent folder
-      </MenuItem>
-      <MenuItem checked={snap.showHidden} onSelect={() => model.setShowHidden(!snap.showHidden)}>
-        Show hidden and ignored files
-      </MenuItem>
-      <MenuItem onSelect={() => model.collapseAll()}>Collapse all</MenuItem>
-      <MenuItem onSelect={() => model.refresh()}>Refresh</MenuItem>
-      <MenuSeparator />
-      <MenuItem onSelect={() => revealInFileManager(root)}>Reveal in Finder</MenuItem>
-      <MenuItem onSelect={() => void copyText(root)}>Copy path</MenuItem>
-    </>
-  );
+  return [
+    { label: "New file…", run: () => model.startCreate(root, "file") },
+    { label: "New folder…", run: () => model.startCreate(root, "dir") },
+    { type: "separator" },
+    {
+      label: "Pin folder",
+      checked: snap.pinned,
+      run: () => {
+        model.setPinned(!snap.pinned);
+        // Unpinned: jump to the focused terminal's directory now.
+        if (snap.pinned) refollow(model.paneId);
+      },
+    },
+    {
+      label: "Go to parent folder",
+      disabled: root === "/",
+      run: () => {
+        model.setPinned(true);
+        model.setRoot(parentPath(root));
+      },
+    },
+    { label: "Show hidden and ignored files", checked: snap.showHidden, run: () => model.setShowHidden(!snap.showHidden) },
+    { label: "Collapse all", run: () => model.collapseAll() },
+    { label: "Refresh", run: () => model.refresh() },
+    { type: "separator" },
+    { label: "Reveal in Finder", run: () => revealInFileManager(root) },
+    { label: "Copy path", run: () => copyText(root) },
+  ];
 }

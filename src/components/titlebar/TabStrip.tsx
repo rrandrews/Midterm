@@ -115,7 +115,7 @@ function TabItem({ tab, active, index, count }: TabItemProps) {
       </ContextMenuTrigger>
       <ContextMenuContent aria-label={`Tab ${tab.title}`}>
         <MenuItem onSelect={() => setRenaming(true)}>Rename tab</MenuItem>
-        <MenuItem onSelect={newTab}>New tab</MenuItem>
+        <MenuItem onSelect={() => newTab()}>New tab</MenuItem>
         <MenuSeparator />
         <MenuItem onSelect={() => void closeTab(tab.id)}>Close tab</MenuItem>
         <MenuItem disabled={count <= 1} onSelect={() => void closeOtherTabs(tab.id)}>
@@ -190,7 +190,7 @@ export function TabStrip() {
         title="New tab (⌘T) — drop a pane here to move it to a new tab"
         data-pane-drop="new"
         className="tab flex flex-none items-center px-2.5 text-fg-dim hover:text-fg-bright"
-        onClick={newTab}
+        onClick={() => newTab()}
       >
         <Plus size={14} strokeWidth={2} aria-hidden="true" />
       </button>

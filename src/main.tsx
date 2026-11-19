@@ -22,6 +22,8 @@ async function start(): Promise<void> {
   const params = new URLSearchParams(location.search);
   // Dev seeds and self-tests use throwaway state that must not replace the saved one.
   const persist = !import.meta.env.DEV || !(params.has("mockup") || params.has("selftest"));
+  // Plugins first: restoring validates each pane's data with its plugin.
+  (await import("./plugins")).installPlugins();
   const { restoreSavedState, startSaving } = await import("./state/persistence");
   const { loadHomeDirectory, loadLocalHostname } = await import("./ipc/system");
   const { loadSettings } = await import("./settings/settings");

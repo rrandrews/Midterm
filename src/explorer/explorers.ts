@@ -1,111 +1,118 @@
 import { updatePaneData } from "../actions";
+import { createPaneState } from "../plugins/paneState";
+import { paneSpec } from "../plugins/registry";
 import { findPane, listPanes } from "../state/layout";
-import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
-import type { Tab } from "../state/types";
-import { peekSession } from "../terminal/sessions";
+import { findTabOfPane, useAppStore } from "../state/store";
+import type { PaneData, PaneNode, Tab } from "../state/types";
 import { ExplorerModel } from "./model";
 
 /*
- * Registry of explorer models, keyed by pane id. Same lifetime rule as
- * terminal sessions (src/terminal/sessions.ts): a model is disposed when no
- * explorer pane with its id is left in the store and it is off screen.
+ * Explorer models, keyed by pane id (a shared pane state, see
+ * src/plugins/paneState.ts): disposed once no explorer pane with their id
+ * is left in the store and nothing shows them.
  *
  * It also makes unpinned explorers follow the focused terminal: the root of
- * each is the working directory of the terminal that last had focus in its
- * tab.
+ * each is the directory of the pane that last had focus in its tab among
+ * those whose plugin says explorers follow it (`explorerFollows`).
  */
 
-const models = new Map<string, ExplorerModel>();
+/** An explorer pane's data. */
+export type ExplorerData = PaneData & {
+  /** The directory at the top of the tree. */
+  root?: string;
+  /** The root stays put instead of following the focused terminal's directory. */
+  pinned?: boolean;
+  /** Dotfiles and ignored files are listed too. */
+  showHidden?: boolean;
+  /** Expanded directories (absolute paths). */
+  expanded?: string[];
+};
 
-export function acquireExplorer(paneId: string): ExplorerModel {
-  let model = models.get(paneId);
-  if (!model) {
-    const tab = findTabOfPane(useAppStore.getState(), paneId);
-    const data = tab && findPane(tab.layout, paneId)?.data;
-    const created = new ExplorerModel(
-      paneId,
-      {
-        root: data?.root,
-        pinned: data?.pinned,
-        showHidden: data?.showHidden,
-        expanded: data?.expanded,
-      },
-      (settings) => {
-        if (models.get(paneId) !== created) return;
-        updatePaneData(paneId, {
-          root: settings.root,
-          pinned: settings.pinned || undefined,
-          showHidden: settings.showHidden || undefined,
-          expanded: settings.expanded.length ? settings.expanded : undefined,
-        });
-      },
-    );
-    model = created;
-    models.set(paneId, model);
-    // A restored root stays until a terminal in the tab is focused: which
-    // one had focus last is not saved, and guessing would replace it.
-    if (!data?.root) waitingForFocus.delete(paneId);
-    else waitingForFocus.add(paneId);
-    if (tab) followTerminal(model, tab);
-  }
+const models = createPaneState<ExplorerModel>({
+  kind: "explorer",
+  dispose: (model, paneId) => {
+    waitingForFocus.delete(paneId);
+    model.dispose();
+  },
+});
+
+function createModel(paneId: string, defaults: { pinned: boolean; showHidden: boolean }): ExplorerModel {
+  const tab = findTabOfPane(useAppStore.getState(), paneId);
+  const data = tab && (findPane(tab.layout, paneId)?.data as ExplorerData | undefined);
+  const model: ExplorerModel = new ExplorerModel(
+    paneId,
+    {
+      root: data?.root,
+      pinned: data?.pinned ?? defaults.pinned,
+      showHidden: data?.showHidden ?? defaults.showHidden,
+      expanded: data?.expanded,
+    },
+    (settings) => {
+      if (models.get(paneId) !== model) return;
+      updatePaneData(paneId, {
+        root: settings.root,
+        pinned: settings.pinned,
+        showHidden: settings.showHidden,
+        expanded: settings.expanded.length ? settings.expanded : undefined,
+      });
+    },
+  );
+  // A restored root stays until a followed pane in the tab is focused:
+  // which one had focus last is not saved, and guessing would replace it.
+  if (!data?.root) waitingForFocus.delete(paneId);
+  else waitingForFocus.add(paneId);
+  if (tab) followDirectory(model, tab);
   return model;
+}
+
+/**
+ * The pane's explorer model, created if needed, for a mounted component
+ * (which calls `releaseExplorer` when done). `defaults` apply to a new pane.
+ */
+export function acquireExplorer(paneId: string, defaults = { pinned: false, showHidden: false }): ExplorerModel {
+  return models.acquire(paneId, () => createModel(paneId, defaults));
 }
 
 /** Takes an explorer off screen; it is disposed only if its pane is gone. */
 export function releaseExplorer(model: ExplorerModel): void {
   model.detach();
-  scheduleReconcile();
+  models.release(model.paneId, model);
 }
 
 export function peekExplorer(paneId: string): ExplorerModel | undefined {
   return models.get(paneId);
 }
 
-function reconcile(): void {
-  const live = new Set(
-    selectAllPanes(useAppStore.getState())
-      .filter((pane) => pane.data.kind === "explorer")
-      .map((pane) => pane.id),
-  );
-  for (const [paneId, model] of models) {
-    if (live.has(paneId) || model.isAttached) continue;
-    models.delete(paneId);
-    waitingForFocus.delete(paneId);
-    model.dispose();
+/*
+ * Following. "The pane that last had focus" is remembered per tab, because
+ * focus moves to the explorer itself as soon as it is used.
+ */
+
+const lastFollowed = new Map<string, string>();
+/** Explorers with a restored root, which follow only once a followed pane is focused. */
+const waitingForFocus = new Set<string>();
+
+function leads(pane: PaneNode | undefined): boolean {
+  return pane !== undefined && paneSpec(pane.data.kind)?.explorerFollows === true;
+}
+
+function directoryOf(pane: PaneNode): string | undefined {
+  try {
+    return paneSpec(pane.data.kind)?.directory?.(pane);
+  } catch {
+    return undefined;
   }
 }
 
-let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
-
-function scheduleReconcile(): void {
-  clearTimeout(reconcileTimer);
-  reconcileTimer = setTimeout(reconcile, 0);
-}
-
-/*
- * Following. "The terminal that last had focus" is remembered per tab,
- * because focus moves to the explorer itself as soon as it is used.
- */
-
-const lastTerminal = new Map<string, string>();
-/** Explorers with a restored root, which follow only once a terminal is focused. */
-const waitingForFocus = new Set<string>();
-
-function terminalCwd(tab: Tab, paneId: string): string | undefined {
-  const pane = findPane(tab.layout, paneId);
-  if (pane?.data.kind !== "terminal") return undefined;
-  return peekSession(paneId)?.cwd ?? pane.data.cwd;
-}
-
-function followTerminal(model: ExplorerModel, tab: Tab): void {
+function followDirectory(model: ExplorerModel, tab: Tab): void {
   if (model.isPinned) return;
-  const remembered = lastTerminal.get(tab.id);
-  const known = remembered && findPane(tab.layout, remembered) ? remembered : undefined;
-  if (known) waitingForFocus.delete(model.paneId);
+  const remembered = lastFollowed.get(tab.id);
+  const known = remembered ? findPane(tab.layout, remembered) : undefined;
+  if (known && leads(known)) waitingForFocus.delete(model.paneId);
   else if (waitingForFocus.has(model.paneId)) return;
-  const terminal = known ?? listPanes(tab.layout).find((pane) => pane.data.kind === "terminal")?.id;
-  const cwd = terminal && terminalCwd(tab, terminal);
-  if (cwd) model.setRoot(cwd);
+  const leader = known && leads(known) ? known : listPanes(tab.layout).find(leads);
+  const dir = leader && directoryOf(leader);
+  if (dir) model.setRoot(dir);
 }
 
 function updateFollowing(): void {
@@ -115,19 +122,20 @@ function updateFollowing(): void {
     for (const tab of workspace.tabs) {
       tabs.add(tab.id);
       const active = tab.activePaneId;
-      if (active && findPane(tab.layout, active)?.data.kind === "terminal") lastTerminal.set(tab.id, active);
+      if (active && leads(findPane(tab.layout, active))) lastFollowed.set(tab.id, active);
       for (const pane of listPanes(tab.layout)) {
         const model = pane.data.kind === "explorer" ? models.get(pane.id) : undefined;
-        if (model) followTerminal(model, tab);
+        if (model) followDirectory(model, tab);
       }
     }
   }
-  for (const tabId of lastTerminal.keys()) if (!tabs.has(tabId)) lastTerminal.delete(tabId);
+  for (const tabId of lastFollowed.keys()) if (!tabs.has(tabId)) lastFollowed.delete(tabId);
 }
 
 let followQueued = false;
 
-function scheduleFollowing(): void {
+/** Re-checks which directory each unpinned explorer should show (e.g. after a terminal changed directory). */
+export function scheduleFollowing(): void {
   if (followQueued) return;
   followQueued = true;
   queueMicrotask(() => {
@@ -136,13 +144,10 @@ function scheduleFollowing(): void {
   });
 }
 
-/** Follows a terminal again right away, e.g. after the explorer is unpinned. */
+/** Follows again right away, e.g. after the explorer is unpinned. */
 export function refollow(paneId: string): void {
   waitingForFocus.delete(paneId);
   scheduleFollowing();
 }
 
-useAppStore.subscribe(() => {
-  scheduleReconcile();
-  scheduleFollowing();
-});
+useAppStore.subscribe(scheduleFollowing);

@@ -12,6 +12,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@cfworker/json-schema": "4.1.6",
     "@codemirror/autocomplete": "^6.20.4",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/language": "^6.13.1",
@@ -28,6 +29,7 @@
     "@tanstack/react-virtual": "^3.14.26",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-clipboard-manager": "~2",
+    "@tauri-apps/plugin-dialog": "~2",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-store": "^2",
     "@tauri-apps/plugin-window-state": "^2",
@@ -38,8 +40,8 @@
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "cmdk": "1.1.1",
-    "fuzzysort": "4.0.2",
     "dompurify": "^3.4.18",
+    "fuzzysort": "4.0.2",
     "lucide-react": "^1.75.0",
     "marked": "^18.2.1",
     "radix-ui": "^1.8.1",

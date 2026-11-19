@@ -8,10 +8,11 @@ import {
 } from "react-resizable-panels";
 import { type DockHandle, registerDock, restoreFocusAfterLayoutChange } from "../../layout/dock";
 import { notePaneDrag } from "../../layout/paneDrag";
-import { PANE_LABELS, countPanes } from "../../state/layout";
+import { kindLabel } from "../../plugins/registry";
+import { countPanes } from "../../state/layout";
 import { findTab, useAppStore } from "../../state/store";
 import type { Layout, PaneData, PaneNode, Tab } from "../../state/types";
-import { PaneContent } from "../panes/PaneContent";
+import { PaneHost } from "../../plugins/PaneHost";
 import { PaneToolbar } from "./PaneToolbar";
 
 type Frame = TabsetNode<PaneData>;
@@ -39,7 +40,7 @@ function rejectStacking({ target }: DisableDropArgs<PaneData>): boolean {
   return "index" in target || target.region === "center";
 }
 
-const renderContent = (pane: PaneNode) => <PaneContent pane={pane} />;
+const renderContent = (pane: PaneNode) => <PaneHost pane={pane} />;
 
 const renderToolbar = (frame: Frame) => {
   const pane = paneOf(frame);
@@ -52,7 +53,7 @@ const renderDragPreview = (frame: Frame) => {
   const pane = paneOf(frame);
   // Rendered only while a pane is dragged: lets tabs accept the drop.
   if (pane) notePaneDrag(pane.id);
-  return pane ? PANE_LABELS[pane.data.kind] : "Pane";
+  return pane ? kindLabel(pane.data.kind) : "Pane";
 };
 
 /**

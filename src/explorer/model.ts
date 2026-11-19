@@ -234,6 +234,25 @@ export class ExplorerModel {
     this.emit();
   }
 
+  /**
+   * Shows `path` in the tree and selects it: its directories are expanded,
+   * and a path outside the root pins the explorer to the path's folder.
+   */
+  reveal(path: string): void {
+    if (path !== this.root && !isWithin(path, this.root)) {
+      this.setPinned(true);
+      this.setRoot(parentPath(path));
+    }
+    for (let dir = parentPath(path); dir !== this.root && isWithin(dir, this.root); dir = parentPath(dir)) {
+      if (!this.expanded.has(dir)) {
+        this.expanded.add(dir);
+        void this.load(dir);
+      }
+    }
+    this.afterExpansionChange();
+    this.select(path);
+  }
+
   // --- Selection and editing ---
 
   select(path: string | null): void {

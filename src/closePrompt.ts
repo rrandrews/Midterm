@@ -10,10 +10,11 @@ function list(names: string[]): string {
 }
 
 /**
- * What closing would lose: `programs` still running in terminals and
- * `files` (names) with unsaved changes. `null` if nothing.
+ * What closing would lose: `programs` still running in terminals, `files`
+ * (names) with unsaved changes, and `other` sentences from plugins. `null`
+ * if nothing.
  */
-export function closePromptMessage(programs: string[], files: string[]): string | null {
+export function closePromptMessage(programs: string[], files: string[], other: string[] = []): string | null {
   const parts: string[] = [];
   const consequences: string[] = [];
   if (programs.length) {
@@ -24,6 +25,8 @@ export function closePromptMessage(programs: string[], files: string[]): string 
     parts.push(`${list(files)} ${files.length === 1 ? "has" : "have"} unsaved changes`);
     consequences.push(programs.length ? "discards the changes" : "discards them");
   }
-  if (!parts.length) return null;
-  return `${parts.join(", and ")}. Closing ${consequences.join(" and ")}.`;
+  const extra = other.map((sentence) => (/[.!?]$/.test(sentence) ? sentence : `${sentence}.`)).join(" ");
+  if (!parts.length) return extra || null;
+  const main = `${parts.join(", and ")}. Closing ${consequences.join(" and ")}.`;
+  return extra ? `${main} ${extra}` : main;
 }

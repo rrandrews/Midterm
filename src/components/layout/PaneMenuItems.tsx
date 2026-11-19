@@ -2,9 +2,9 @@ import { movePaneToNewTab, movePaneToTab, splitPane, toggleMaximizePane } from "
 import { changePaneKind, closePane } from "../../closing";
 import { shortcutLabel } from "../../commands/registry";
 import { getDock } from "../../layout/dock";
-import { PANE_LABELS, countPanes, findPane, frameIdOf } from "../../state/layout";
+import { enabledPlugins } from "../../plugins/registry";
+import { countPanes, findPane, frameIdOf } from "../../state/layout";
 import { findTabOfPane, selectActiveWorkspace, useAppStore } from "../../state/store";
-import { PANE_KINDS } from "../../state/types";
 import { MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger } from "../ui/Menu";
 
 /**
@@ -34,13 +34,13 @@ export function PaneMenuItems({ paneId }: { paneId: string }) {
       <MenuSub>
         <MenuSubTrigger>Change pane type</MenuSubTrigger>
         <MenuSubContent>
-          {PANE_KINDS.map((option) => (
+          {enabledPlugins().map((option) => (
             <MenuItem
-              key={option}
-              checked={kind === option}
-              onSelect={() => void changePaneKind(paneId, option)}
+              key={option.id}
+              checked={kind === option.id}
+              onSelect={() => void changePaneKind(paneId, option.id)}
             >
-              {PANE_LABELS[option]}
+              {option.name}
             </MenuItem>
           ))}
         </MenuSubContent>

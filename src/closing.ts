@@ -2,49 +2,46 @@ import { activePaneId, closePaneNow, focusActivePane, closeTabNow, removeWorkspa
 import type { PaneKind, Tab } from "./state/types";
 import { closePromptMessage } from "./closePrompt";
 import { confirm } from "./components/ui/ConfirmDialog";
-import { unsavedFiles } from "./editor/registry";
-import { baseName } from "./explorer/tree";
+import { paneSpec } from "./plugins/registry";
+import type { CloseBlocker } from "./plugins/types";
 import { findPane, listPanes } from "./state/layout";
 import { findTab, findTabOfPane, selectActiveTab, selectActiveWorkspace, useAppStore } from "./state/store";
-import { peekSession } from "./terminal/sessions";
 
 /*
  * Closing things that may have programs running in them or unsaved
- * changes. Each command looks up what is in the foreground of the
- * terminals it would end and which editors it would close with unsaved
- * changes and, if there are any, asks first (one question for all).
+ * changes. Each command asks the plugins of the panes it would close what
+ * that would lose (`closeBlockers`: programs running in terminals, unsaved
+ * files in editors…) and, if anything, asks first (one question for all).
  */
 
 const store = () => useAppStore.getState();
 
-/** Names of the programs running in these panes' terminals (not idle shells). */
-async function runningPrograms(paneIds: string[]): Promise<string[]> {
+/** What closing these panes would lose, from their plugins. A failing check counts as nothing to lose. */
+async function blockersOf(paneIds: string[]): Promise<CloseBlocker[]> {
+  const state = store();
   const found = await Promise.all(
-    terminalPanesOf(paneIds).map(async (paneId) => {
-      const foreground = await peekSession(paneId)?.foreground().catch(() => null);
-      return foreground && !foreground.isShell ? foreground.name || "a program" : null;
+    paneIds.map(async (paneId) => {
+      const tab = findTabOfPane(state, paneId);
+      const kind = tab && findPane(tab.layout, paneId)?.data.kind;
+      const check = kind ? paneSpec(kind)?.closeBlockers : undefined;
+      return check ? check(paneId).catch(() => []) : [];
     }),
   );
-  return [...new Set(found.filter((name): name is string => name !== null))];
+  return found.flat();
 }
 
 /**
- * Whether it is fine to close these panes: no terminal among them runs a
- * program and no editor has unsaved changes, or the user agreed.
+ * Whether it is fine to close these panes: nothing among them would be
+ * lost, or the user agreed.
  */
 async function mayClose(paneIds: string[], title: string, action: string): Promise<boolean> {
-  const programs = await runningPrograms(paneIds);
-  const files = unsavedFiles(paneIds).map(baseName);
-  const message = closePromptMessage(programs, [...new Set(files)]);
+  const blockers = await blockersOf(paneIds);
+  const names = (type: CloseBlocker["type"]) => [
+    ...new Set(blockers.filter((blocker) => blocker.type === type).map((blocker) => blocker.name)),
+  ];
+  const message = closePromptMessage(names("running"), names("unsaved"), names("other"));
   if (message === null) return true;
   return confirm({ title, message, action });
-}
-
-function terminalPanesOf(paneIds: string[]): string[] {
-  return paneIds.filter((paneId) => {
-    const tab = findTabOfPane(store(), paneId);
-    return tab && findPane(tab.layout, paneId)?.data.kind === "terminal";
-  });
 }
 
 function paneIdsOf(tabs: Tab[]): string[] {
@@ -57,14 +54,14 @@ export async function closePane(paneId = activePaneId()): Promise<void> {
 }
 
 /**
- * Changing a terminal pane to another kind ends its shell, and changing an
- * editor's kind drops its unsaved changes, so it asks like closing.
+ * Changing a pane's kind ends what its plugin was running (a terminal's
+ * shell, an editor's unsaved changes), so it asks like closing.
  */
 export async function changePaneKind(paneId: string, kind: PaneKind): Promise<void> {
   const tab = findTabOfPane(store(), paneId);
   const current = tab && findPane(tab.layout, paneId)?.data.kind;
   if (current === kind) return;
-  const title = current === "terminal" ? "Close the terminal?" : "Change the pane’s type?";
+  const title = "Change the pane’s type?";
   if (!(await mayClose([paneId], title, "Change type"))) return;
   setPaneKind(paneId, kind);
 }

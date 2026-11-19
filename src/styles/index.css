@@ -72,6 +72,8 @@
   --pane-terminal: linear-gradient(185deg, #111216 0%, #0d0e11 100%);
   --pane-terminal-active: linear-gradient(180deg, #15161c 0%, #111216 100%);
   --pane-viewer: linear-gradient(170deg, #131419 0%, #0e0f12 100%);
+  /* Panes of plugins that declare no background of their own. */
+  --pane-default: linear-gradient(175deg, #131419 0%, #0f1013 100%);
   --tab-active: linear-gradient(180deg, #15161b, #121318);
   /* Solid terminal background (setting); keep in sync with SOLID_BACKGROUND in src/terminal/theme.ts. */
   --terminal-solid: #0e0f12;

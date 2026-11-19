@@ -1,22 +1,23 @@
 import { closePaneNow, updatePaneData } from "../actions";
 import { homeDirectory } from "../ipc/system";
+import { createPaneState } from "../plugins/paneState";
+import { refreshTabTitles } from "../plugins/tabTitles";
 import { useSettings } from "../settings/settings";
-import { findPane, listPanes } from "../state/layout";
-import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
+import { findPane } from "../state/layout";
+import { findTabOfPane, useAppStore } from "../state/store";
+import type { PaneNode } from "../state/types";
 import { TerminalSession } from "./session";
+import { type TerminalData, terminalConfig } from "./settings";
 import { terminalTitle } from "./titles";
 
 /*
- * Registry of live terminal sessions, keyed by pane id.
- *
- * Sessions are created on demand by TerminalPane and are never disposed by
- * it. Instead they are reconciled against the store: a session ends when no
- * terminal pane with its id exists in any tab of any workspace. That one
- * rule covers closing a pane, a tab or a workspace, and changing a pane's
- * type, without each of those having to remember to clean up.
+ * Live terminal sessions, keyed by pane id (a shared pane state, see
+ * src/plugins/paneState.ts): created on demand by TerminalPane, never
+ * disposed by it, and ended once no terminal pane with their id is left in
+ * any tab of any workspace and nothing shows them.
  */
 
-const sessions = new Map<string, TerminalSession>();
+const sessions = createPaneState<TerminalSession>({ kind: "terminal", dispose: (session) => session.dispose() });
 /** Input to type into a pane's shell as soon as its session exists (e.g. a command to run). */
 const startupInput = new Map<string, string>();
 
@@ -30,122 +31,71 @@ export function queueStartupInput(paneId: string, data: string): void {
   else startupInput.set(paneId, (startupInput.get(paneId) ?? "") + data);
 }
 
-export function acquireSession(paneId: string): TerminalSession {
-  let session = sessions.get(paneId);
-  if (!session) {
-    const tab = findTabOfPane(useAppStore.getState(), paneId);
-    const savedCwd = tab && findPane(tab.layout, paneId)?.data.cwd;
-    session = new TerminalSession(paneId, {
-      onExit: (exited) => {
-        // Only the pane's current session, and only while it is still a
-        // terminal: the pane may have changed kind since this shell started.
-        if (sessions.get(exited.paneId) !== exited) return;
-        const tab = findTabOfPane(useAppStore.getState(), exited.paneId);
-        const pane = tab && findPane(tab.layout, exited.paneId);
-        if (pane?.data.kind === "terminal") closePaneNow(exited.paneId);
-      },
-      onBackgroundOutput: ({ paneId: id }) => {
-        const state = useAppStore.getState();
-        const tab = findTabOfPane(state, id);
-        if (tab) state.markActivity(tab.id);
-      },
-      onCwdChange: (changed, cwd) => {
-        if (sessions.get(changed.paneId) !== changed) return;
-        updatePaneData(changed.paneId, { cwd });
-        scheduleTitles();
-      },
-      onForegroundChange: (changed) => {
-        if (sessions.get(changed.paneId) === changed) scheduleTitles();
-      },
-    }, savedCwd);
-    sessions.set(paneId, session);
-    const input = startupInput.get(paneId);
-    startupInput.delete(paneId);
-    if (input) session.input(input);
-  }
+function createSession(paneId: string): TerminalSession {
+  const tab = findTabOfPane(useAppStore.getState(), paneId);
+  const savedCwd = tab && (findPane(tab.layout, paneId)?.data as TerminalData | undefined)?.cwd;
+  const session = new TerminalSession(paneId, {
+    onExit: (exited) => {
+      // Only the pane's current session, and only while it is still a
+      // terminal: the pane may have changed kind since this shell started.
+      if (sessions.get(exited.paneId) !== exited) return;
+      const tab = findTabOfPane(useAppStore.getState(), exited.paneId);
+      const pane = tab && findPane(tab.layout, exited.paneId);
+      if (pane?.data.kind === "terminal") closePaneNow(exited.paneId);
+    },
+    onBackgroundOutput: ({ paneId: id }) => {
+      const state = useAppStore.getState();
+      const tab = findTabOfPane(state, id);
+      if (tab) state.markActivity(tab.id);
+    },
+    onCwdChange: (changed, cwd) => {
+      if (sessions.get(changed.paneId) !== changed) return;
+      updatePaneData(changed.paneId, { cwd });
+      refreshTabTitles();
+    },
+    onForegroundChange: (changed) => {
+      if (sessions.get(changed.paneId) === changed) refreshTabTitles();
+    },
+  }, typeof savedCwd === "string" ? savedCwd : undefined);
+  const input = startupInput.get(paneId);
+  startupInput.delete(paneId);
+  if (input) session.input(input);
   return session;
+}
+
+/** The pane's session, created if needed, for a mounted component (which calls `releaseSession` when done). */
+export function acquireSession(paneId: string): TerminalSession {
+  return sessions.acquire(paneId, () => createSession(paneId));
 }
 
 /** Takes a session off screen; it ends only if its pane is gone. */
 export function releaseSession(session: TerminalSession): void {
   session.detach();
-  scheduleReconcile();
+  sessions.release(session.paneId, session);
 }
 
-function reconcile(): void {
-  const live = new Set(
-    selectAllPanes(useAppStore.getState())
-      .filter((pane) => pane.data.kind === "terminal")
-      .map((pane) => pane.id),
-  );
-  for (const [paneId, session] of sessions) {
-    // An on-screen session belongs to a mounted pane, which may be newer
-    // than the store (a split mounts before its layout change is recorded).
-    if (live.has(paneId) || session.isAttached) continue;
-    sessions.delete(paneId);
-    session.dispose();
-  }
-}
-
-let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
-
-// Deferred so that a pane which is only remounting (React StrictMode, a
-// layout remount, a move between tabs) is back on screen before we look.
-function scheduleReconcile(): void {
-  clearTimeout(reconcileTimer);
-  reconcileTimer = setTimeout(reconcile, 0);
-}
-
-/*
- * Automatic tab titles: each tab is named after its active pane's terminal
- * (see `terminalTitle`), unless the user named it. Recomputed when a
- * terminal's program or directory changes, and on any store change (the
- * active pane may have moved); `setAutoTitle` ignores unchanged titles.
- */
-
-function updateTitles(): void {
-  const state = useAppStore.getState();
-  for (const workspace of state.workspaces) {
-    for (const tab of workspace.tabs) {
-      if (tab.titleLocked) continue;
-      const pane =
-        (tab.activePaneId && findPane(tab.layout, tab.activePaneId)) || listPanes(tab.layout)[0];
-      if (!pane || pane.data.kind !== "terminal") continue;
-      const session = sessions.get(pane.id);
-      const title = terminalTitle(session?.foregroundProgram ?? null, session?.cwd ?? pane.data.cwd, homeDirectory());
-      if (title) state.setAutoTitle(tab.id, title);
-    }
-  }
-}
-
-let titlesQueued = false;
-
-function scheduleTitles(): void {
-  if (titlesQueued) return;
-  titlesQueued = true;
-  queueMicrotask(() => {
-    titlesQueued = false;
-    updateTitles();
-  });
+/** The title of a tab whose active pane is this terminal: its program, or its directory. */
+export function terminalTabTitle(pane: PaneNode): string | undefined {
+  const session = sessions.get(pane.id);
+  const cwd = session?.cwd ?? (pane.data as TerminalData).cwd;
+  return terminalTitle(session?.foregroundProgram ?? null, cwd, homeDirectory()) || undefined;
 }
 
 // Settings apply to every live terminal at once.
-useSettings.subscribe((settings, previous) => {
-  if (settings === previous) return;
-  for (const session of sessions.values()) session.applySettings(settings);
-});
-
-useAppStore.subscribe(() => {
-  scheduleReconcile();
-  scheduleTitles();
+let lastConfig = terminalConfig();
+useSettings.subscribe(() => {
+  const config = terminalConfig();
+  if (JSON.stringify(config) === JSON.stringify(lastConfig)) return;
+  lastConfig = config;
+  for (const [, session] of sessions.entries()) session.applySettings(config);
 });
 
 /** Number of live sessions (for tests and diagnostics). */
 export function sessionCount(): number {
-  return sessions.size;
+  return sessions.entries().length;
 }
 
-/** The pane's live session, if it has one (for tests and diagnostics). */
+/** The pane's live session, if it has one. */
 export function peekSession(paneId: string): TerminalSession | undefined {
   return sessions.get(paneId);
 }

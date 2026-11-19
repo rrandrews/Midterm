@@ -1,8 +1,9 @@
-import { hasUnsavedChanges, renameOpenModels, revealInPane } from "./editor/registry";
-import { isImagePath } from "./files/kinds";
+import { hasUnsavedChanges, renameOpenModels } from "./editor/registry";
 import { noteRecentFile } from "./palette/recent";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
-import { countPanes, createPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
+import { convertedData, fileHandlers, newPane } from "./plugins/panes";
+import { paneSpec } from "./plugins/registry";
+import { countPanes, createPane, findPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
 import {
   findTabOfPane,
   selectActiveTab,
@@ -37,12 +38,12 @@ export function focusActivePane(): void {
   focusPane(activePaneId());
 }
 
-/** Working directory for a new terminal opened from `paneId`: that pane's, if known. */
-function cwdFrom(paneId: string | undefined): string | undefined {
+/** A pane as current as possible (from the mounted layout if its tab is showing). */
+export function livePane(paneId: string | undefined): PaneNode | undefined {
   if (!paneId) return undefined;
   const tab = findTabOfPane(store(), paneId);
   const layout = (tab && getDock(tab)?.getModel()) ?? tab?.layout;
-  return layout && listPanes(layout).find((pane) => pane.id === paneId)?.data.cwd;
+  return layout && findPane(layout, paneId);
 }
 
 /**
@@ -58,11 +59,15 @@ export function updatePaneData(paneId: string, patch: Partial<PaneData>): void {
   else store().updatePaneData(paneId, patch);
 }
 
-/** Opens a tab with one terminal, in the active pane's directory. */
-export function newTab(): void {
-  const cwd = cwdFrom(activePaneId());
-  store().addTab({ layout: singlePaneLayout(createPane("terminal", { cwd })) });
-  focusPane(listPanes(selectActiveTab(store()).layout)[0]?.id);
+/**
+ * Opens a tab with one pane of `kind` (the default kind: a terminal unless
+ * the settings say otherwise), started from the active pane (a terminal
+ * opens in its directory).
+ */
+export function newTab(kind?: PaneKind): void {
+  const pane = newPane(kind, livePane(activePaneId()));
+  store().addTab({ layout: singlePaneLayout(pane) });
+  focusPane(pane.id);
 }
 
 export function selectTab(tabId: string): void {
@@ -103,13 +108,19 @@ export function removeWorkspaceNow(workspaceId: string): void {
   focusActivePane();
 }
 
-/** Adds a terminal beside (`right`) or below (`bottom`) a pane, taking half its space. */
-export function splitPane(region: "right" | "bottom", paneId = activePaneId()): void {
+/** Adds a pane of the default kind beside (`right`) or below (`bottom`) a pane, taking half its space. */
+export function splitPane(region: "right" | "bottom", paneId = activePaneId(), kind?: PaneKind): void {
   const { dock, layout } = activeLayout();
   const frameId = paneId && frameIdOf(layout, paneId);
   if (!dock || !frameId) return;
-  const pane = createPane("terminal", { cwd: cwdFrom(paneId) });
+  const pane = newPane(kind, findPane(layout, paneId));
   if (dock.addTab(pane, { target: { tabsetId: frameId, region } })) focusPane(pane.id);
+}
+
+/** Opens a pane of `kind` beside the active pane (where there is most room). */
+export function openPaneBeside(kind: PaneKind, fromPaneId = activePaneId()): void {
+  if (!fromPaneId) return;
+  addPaneBeside(fromPaneId, newPane(kind, livePane(fromPaneId)));
 }
 
 /**
@@ -153,11 +164,16 @@ export function toggleMaximizePane(paneId = activePaneId()): void {
   focusPane(paneId);
 }
 
+/** Changes a pane's kind; its plugin converts the data (editor ↔ viewer keep the file). */
 export function setPaneKind(paneId: string, kind: PaneKind): void {
-  const { dock, layout } = activeLayout();
-  const pane = listPanes(layout).find((candidate) => candidate.id === paneId);
-  if (!dock || !pane || pane.data.kind === kind) return;
-  dock.updateTab(paneId, { data: { ...pane.data, kind } });
+  const tab = findTabOfPane(store(), paneId);
+  if (!tab) return;
+  const dock = getDock(tab);
+  const pane = findPane(dock?.getModel() ?? tab.layout, paneId);
+  if (!pane || pane.data.kind === kind) return;
+  const data = convertedData(pane, kind);
+  if (dock) dock.updateTab(paneId, { data });
+  else store().updatePaneData(paneId, data, { replace: true });
   focusPane(paneId);
 }
 
@@ -218,16 +234,13 @@ export function focusNeighbourPane(direction: Direction): void {
   if (best) focusPane(best.id);
 }
 
-/** Pane kinds that can show a file, best first. Images only display; text prefers the editor. */
-function kindsFor(path: string): PaneKind[] {
-  return isImagePath(path) ? ["viewer"] : ["editor", "viewer"];
-}
-
 export type OpenFileOptions = {
   /** The pane the request comes from; the file opens in its tab. */
   fromPaneId: string;
   /** Always open a new pane. */
   newPane?: boolean;
+  /** Only panes of this kind (a plugin that may not claim the file by default). */
+  kind?: PaneKind;
   /** 1-based line (and column) to put the cursor on, in an editor. */
   line?: number;
   column?: number;
@@ -244,25 +257,32 @@ export type OpenFileOptions = {
  * opens in a new editor pane instead, so nothing is lost and nobody is
  * asked. With a `line`, only editors are considered.
  */
-export function openFile(path: string, { fromPaneId, newPane = false, line, column }: OpenFileOptions): void {
+export function openFile(path: string, { fromPaneId, newPane: alwaysNew = false, line, column, kind: only }: OpenFileOptions): void {
   const tab = findTabOfPane(store(), fromPaneId);
   const dock = tab && getDock(tab);
   if (!tab || !dock) return;
+  // A line can only be shown by a plugin that can reveal one.
+  const handlers = line !== undefined ? fileHandlers(path, { line: true }) : [];
+  const kinds: PaneKind[] = (handlers.length ? handlers : fileHandlers(path))
+    .map((plugin) => plugin.id)
+    .filter((kind) => !only || kind === only);
+  if (kinds.length === 0) return;
   noteRecentFile(path);
   const layout = dock.getModel();
   const panes = listPanes(layout);
-  // A line can only be shown in an editor.
-  const kinds: PaneKind[] = line !== undefined && !isImagePath(path) ? ["editor"] : kindsFor(path);
-  const show = (paneId: string) => {
-    if (line !== undefined) revealInPane(paneId, path, line, column);
+  const reveal = (paneId: string, kind: PaneKind) => {
+    if (line !== undefined) paneSpec(kind)?.reveal?.(paneId, path, line, column);
+  };
+  const show = (paneId: string, kind: PaneKind) => {
+    reveal(paneId, kind);
     focusPane(paneId);
   };
 
   let kind = kinds[0];
-  if (!newPane) {
+  if (!alwaysNew) {
     for (const candidateKind of kinds) {
       const showing = panes.find((pane) => pane.data.kind === candidateKind && pane.data.path === path);
-      if (showing) return show(showing.id);
+      if (showing) return show(showing.id, candidateKind);
     }
     for (const candidateKind of kinds) {
       const ofKind = panes.filter((pane) => pane.data.kind === candidateKind);
@@ -274,19 +294,20 @@ export function openFile(path: string, { fromPaneId, newPane = false, line, colu
         break;
       }
       dock.updateTab(target.id, { data: { ...target.data, path } });
-      return show(target.id);
+      return show(target.id, candidateKind);
     }
   }
 
-  const pane = createPane(kind, { path });
-  if (line !== undefined) revealInPane(pane.id, path, line, column);
+  const pane = createPane(kind, { ...newPane(kind).data, path });
+  reveal(pane.id, kind);
   addPaneBeside(fromPaneId, pane);
 }
 
 /**
  * Adds a pane to `fromPaneId`'s tab by splitting the roomiest pane along its
- * longer side. Explorers are split only as a last resort (it squeezes the
- * tree), and only the one the request came from.
+ * longer side. Panes whose plugin is not `splittable` (explorers: it
+ * squeezes the tree) are split only as a last resort, and only the one the
+ * request came from.
  */
 export function addPaneBeside(fromPaneId: string, pane: PaneNode): void {
   const tab = findTabOfPane(store(), fromPaneId);
@@ -295,7 +316,7 @@ export function addPaneBeside(fromPaneId: string, pane: PaneNode): void {
   const layout = dock.getModel();
   let best: { id: string; area: number; wide: boolean } | undefined;
   for (const candidate of listPanes(layout)) {
-    const explorer = candidate.data.kind === "explorer";
+    const explorer = paneSpec(candidate.data.kind)?.splittable === false;
     if (explorer && candidate.id !== fromPaneId) continue;
     const rect = document
       .querySelector<HTMLElement>(`[data-pane-id="${CSS.escape(candidate.id)}"]`)

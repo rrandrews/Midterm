@@ -48,13 +48,13 @@ export type AppActions = {
    * Merges `patch` into a pane's data in the stored layout (remounting its
    * layout if mounted; prefer the layout handle for a mounted tab).
    */
-  updatePaneData: (paneId: string, patch: Partial<PaneData>) => void;
+  updatePaneData: (paneId: string, patch: Partial<PaneData>, options?: { replace?: boolean }) => void;
 };
 
 export function createTab(options: { title?: string; layout?: Layout } = {}): Tab {
   return {
     id: createId(),
-    title: options.title ?? "shell",
+    title: options.title ?? "new tab",
     layout: options.layout ?? singlePaneLayout(),
     layoutRev: 0,
     activity: false,
@@ -323,12 +323,15 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }));
   },
 
-  updatePaneData: (paneId, patch) => {
+  updatePaneData: (paneId, patch, options) => {
     set((state) => {
       const tab = findTabOfPane(state, paneId);
       if (!tab) return state;
       const layout = normalizeWorkspaceModel<PaneData>(tab.layout, {
-        mapTab: (pane) => (pane.id === paneId ? { ...pane, data: { ...pane.data, ...patch } } : pane),
+        mapTab: (pane) =>
+          pane.id === paneId
+            ? { ...pane, data: (options?.replace ? patch : { ...pane.data, ...patch }) as PaneData }
+            : pane,
       });
       if (!layout) return state;
       return updateTab(state, tab.id, (current) => withLayout(current, layout, { remount: true }));

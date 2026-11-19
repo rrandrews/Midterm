@@ -31,7 +31,7 @@ function AppMenu() {
         <DotsIcon size={15} radius={1.6} />
       </MenuTrigger>
       <MenuContent>
-        <MenuItem shortcut={shortcutLabel("tab.new")} onSelect={newTab}>
+        <MenuItem shortcut={shortcutLabel("tab.new")} onSelect={() => newTab()}>
           New tab
         </MenuItem>
         <MenuItem onSelect={newWorkspace}>New workspace</MenuItem>
@@ -102,7 +102,7 @@ export function TitleBar() {
         </header>
       </ContextMenuTrigger>
       <ContextMenuContent aria-label="Title bar">
-        <MenuItem shortcut={shortcutLabel("tab.new")} onSelect={newTab}>
+        <MenuItem shortcut={shortcutLabel("tab.new")} onSelect={() => newTab()}>
           New tab
         </MenuItem>
         <MenuItem onSelect={newWorkspace}>New workspace</MenuItem>

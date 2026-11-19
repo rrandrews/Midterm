@@ -10,33 +10,20 @@ import {
   toggleMaximizePane,
 } from "../actions";
 import { closePane, closeTab } from "../closing";
-import { type Command, paneActionsOf, registerCommands } from "./registry";
+import { type Command, paneActionCommand, registerCommands } from "./registry";
 
 /*
- * The app's own commands. Pane kinds register theirs where they are
- * implemented. Ids are stable: settings refer to them.
+ * The app's own commands. Pane plugins declare theirs (`commands` in the
+ * plugin), and are registered while enabled. Ids are stable: settings refer to them.
  */
 
 /** A command that forwards to the active pane's action of that name. */
-function paneAction(
-  id: string,
-  title: string,
-  action: "find" | "findNext" | "findPrevious" | "save" | "goToLine",
-  keys: string[],
-  category: Command["category"] = "Pane",
-): Command {
-  return {
-    id,
-    title,
-    category,
-    keys,
-    run: () => paneActionsOf(activePaneId())?.[action]?.(),
-    enabled: () => paneActionsOf(activePaneId())?.[action] !== undefined,
-  };
+function paneAction(id: string, title: string, action: string, keys: string[], category = "Pane"): Command {
+  return paneActionCommand({ id, title, category, keys }, action, activePaneId);
 }
 
 export const CORE_COMMANDS: Command[] = [
-  { id: "tab.new", title: "New tab", category: "Tab", keys: ["Cmd+T"], run: newTab },
+  { id: "tab.new", title: "New tab", category: "Tab", keys: ["Cmd+T"], run: () => newTab() },
   { id: "tab.close", title: "Close tab", category: "Tab", keys: ["Cmd+Shift+W"], run: () => closeTab() },
   { id: "tab.previous", title: "Previous tab", category: "Tab", keys: ["Cmd+Shift+["], run: () => cycleTab(-1) },
   { id: "tab.next", title: "Next tab", category: "Tab", keys: ["Cmd+Shift+]"], run: () => cycleTab(1) },

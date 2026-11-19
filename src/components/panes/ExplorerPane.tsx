@@ -11,7 +11,9 @@ import { type Row, displayPath, findByPrefix, parentPath, rowId } from "../../ex
 import { InlineEdit } from "../ui/InlineEdit";
 import { PaneMenuItems } from "../layout/PaneMenuItems";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuSeparator } from "../ui/Menu";
-import { EntryMenuItems, ExplorerMenuItems, confirmTrash } from "./ExplorerMenus";
+import { MenuItems } from "../../plugins/MenuItems";
+import { usePluginSettings } from "../../plugins/settings";
+import { EntryMenuItems, confirmTrash, explorerMenu } from "./ExplorerMenus";
 
 const ROW_HEIGHT = 24;
 /** Indent per level, and the left padding of the top level (from the mockup). */
@@ -44,9 +46,12 @@ const BADGE_TITLE: Record<GitCode, string> = {
  */
 export function ExplorerPane({ paneId }: { paneId: string }) {
   const [model, setModel] = useState<ExplorerModel | null>(null);
+  const settings = usePluginSettings("explorer");
+  const defaults = useRef({ pinned: false, showHidden: false });
+  defaults.current = { pinned: settings.followTerminal === false, showHidden: settings.showHidden === true };
 
   useEffect(() => {
-    const acquired = acquireExplorer(paneId);
+    const acquired = acquireExplorer(paneId, defaults.current);
     acquired.attach();
     setModel(acquired);
     return () => releaseExplorer(acquired);
@@ -229,7 +234,7 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
             />
           ) : (
             <>
-              <ExplorerMenuItems model={model} />
+              <MenuItems items={explorerMenu(model)} />
               <MenuSeparator />
               <PaneMenuItems paneId={paneId} />
             </>

@@ -3,34 +3,31 @@
  * from disk. Pure; `settings.ts` holds the live store and persistence.
  */
 
-export const CURSOR_STYLES = ["block", "bar", "underline"] as const;
-export type CursorStyle = (typeof CURSOR_STYLES)[number];
-
-export const TERMINAL_MODES = ["classic", "blocks"] as const;
-export type TerminalMode = (typeof TERMINAL_MODES)[number];
-
-export const BELL_MODES = ["off", "visual", "sound"] as const;
-export type BellMode = (typeof BELL_MODES)[number];
-
-export const TERMINAL_BACKGROUNDS = ["transparent", "solid"] as const;
-export type TerminalBackground = (typeof TERMINAL_BACKGROUNDS)[number];
-
 /** The accents offered in the settings, from the mockup. Any `#rrggbb` is accepted. */
 export const ACCENT_PRESETS = ["#8B9CFF", "#5EEAD4", "#F5A524", "#F472B6"] as const;
 
+/** Bump when the saved shape changes, and migrate in `migrateSettings`. */
+export const SETTINGS_VERSION = 2;
+
+/**
+ * A plugin's entry in the settings: whether it is enabled, its own settings
+ * (validated against its declared fields when read, see
+ * `src/plugins/settings.ts`), and which of its skills are switched off.
+ */
+export type PluginEntry = {
+  /** Unset means enabled. */
+  enabled?: boolean;
+  settings?: Record<string, unknown>;
+  /** Per-skill switches by skill id; unset means on. */
+  skills?: Record<string, boolean>;
+};
+
 export type Settings = {
+  version: number;
   /** CSS font family for terminals and the editor; the bundled JetBrains Mono when empty. */
   fontFamily: string;
   /** Terminal and editor font size, px. */
   fontSize: number;
-  cursorStyle: CursorStyle;
-  cursorBlink: boolean;
-  /** Lines of scrollback per terminal. */
-  scrollback: number;
-  /** Program to run in new terminals; the login shell when empty. */
-  shell: string;
-  /** Arguments for `shell` (ignored when `shell` is empty). */
-  shellArgs: string[];
   /** Accent color, `#rrggbb`. */
   accent: string;
   /**
@@ -38,43 +35,26 @@ export type Settings = {
    * command's default bindings; an empty list unbinds it.
    */
   keybindings: Record<string, string[]>;
-  /** How new terminal panes render. */
-  terminalMode: TerminalMode;
-  /** Selecting text in a terminal copies it. */
-  copyOnSelect: boolean;
-  bell: BellMode;
-  /**
-   * `transparent` lets the pane gradient show through the terminal (costs
-   * some rendering speed); `solid` paints a flat background.
-   */
-  terminalBackground: TerminalBackground;
+  /** Kind of the pane a new tab or a split opens (a plugin id); the terminal if that plugin is unavailable. */
+  defaultPaneKind: string;
+  /** Per-plugin entries, by plugin id. */
+  plugins: Record<string, PluginEntry>;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
+  version: SETTINGS_VERSION,
   fontFamily: "",
   fontSize: 12.5,
-  cursorStyle: "block",
-  cursorBlink: true,
-  scrollback: 10_000,
-  shell: "",
-  shellArgs: [],
   accent: ACCENT_PRESETS[0],
   keybindings: {},
-  terminalMode: "classic",
-  copyOnSelect: false,
-  bell: "visual",
-  terminalBackground: "transparent",
+  defaultPaneKind: "terminal",
+  plugins: {},
 };
 
 export const FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
-export const SCROLLBACK_RANGE = { min: 0, max: 1_000_000 } as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
-function oneOf<T extends string>(options: readonly T[], value: unknown, fallback: T): T {
-  return options.includes(value as T) ? (value as T) : fallback;
-}
 
 function clampNumber(value: unknown, range: { min: number; max: number }, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
@@ -90,13 +70,63 @@ function stringList(value: unknown): string[] | null {
   return value.filter((item): item is string => typeof item === "string");
 }
 
+/** Version 1 kept the terminal's settings at the top level. */
+const V1_TERMINAL_FIELDS = [
+  "cursorStyle",
+  "cursorBlink",
+  "scrollback",
+  "shell",
+  "shellArgs",
+  "terminalMode",
+  "copyOnSelect",
+  "bell",
+  "terminalBackground",
+] as const;
+
+/**
+ * Brings saved settings of any earlier version up to `SETTINGS_VERSION`.
+ * Untrusted input in, untrusted output (still to be validated) out.
+ */
+export function migrateSettings(raw: unknown): Record<string, unknown> {
+  const data: Record<string, unknown> = isRecord(raw) ? { ...raw } : {};
+  const version = typeof data.version === "number" ? data.version : 1;
+  if (version < 2) {
+    // The terminal's fields move into its plugin entry; fonts stay global.
+    const plugins = isRecord(data.plugins) ? { ...data.plugins } : {};
+    const terminal = isRecord(plugins.terminal) ? { ...plugins.terminal } : {};
+    const settings = isRecord(terminal.settings) ? { ...terminal.settings } : {};
+    for (const field of V1_TERMINAL_FIELDS) {
+      if (field in data && !(field in settings)) settings[field] = data[field];
+      delete data[field];
+    }
+    if (Object.keys(settings).length) plugins.terminal = { ...terminal, settings };
+    data.plugins = plugins;
+  }
+  data.version = SETTINGS_VERSION;
+  return data;
+}
+
+function validatePluginEntry(raw: unknown): PluginEntry | null {
+  if (!isRecord(raw)) return null;
+  const entry: PluginEntry = {};
+  if (typeof raw.enabled === "boolean") entry.enabled = raw.enabled;
+  if (isRecord(raw.settings)) entry.settings = raw.settings;
+  if (isRecord(raw.skills)) {
+    const skills: Record<string, boolean> = {};
+    for (const [id, on] of Object.entries(raw.skills)) if (typeof on === "boolean") skills[id] = on;
+    if (Object.keys(skills).length) entry.skills = skills;
+  }
+  return entry;
+}
+
 /**
  * Settings from untrusted data (the settings file, possibly hand-edited or
- * from another version): every valid field is kept, anything else falls
- * back to its default.
+ * from another version): migrated, then every valid field is kept and
+ * anything else falls back to its default. Plugin settings are kept as
+ * they are here and validated by their fields when read.
  */
 export function validateSettings(raw: unknown): Settings {
-  const data = isRecord(raw) ? raw : {};
+  const data = migrateSettings(raw);
   const d = DEFAULT_SETTINGS;
   const keybindings: Record<string, string[]> = {};
   if (isRecord(data.keybindings)) {
@@ -105,20 +135,22 @@ export function validateSettings(raw: unknown): Settings {
       if (list) keybindings[id] = list;
     }
   }
+  const plugins: Record<string, PluginEntry> = {};
+  if (isRecord(data.plugins)) {
+    for (const [id, value] of Object.entries(data.plugins)) {
+      const entry = validatePluginEntry(value);
+      if (entry) plugins[id] = entry;
+    }
+  }
   return {
+    version: SETTINGS_VERSION,
     fontFamily: typeof data.fontFamily === "string" ? data.fontFamily.trim() : d.fontFamily,
     fontSize: clampNumber(data.fontSize, FONT_SIZE_RANGE, d.fontSize),
-    cursorStyle: oneOf(CURSOR_STYLES, data.cursorStyle, d.cursorStyle),
-    cursorBlink: typeof data.cursorBlink === "boolean" ? data.cursorBlink : d.cursorBlink,
-    scrollback: Math.round(clampNumber(data.scrollback, SCROLLBACK_RANGE, d.scrollback)),
-    shell: typeof data.shell === "string" ? data.shell.trim() : d.shell,
-    shellArgs: stringList(data.shellArgs) ?? d.shellArgs,
     accent: isHexColor(data.accent) ? data.accent : d.accent,
     keybindings,
-    terminalMode: oneOf(TERMINAL_MODES, data.terminalMode, d.terminalMode),
-    copyOnSelect: typeof data.copyOnSelect === "boolean" ? data.copyOnSelect : d.copyOnSelect,
-    bell: oneOf(BELL_MODES, data.bell, d.bell),
-    terminalBackground: oneOf(TERMINAL_BACKGROUNDS, data.terminalBackground, d.terminalBackground),
+    defaultPaneKind:
+      typeof data.defaultPaneKind === "string" && data.defaultPaneKind ? data.defaultPaneKind : d.defaultPaneKind,
+    plugins,
   };
 }
 

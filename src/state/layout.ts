@@ -1,19 +1,26 @@
 import { normalizeWorkspaceModel } from "react-resizable-panels";
 import type { Layout, LayoutNodeInput, PaneData, PaneKind, PaneNode } from "./types";
 
-export const PANE_LABELS: Record<PaneKind, string> = {
-  terminal: "Terminal",
-  explorer: "Explorer",
-  editor: "Editor",
-  viewer: "Viewer",
-};
-
 export function createId(): string {
   return crypto.randomUUID();
 }
 
-export function createPane(kind: PaneKind = "terminal", data: Omit<PaneData, "kind"> = {}): PaneNode {
-  return { id: createId(), title: PANE_LABELS[kind], data: { ...data, kind } };
+/**
+ * Data for a pane created without a kind (a new tab, a fresh tab replacing
+ * a closed one). The plugin layer installs one that follows the
+ * `defaultPaneKind` setting; the fallback keeps pure code (and tests) free
+ * of that dependency.
+ */
+let defaultPaneData: () => PaneData = () => ({ kind: "terminal" });
+
+export function setDefaultPaneData(factory: () => PaneData): void {
+  defaultPaneData = factory;
+}
+
+/** A new pane of `kind` with `data`, or of the default kind when no kind is given. */
+export function createPane(kind?: PaneKind, data: Omit<PaneData, "kind"> = {}): PaneNode {
+  const full: PaneData = kind === undefined ? { ...defaultPaneData(), ...data } : { ...data, kind };
+  return { id: createId(), title: full.kind, data: full };
 }
 
 /** A layout node holding a single pane. */

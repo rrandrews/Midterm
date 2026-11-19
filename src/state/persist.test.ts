@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { BUILTIN_VALIDATORS } from "../plugins/builtin/data";
 import { createLayout, createPane, listPanes, paneNode } from "./layout";
-import { SCHEMA_VERSION, restoreLayout, restoreState, snapshotState } from "./persist";
+import { SCHEMA_VERSION, restoreLayout, restoreState, setPaneDataValidator, snapshotState } from "./persist";
 import { createTab, createWorkspace } from "./store";
+
+// As installed by the plugin layer: built-in kinds are validated, other kinds are kept as saved.
+beforeAll(() => setPaneDataValidator((kind, raw) => BUILTIN_VALIDATORS[kind]?.(raw)));
 
 function sampleState() {
   const a = createPane("terminal", { cwd: "/tmp" });
@@ -101,12 +105,32 @@ describe("snapshot and restore", () => {
     expect(listPanes(tab!.layout).map((pane) => pane.data.kind)).toEqual(["terminal"]);
   });
 
-  it("drops panes of unknown kinds and keeps the rest", () => {
+  it("keeps panes whose plugin is missing, with their data as saved", () => {
     const saved = roundTrip(snapshotState(sampleState()));
     const root = saved.workspaces[0].tabs[0].layout.root;
-    root.children[1].tabs[0].data = { kind: "spreadsheet" };
+    root.children[1].tabs[0].data = { kind: "spreadsheet", sheet: "q3", rows: [1, 2] };
+    const tab = restoreState(saved)?.workspaces[0].tabs[0];
+    expect(listPanes(tab!.layout).map((pane) => pane.data)).toEqual([
+      { kind: "terminal", cwd: "/tmp" },
+      { kind: "spreadsheet", sheet: "q3", rows: [1, 2] },
+    ]);
+  });
+
+  it("drops panes whose kind is not a plugin id", () => {
+    const saved = roundTrip(snapshotState(sampleState()));
+    const root = saved.workspaces[0].tabs[0].layout.root;
+    root.children[1].tabs[0].data = { kind: "Not A Kind!" };
     const tab = restoreState(saved)?.workspaces[0].tabs[0];
     expect(listPanes(tab!.layout).map((pane) => pane.data.kind)).toEqual(["terminal"]);
+  });
+
+  it("gives a pane fresh data when its plugin rejects what was saved", () => {
+    setPaneDataValidator((kind, raw) => (kind === "picky" ? null : BUILTIN_VALIDATORS[kind]?.(raw)));
+    const saved = roundTrip(snapshotState(sampleState()));
+    saved.workspaces[0].tabs[0].layout.root.children[1].tabs[0].data = { kind: "picky", junk: true };
+    const tab = restoreState(saved)?.workspaces[0].tabs[0];
+    expect(listPanes(tab!.layout)[1].data).toEqual({ kind: "picky" });
+    setPaneDataValidator((kind, raw) => BUILTIN_VALIDATORS[kind]?.(raw));
   });
 
   it("falls back to existing ids for a missing active tab or workspace", () => {

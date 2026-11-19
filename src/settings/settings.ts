@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { type JsonFile, openJsonFile } from "../ipc/jsonFile";
-import { DEFAULT_SETTINGS, type Settings, validateSettings } from "./schema";
+import { DEFAULT_SETTINGS, type PluginEntry, type Settings, validateSettings } from "./schema";
 
 /*
  * The live settings, loaded from `settings.json` in the app data directory
@@ -18,6 +18,10 @@ type SettingsActions = {
   updateSettings: (patch: Partial<Settings>) => void;
   /** Sets one command's bindings; `null` restores its defaults. */
   setKeybinding: (commandId: string, bindings: string[] | null) => void;
+  /** Merges `patch` into a plugin's entry (enabled flag, skill switches). */
+  updatePluginEntry: (pluginId: string, patch: Partial<PluginEntry>) => void;
+  /** Merges `patch` into a plugin's own settings. */
+  updatePluginSettings: (pluginId: string, patch: Record<string, unknown>) => void;
   resetSettings: () => void;
 };
 
@@ -30,7 +34,26 @@ export const useSettings = create<Settings & SettingsActions>()((set, get) => ({
     else keybindings[commandId] = bindings;
     set({ keybindings });
   },
-  resetSettings: () => set({ ...DEFAULT_SETTINGS }),
+  updatePluginEntry: (pluginId, patch) => {
+    const plugins = get().plugins;
+    set({ plugins: { ...plugins, [pluginId]: { ...plugins[pluginId], ...patch } } });
+  },
+  updatePluginSettings: (pluginId, patch) => {
+    const plugins = get().plugins;
+    const entry = plugins[pluginId] ?? {};
+    set({ plugins: { ...plugins, [pluginId]: { ...entry, settings: { ...entry.settings, ...patch } } } });
+  },
+  /** Keeps which plugins are enabled and the skill switches: those are managed in the Plugins section. */
+  resetSettings: () => {
+    const plugins: Record<string, PluginEntry> = {};
+    for (const [id, entry] of Object.entries(get().plugins)) {
+      const kept: PluginEntry = {};
+      if (entry.enabled !== undefined) kept.enabled = entry.enabled;
+      if (entry.skills) kept.skills = entry.skills;
+      if (Object.keys(kept).length) plugins[id] = kept;
+    }
+    set({ ...DEFAULT_SETTINGS, plugins });
+  },
 }));
 
 export function getSettings(): Settings {

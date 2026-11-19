@@ -1,4 +1,5 @@
 import { getSettings, useSettings } from "../settings/settings";
+import type { PaneActions } from "../plugins/types";
 import { type Chord, chordFromEvent, formatBinding, parseChord, sameChord } from "./keys";
 
 /*
@@ -14,14 +15,8 @@ import { type Chord, chordFromEvent, formatBinding, parseChord, sameChord } from
  * override them (`settings.keybindings[id]`).
  */
 
-export type CommandCategory =
-  | "App"
-  | "Tab"
-  | "Pane"
-  | "Workspace"
-  | "Terminal"
-  | "Editor"
-  | "View";
+/** Shown in the palette and the keyboard settings: "App", "Tab", "Pane", "Terminal"… or a plugin's name. */
+export type CommandCategory = string;
 
 export type Command = {
   /** Stable id, used in settings and the native menu, e.g. `pane.splitRight`. */
@@ -39,6 +34,11 @@ export type Command = {
    * can search), and the palette leaves it out.
    */
   enabled?: () => boolean;
+  /**
+   * The native menu bar submenu ("File", "Edit", "View", "Pane", "Window")
+   * to list the command in, after the app's own items there.
+   */
+  menu?: string;
 };
 
 const commands = new Map<string, Command>();
@@ -202,13 +202,7 @@ export function onCommandRun(listener: (id: string) => void): () => void {
  * pane has that action.
  */
 
-export type PaneActions = {
-  find?: () => void;
-  findNext?: () => void;
-  findPrevious?: () => void;
-  save?: () => unknown;
-  goToLine?: () => void;
-};
+export type { PaneActions };
 
 const paneActions = new Map<string, PaneActions>();
 
@@ -224,4 +218,17 @@ export function registerPaneActions(paneId: string, actions: PaneActions): () =>
 
 export function paneActionsOf(paneId: string | undefined): PaneActions | undefined {
   return paneId ? paneActions.get(paneId) : undefined;
+}
+
+/** A command that forwards to the active pane's action of that name, enabled when the active pane has it. */
+export function paneActionCommand(
+  command: Omit<Command, "run" | "enabled">,
+  action: string,
+  activePane: () => string | undefined,
+): Command {
+  return {
+    ...command,
+    run: () => paneActionsOf(activePane())?.[action]?.(),
+    enabled: () => paneActionsOf(activePane())?.[action] !== undefined,
+  };
 }

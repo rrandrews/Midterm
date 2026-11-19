@@ -1,32 +1,30 @@
 import { activePaneId, updatePaneData } from "../actions";
-import { registerCommands } from "../commands/registry";
 import { copyText } from "../ipc/clipboard";
 import { focusPane } from "../layout/dock";
-import { getSettings } from "../settings/settings";
 import { findPane } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
-import type { PaneData } from "../state/types";
 import { rowsText } from "./blockRender";
 import { type Block, outputRows } from "./blocks";
 import { recordCommand } from "./history";
 import type { TerminalSession } from "./session";
 import { peekSession } from "./sessions";
+import { type TerminalData, type TerminalMode, terminalSettings } from "./settings";
 
 /*
  * Per-pane blocks/classic mode and the block actions shared by the blocks
  * view, the terminal's right-click menu and the command registry.
  */
 
-export type TerminalMode = NonNullable<PaneData["terminalMode"]>;
+export type { TerminalMode };
 
-function paneData(paneId: string): PaneData | undefined {
+function paneData(paneId: string): TerminalData | undefined {
   const tab = findTabOfPane(useAppStore.getState(), paneId);
-  return tab && findPane(tab.layout, paneId)?.data;
+  return tab && (findPane(tab.layout, paneId)?.data as TerminalData | undefined);
 }
 
 /** The mode a terminal pane asks for: its own, else the `terminalMode` setting. */
 export function requestedMode(paneId: string): TerminalMode {
-  return paneData(paneId)?.terminalMode ?? getSettings().terminalMode;
+  return paneData(paneId)?.terminalMode ?? terminalSettings().terminalMode;
 }
 
 /** Switches a terminal pane between blocks and classic rendering. */
@@ -82,20 +80,8 @@ export function contextBlockOf(session: TerminalSession): Block | undefined {
   return session.blocks.snapshot().blocks.find((block) => block.id === id);
 }
 
-function activeTerminal(): string | undefined {
+/** The active pane, if it is a terminal. */
+export function activeTerminal(): string | undefined {
   const id = activePaneId();
   return id && paneData(id)?.kind === "terminal" ? id : undefined;
 }
-
-registerCommands([
-  {
-    id: "terminal.toggleBlocks",
-    title: "Toggle blocks mode",
-    category: "Terminal",
-    run: () => {
-      const id = activeTerminal();
-      if (id) toggleBlocks(id);
-    },
-    enabled: () => activeTerminal() !== undefined,
-  },
-]);

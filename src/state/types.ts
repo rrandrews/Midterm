@@ -12,26 +12,27 @@ import type { TabNode, WorkspaceModel, WorkspaceNodeInput } from "react-resizabl
  *   library workspace = one tab's pane layout (Layout)
  */
 
-export const PANE_KINDS = ["terminal", "explorer", "editor", "viewer"] as const;
-export type PaneKind = (typeof PANE_KINDS)[number];
+/**
+ * A pane's kind is the id of the plugin that renders it (`terminal`,
+ * `explorer`, `editor`, `viewer`, or an imported plugin's id). See
+ * `src/plugins/` and docs/plugins.md.
+ */
+export type PaneKind = string;
 
-/** Serializable per-pane data, stored in the layout model (and saved to disk). */
+/**
+ * Serializable per-pane data, stored in the layout model (and saved to
+ * disk). Apart from `kind`, its fields belong to the plugin that owns the
+ * kind, which validates them on restore. Built-in plugins type their own
+ * fields (e.g. `TerminalData` in `src/plugins/builtin/terminal.tsx`).
+ */
 export type PaneData = {
   kind: PaneKind;
-  /** Terminal: last working directory the shell reported (OSC 7). New shells for this pane start there. */
-  cwd?: string;
-  /** Terminal: blocks or classic rendering; the `terminalMode` setting when unset. */
-  terminalMode?: "classic" | "blocks";
-  /** Editor / viewer: the open file. */
+  /**
+   * The file a pane shows, by convention for plugins that open files
+   * (`fileHandler`): renames on disk and "open file" look at it.
+   */
   path?: string;
-  /** Explorer: the directory at the top of the tree. */
-  root?: string;
-  /** Explorer: the root stays put instead of following the focused terminal's directory. */
-  pinned?: boolean;
-  /** Explorer: dotfiles and ignored files are listed too. */
-  showHidden?: boolean;
-  /** Explorer: expanded directories (absolute paths). */
-  expanded?: string[];
+  [field: string]: unknown;
 };
 
 export type PaneNode = TabNode<PaneData>;

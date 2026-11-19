@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { registerPaneActions } from "../../commands/registry";
 import { registerPaneFocuser } from "../../layout/dock";
-import { useSettings } from "../../settings/settings";
 import type { BlocksSnapshot } from "../../terminal/blocks";
 import type { TerminalSession } from "../../terminal/session";
 import { acquireSession, releaseSession } from "../../terminal/sessions";
-import type { PaneData } from "../../state/types";
+import { type TerminalMode, useTerminalSettings } from "../../terminal/settings";
 import { BlocksView } from "./BlocksView";
 import { TerminalFindBar } from "./TerminalFindBar";
 
@@ -22,14 +21,14 @@ const noSubscribe = () => () => {};
  * has the alternate screen, or when the shell turned out to have no
  * integration (no OSC 133 marks).
  */
-export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData["terminalMode"] }) {
+export function TerminalPane({ paneId, mode }: { paneId: string; mode?: TerminalMode }) {
   const ref = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [session, setSession] = useState<TerminalSession | null>(null);
   // Set before the focuser is registered, which may call it at once.
   const sessionRef = useRef<TerminalSession | null>(null);
-  const defaultMode = useSettings((settings) => settings.terminalMode);
+  const defaultMode = useTerminalSettings().terminalMode;
   const snapshot = useSyncExternalStore(
     session?.blocks.subscribe ?? noSubscribe,
     session?.blocks.snapshot ?? (() => NO_BLOCKS),

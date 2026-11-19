@@ -70,7 +70,6 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 /** Extensions every editor has (the per-file ones are in compartments). */
 const BASE_EXTENSIONS: Extension = [
-  lineNumbers(),
   highlightActiveLineGutter(),
   highlightSpecialChars(),
   history(),
@@ -92,12 +91,20 @@ const BASE_EXTENSIONS: Extension = [
   EditorView.theme({}, { dark: true }),
 ];
 
+export type EditorOptions = { wordWrap: boolean; tabSize: number; lineNumbers: boolean };
+
+function optionExtensions({ wordWrap, tabSize, lineNumbers: numbers }: EditorOptions): Extension {
+  return [numbers ? lineNumbers() : [], wordWrap ? EditorView.lineWrapping : [], EditorState.tabSize.of(tabSize)];
+}
+
 export class EditorModel {
   readonly kind = "editor";
   private readonly host = document.createElement("div");
   private readonly view: EditorView;
   private readonly language = new Compartment();
   private readonly indent = new Compartment();
+  private readonly options = new Compartment();
+  private optionValues: EditorOptions = { wordWrap: false, tabSize: 4, lineNumbers: true };
   private languageSupport: Extension = [];
   private languageName: string | null = null;
 
@@ -138,6 +145,11 @@ export class EditorModel {
     void this.detectLanguage();
     void this.findRepo();
     void this.load(false);
+  }
+
+  /** The buffer's text, with unsaved changes. */
+  text(): string {
+    return this.view.state.doc.toString();
   }
 
   get path(): string {
@@ -223,6 +235,12 @@ export class EditorModel {
     this.host.style.setProperty("--editor-font", family);
     this.host.style.setProperty("--editor-font-size", `${size}px`);
     this.view.requestMeasure();
+  }
+
+  /** Options from the editor's settings (word wrap, tab size, line numbers). */
+  setOptions(options: EditorOptions): void {
+    this.optionValues = options;
+    this.view.dispatch({ effects: this.options.reconfigure(optionExtensions(options)) });
   }
 
   /** The file was renamed or moved: same buffer, new path. */
@@ -349,6 +367,7 @@ export class EditorModel {
         BASE_EXTENSIONS,
         this.language.of(this.languageSupport),
         this.indent.of(indent ? indentUnit.of(indent) : []),
+        this.options.of(optionExtensions(this.optionValues)),
         this.readOnly ? EditorState.readOnly.of(true) : [],
         EditorView.updateListener.of((update) => {
           if (update.docChanged) this.updateDirty();

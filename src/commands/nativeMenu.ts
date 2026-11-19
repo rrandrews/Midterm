@@ -2,7 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { chordToAccelerator, parseChord } from "./keys";
 import { useAppStore } from "../state/store";
-import { bindingsOf, getCommand, isEnabled, runCommand, subscribeCommands } from "./registry";
+import { allCommands, bindingsOf, getCommand, isEnabled, runCommand, subscribeCommands } from "./registry";
 
 /*
  * The native menu bar, generated from the command registry: titles come
@@ -23,7 +23,11 @@ type Entry =
 
 type Spec = { title: string; items: Entry[] };
 
-/** Command ids (or "-" for a separator, "native:<item>" for a predefined item) per submenu. */
+/**
+ * Command ids (or "-" for a separator, "native:<item>" for a predefined
+ * item) per submenu: the app's own items. Commands that name a submenu in
+ * `menu` (plugins') follow them, after a separator.
+ */
 const LAYOUT: { title: string; items: string[] }[] = [
   { title: "app", items: ["settings.open", "settings.keyboard"] },
   {
@@ -82,7 +86,12 @@ function accelerator(id: string): string | null {
 }
 
 export function menuSpecs(): Spec[] {
-  return LAYOUT.map(({ title, items }) => {
+  const placed = new Set(LAYOUT.flatMap((menu) => menu.items));
+  return LAYOUT.map(({ title, items: own }) => {
+    const extra = allCommands()
+      .filter((command) => command.menu === title && !placed.has(command.id) && !command.hidden)
+      .map((command) => command.id);
+    const items = extra.length ? [...own, "-", ...extra] : own;
     const entries: Entry[] = [];
     for (const item of items) {
       if (item === "-") {

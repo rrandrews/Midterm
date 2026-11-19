@@ -1,7 +1,7 @@
 import { normalizeWorkspaceModel } from "react-resizable-panels";
 import { countPanes, listPanes } from "./layout";
 import { type AppState, createTab, createWorkspace } from "./store";
-import { PANE_KINDS, type Layout, type PaneData, type Tab, type Workspace } from "./types";
+import type { Layout, PaneData, Tab, Workspace } from "./types";
 
 /*
  * Saving and restoring the app state (workspaces, tabs, layouts).
@@ -11,6 +11,11 @@ import { PANE_KINDS, type Layout, type PaneData, type Tab, type Workspace } from
  * mid-write), so `restoreState` validates every level and repairs what it
  * can: a bad pane is dropped, a tab with no valid panes becomes a fresh tab,
  * and a file that is unusable as a whole gives `null` (start fresh).
+ *
+ * Pane data belongs to the plugin of the pane's kind, which validates it
+ * (`validatePaneData`, installed by the plugin layer). A pane whose plugin
+ * is missing (not imported yet, removed) or disabled is kept with its data
+ * as saved, and shows a placeholder until its plugin is back.
  */
 
 /** Bump when the saved shape changes incompatibly, and migrate in `restoreState`. */
@@ -51,20 +56,33 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const nonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
 
+/** Pane kinds look like plugin ids. */
+const KIND = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Validates a pane's fields for its kind: the fields to keep, or `null` to
+ * start the pane afresh. `undefined` when no plugin for the kind is known,
+ * and the data is kept as saved.
+ */
+export type PaneDataValidator = (kind: string, raw: Record<string, unknown>) => Omit<PaneData, "kind"> | null | undefined;
+
+let validatePaneData: PaneDataValidator = () => undefined;
+
+export function setPaneDataValidator(validator: PaneDataValidator): void {
+  validatePaneData = validator;
+}
+
 function restorePaneData(data: unknown): PaneData | null {
-  if (!isRecord(data) || !PANE_KINDS.includes(data.kind as PaneData["kind"])) return null;
-  const restored: PaneData = { kind: data.kind as PaneData["kind"] };
-  if (nonEmptyString(data.cwd)) restored.cwd = data.cwd;
-  if (data.terminalMode === "classic" || data.terminalMode === "blocks") restored.terminalMode = data.terminalMode;
-  if (nonEmptyString(data.path)) restored.path = data.path;
-  if (nonEmptyString(data.root)) restored.root = data.root;
-  if (data.pinned === true) restored.pinned = true;
-  if (data.showHidden === true) restored.showHidden = true;
-  if (Array.isArray(data.expanded)) {
-    const expanded = data.expanded.filter(nonEmptyString);
-    if (expanded.length) restored.expanded = expanded;
+  if (!isRecord(data) || typeof data.kind !== "string" || !KIND.test(data.kind)) return null;
+  const { kind, ...fields } = data;
+  let valid: Omit<PaneData, "kind"> | null | undefined;
+  try {
+    valid = validatePaneData(kind, fields);
+  } catch {
+    valid = null;
   }
-  return restored;
+  // A plugin that rejects the data gets a fresh pane of its kind.
+  return { ...(valid === undefined ? fields : (valid ?? {})), kind };
 }
 
 /** A valid layout from saved data, with invalid panes dropped; `null` if nothing is left. */

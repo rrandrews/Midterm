@@ -1,6 +1,6 @@
 import { RotateCcw, X } from "lucide-react";
 import { Dialog } from "radix-ui";
-import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { chordFromEvent, chordToString, formatBinding, parseChord } from "../commands/keys";
 import {
   allCommands,
@@ -13,19 +13,11 @@ import {
 import { confirm } from "../components/ui/ConfirmDialog";
 import { refocusPane } from "../layout/dock";
 import { create } from "zustand";
-import {
-  ACCENT_PRESETS,
-  BELL_MODES,
-  CURSOR_STYLES,
-  FONT_SIZE_RANGE,
-  SCROLLBACK_RANGE,
-  type Settings,
-  TERMINAL_BACKGROUNDS,
-  TERMINAL_MODES,
-  isHexColor,
-  joinArgs,
-  splitArgs,
-} from "./schema";
+import { allPlugins, enabledPlugins, usePluginsVersion } from "../plugins/registry";
+import { CommitField, FIELD, Row, Select } from "./controls";
+import { PluginSection, PluginsSection } from "./PluginSettings";
+import { ACCENT_PRESETS, FONT_SIZE_RANGE, isHexColor } from "./schema";
+import { registerSettingsSection, useSettingsSections } from "./sections";
 import { useSettings } from "./settings";
 
 /*
@@ -33,14 +25,13 @@ import { useSettings } from "./settings";
  * is no OK button. Text fields commit on Enter or when they lose focus.
  */
 
-const useSettingsDialog = create<{ open: boolean; section: Section }>()(() => ({
+const useSettingsDialog = create<{ open: boolean; section: string }>()(() => ({
   open: false,
   section: "general",
 }));
 
-type Section = "general" | "terminal" | "keyboard";
-
-export function openSettings(section: Section = "general"): void {
+/** Opens the dialog at a section: a registered section's id, or `plugin:<id>` for a plugin's own. */
+export function openSettings(section = "general"): void {
   useSettingsDialog.setState({ open: true, section });
 }
 
@@ -54,102 +45,11 @@ registerCommands([
   },
 ]);
 
-const FIELD =
-  "h-6 rounded-[5px] bg-field px-2 text-ui text-fg outline-none shadow-[inset_0_0_0_1px_var(--color-line)] focus:shadow-[inset_0_0_0_1px_var(--color-accent)]";
-
-function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="flex min-h-9 items-center gap-4 border-b border-line/60 py-1.5">
-      <div className="min-w-0 flex-1">
-        <div className="text-ui text-fg-soft">{label}</div>
-        {hint && <div className="text-meta text-fg-dim">{hint}</div>}
-      </div>
-      <div className="flex flex-none items-center gap-2">{children}</div>
-    </div>
-  );
-}
-
-function Select<T extends string>({
-  value,
-  options,
-  labels,
-  onChange,
-  label,
-}: {
-  value: T;
-  options: readonly T[];
-  labels?: Partial<Record<T, string>>;
-  onChange: (value: T) => void;
-  label: string;
-}) {
-  return (
-    <select aria-label={label} className={`${FIELD} pr-6`} value={value} onChange={(event) => onChange(event.target.value as T)}>
-      {options.map((option) => (
-        <option key={option} value={option}>
-          {labels?.[option] ?? option[0].toUpperCase() + option.slice(1)}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={() => onChange(!checked)}
-      className={`relative h-4 w-7 rounded-full transition-colors ${checked ? "bg-accent" : "bg-raised"}`}
-    >
-      <span
-        className={`absolute top-0.5 size-3 rounded-full bg-fg-bright transition-[left] ${checked ? "left-3.5" : "left-0.5"}`}
-      />
-    </button>
-  );
-}
-
-/** A text field that commits on Enter or blur; Escape reverts. */
-function CommitField({
-  value,
-  onCommit,
-  label,
-  placeholder,
-  className = "w-56",
-  type = "text",
-}: {
-  value: string;
-  onCommit: (value: string) => void;
-  label: string;
-  placeholder?: string;
-  className?: string;
-  type?: "text" | "number";
-}) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-  return (
-    <input
-      aria-label={label}
-      type={type}
-      spellCheck={false}
-      placeholder={placeholder}
-      className={`${FIELD} ${className}`}
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => draft !== value && onCommit(draft)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") onCommit(draft);
-        if (event.key === "Escape" && draft !== value) {
-          event.stopPropagation();
-          setDraft(value);
-        }
-      }}
-    />
-  );
-}
-
-function General({ settings, update }: { settings: Settings; update: (patch: Partial<Settings>) => void }) {
+function General() {
+  const settings = useSettings();
+  const update = settings.updateSettings;
+  usePluginsVersion();
+  const kinds = enabledPlugins();
   const custom = !ACCENT_PRESETS.some((preset) => preset.toLowerCase() === settings.accent.toLowerCase());
   return (
     <>
@@ -199,68 +99,13 @@ function General({ settings, update }: { settings: Settings; update: (patch: Par
           }}
         />
       </Row>
-    </>
-  );
-}
-
-function TerminalSettings({ settings, update }: { settings: Settings; update: (patch: Partial<Settings>) => void }) {
-  return (
-    <>
-      <Row label="New terminals open in" hint="Each pane can be switched from its menu">
+      <Row label="New tabs and splits open" hint="Any pane can be changed to another type from its menu">
         <Select
-          label="Default terminal mode"
-          value={settings.terminalMode}
-          options={TERMINAL_MODES}
-          labels={{ classic: "Classic", blocks: "Blocks" }}
-          onChange={(terminalMode) => update({ terminalMode })}
-        />
-      </Row>
-      <Row label="Cursor">
-        <Select label="Cursor style" value={settings.cursorStyle} options={CURSOR_STYLES} onChange={(cursorStyle) => update({ cursorStyle })} />
-        <span className="text-meta text-fg-dim">Blink</span>
-        <Toggle label="Cursor blinks" checked={settings.cursorBlink} onChange={(cursorBlink) => update({ cursorBlink })} />
-      </Row>
-      <Row label="Scrollback" hint={`Lines kept per terminal (up to ${SCROLLBACK_RANGE.max.toLocaleString()})`}>
-        <CommitField
-          label="Scrollback lines"
-          type="number"
-          className="w-28"
-          value={String(settings.scrollback)}
-          onCommit={(value) => {
-            const scrollback = Number.parseInt(value, 10);
-            if (Number.isFinite(scrollback)) update({ scrollback });
-          }}
-        />
-      </Row>
-      <Row label="Copy on select" hint="Selecting text copies it to the clipboard">
-        <Toggle label="Copy on select" checked={settings.copyOnSelect} onChange={(copyOnSelect) => update({ copyOnSelect })} />
-      </Row>
-      <Row label="Bell">
-        <Select
-          label="Bell"
-          value={settings.bell}
-          options={BELL_MODES}
-          labels={{ off: "Off", visual: "Flash the pane", sound: "Sound" }}
-          onChange={(bell) => update({ bell })}
-        />
-      </Row>
-      <Row label="Background" hint="Transparent shows the pane gradient; solid renders faster">
-        <Select
-          label="Terminal background"
-          value={settings.terminalBackground}
-          options={TERMINAL_BACKGROUNDS}
-          onChange={(terminalBackground) => update({ terminalBackground })}
-        />
-      </Row>
-      <Row label="Shell" hint="Empty for your login shell. A custom program runs without shell integration (no cwd tracking or blocks).">
-        <CommitField label="Shell program" placeholder="/bin/zsh" value={settings.shell} onCommit={(shell) => update({ shell })} />
-      </Row>
-      <Row label="Shell arguments" hint="Used with a custom shell; quote arguments containing spaces">
-        <CommitField
-          label="Shell arguments"
-          placeholder="-l"
-          value={joinArgs(settings.shellArgs)}
-          onCommit={(value) => update({ shellArgs: splitArgs(value) })}
+          label="Default pane type"
+          value={kinds.some((plugin) => plugin.id === settings.defaultPaneKind) ? settings.defaultPaneKind : "terminal"}
+          options={kinds.map((plugin) => plugin.id)}
+          labels={Object.fromEntries(kinds.map((plugin) => [plugin.id, plugin.name]))}
+          onChange={(defaultPaneKind) => update({ defaultPaneKind })}
         />
       </Row>
     </>
@@ -375,17 +220,22 @@ function Keyboard() {
   );
 }
 
-const SECTIONS: { id: Section; label: string }[] = [
-  { id: "general", label: "General" },
-  { id: "terminal", label: "Terminal" },
-  { id: "keyboard", label: "Keyboard" },
-];
+registerSettingsSection({ id: "general", label: "General", order: 0, component: General });
+registerSettingsSection({ id: "plugins", label: "Plugins", order: 800, component: PluginsSection });
+registerSettingsSection({ id: "keyboard", label: "Keyboard", order: 900, component: Keyboard });
+
+const NAV_ITEM =
+  "flex h-7 flex-none items-center rounded-[5px] px-2.5 text-left text-menu text-fg-muted outline-none hover:text-fg-soft aria-[current=page]:bg-white/[0.06] aria-[current=page]:text-fg-bright";
 
 /** Mounted once, in App. */
 export function SettingsDialog() {
   const { open, section } = useSettingsDialog();
-  const settings = useSettings();
-  const update = settings.updateSettings;
+  const resetSettings = useSettings((state) => state.resetSettings);
+  const sections = useSettingsSections();
+  usePluginsVersion();
+  const plugins = allPlugins();
+  const pluginId = section.startsWith("plugin:") ? section.slice("plugin:".length) : null;
+  const Current = sections.find((candidate) => candidate.id === section)?.component;
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => useSettingsDialog.setState({ open: next })}>
@@ -409,27 +259,41 @@ export function SettingsDialog() {
         >
           <nav className="flex w-40 flex-none flex-col gap-0.5 border-r border-line p-2" aria-label="Settings sections">
             <Dialog.Title className="px-2.5 pt-1 pb-2 text-menu font-medium text-fg-bright">Settings</Dialog.Title>
-            {SECTIONS.map((item) => (
+            {sections.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 aria-current={section === item.id ? "page" : undefined}
                 onClick={() => useSettingsDialog.setState({ section: item.id })}
-                className="flex h-7 items-center rounded-[5px] px-2.5 text-left text-menu text-fg-muted outline-none hover:text-fg-soft aria-[current=page]:bg-white/[0.06] aria-[current=page]:text-fg-bright"
+                className={NAV_ITEM}
               >
                 {item.label}
               </button>
             ))}
+            <div className="px-2.5 pt-3 pb-1 text-micro font-medium tracking-wide text-fg-faint uppercase">Panes</div>
+            <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto">
+              {plugins.map(({ plugin }) => (
+                <button
+                  key={plugin.id}
+                  type="button"
+                  aria-current={pluginId === plugin.id ? "page" : undefined}
+                  onClick={() => useSettingsDialog.setState({ section: `plugin:${plugin.id}` })}
+                  className={NAV_ITEM}
+                >
+                  <span className="truncate">{plugin.name}</span>
+                </button>
+              ))}
+            </div>
             <div className="flex-1" />
             <button
               type="button"
               onClick={async () => {
                 const ok = await confirm({
                   title: "Restore all defaults?",
-                  message: "Every setting and keyboard shortcut goes back to its default.",
+                  message: "Every setting and keyboard shortcut goes back to its default. Which plugins are enabled is kept.",
                   action: "Restore defaults",
                 });
-                if (ok) settings.resetSettings();
+                if (ok) resetSettings();
               }}
               className="flex h-7 items-center rounded-[5px] px-2.5 text-left text-meta text-fg-dim outline-none hover:text-fg-soft"
             >
@@ -437,9 +301,7 @@ export function SettingsDialog() {
             </button>
           </nav>
           <div className="min-w-0 flex-1 overflow-y-auto px-5 pt-8 pb-3">
-            {section === "general" && <General settings={settings} update={update} />}
-            {section === "terminal" && <TerminalSettings settings={settings} update={update} />}
-            {section === "keyboard" && <Keyboard />}
+            {pluginId ? <PluginSection pluginId={pluginId} /> : Current ? <Current /> : null}
           </div>
           <Dialog.Close
             aria-label="Close settings"

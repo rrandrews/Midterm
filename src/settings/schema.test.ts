@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, joinArgs, monoFontStack, splitArgs, validateSettings } from "./schema";
+import { DEFAULT_SETTINGS, SETTINGS_VERSION, joinArgs, migrateSettings, monoFontStack, splitArgs, validateSettings } from "./schema";
 
 describe("validateSettings", () => {
   it("gives defaults for nothing usable", () => {
@@ -10,28 +10,57 @@ describe("validateSettings", () => {
 
   it("keeps valid fields and repairs the rest", () => {
     const settings = validateSettings({
+      version: 2,
       fontSize: 99,
-      scrollback: -5,
-      cursorStyle: "bar",
       accent: "#5EEAD4",
-      bell: "loud",
-      shellArgs: ["-l", 3, "-i"],
       keybindings: { "pane.close": ["Cmd+W", 4], bad: "Cmd+X" },
-      terminalMode: "blocks",
+      defaultPaneKind: "",
+      plugins: {
+        explorer: { enabled: false, settings: { showHidden: true }, skills: { files: false, bad: "no" } },
+        broken: "nope",
+      },
     });
     expect(settings.fontSize).toBe(32);
-    expect(settings.scrollback).toBe(0);
-    expect(settings.cursorStyle).toBe("bar");
     expect(settings.accent).toBe("#5EEAD4");
-    expect(settings.bell).toBe(DEFAULT_SETTINGS.bell);
-    expect(settings.shellArgs).toEqual(["-l", "-i"]);
     expect(settings.keybindings).toEqual({ "pane.close": ["Cmd+W"] });
-    expect(settings.terminalMode).toBe("blocks");
+    expect(settings.defaultPaneKind).toBe("terminal");
+    expect(settings.plugins).toEqual({
+      explorer: { enabled: false, settings: { showHidden: true }, skills: { files: false } },
+    });
   });
 
   it("rejects colors that are not #rrggbb", () => {
     expect(validateSettings({ accent: "red" }).accent).toBe(DEFAULT_SETTINGS.accent);
     expect(validateSettings({ accent: "#fff" }).accent).toBe(DEFAULT_SETTINGS.accent);
+  });
+});
+
+describe("migrateSettings", () => {
+  it("moves version 1's terminal fields into the terminal plugin's entry", () => {
+    const v1 = {
+      fontSize: 14,
+      cursorStyle: "bar",
+      scrollback: 500,
+      shellArgs: ["-l"],
+      terminalMode: "blocks",
+      bell: "sound",
+      keybindings: { "tab.new": ["Cmd+N"] },
+    };
+    const migrated = migrateSettings(v1);
+    expect(migrated.version).toBe(SETTINGS_VERSION);
+    expect(migrated.cursorStyle).toBeUndefined();
+    expect(migrated.plugins).toEqual({
+      terminal: { settings: { cursorStyle: "bar", scrollback: 500, shellArgs: ["-l"], terminalMode: "blocks", bell: "sound" } },
+    });
+    const settings = validateSettings(v1);
+    expect(settings.fontSize).toBe(14);
+    expect(settings.keybindings).toEqual({ "tab.new": ["Cmd+N"] });
+    expect(settings.plugins.terminal.settings?.terminalMode).toBe("blocks");
+  });
+
+  it("leaves current settings alone", () => {
+    const current = { version: 2, plugins: { terminal: { settings: { bell: "off" } } } };
+    expect(migrateSettings(current)).toEqual(current);
   });
 });
 
