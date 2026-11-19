@@ -217,3 +217,39 @@ describe("workspaces", () => {
     expect(selectActiveTab(store()).activity).toBe(false);
   });
 });
+
+describe("tab titles", () => {
+  it("follows automatic titles until the user names the tab", () => {
+    const id = selectActiveTab(store()).id;
+    store().setAutoTitle(id, "vim");
+    expect(selectActiveTab(store()).title).toBe("vim");
+    store().renameTab(id, "notes");
+    store().setAutoTitle(id, "zsh");
+    expect(selectActiveTab(store()).title).toBe("notes");
+    expect(selectActiveTab(store()).titleLocked).toBe(true);
+  });
+
+  it("an empty name hands the title back to the panes", () => {
+    const id = selectActiveTab(store()).id;
+    store().renameTab(id, "notes");
+    store().renameTab(id, "  ");
+    expect(selectActiveTab(store()).titleLocked).toBeUndefined();
+    store().setAutoTitle(id, "zsh");
+    expect(selectActiveTab(store()).title).toBe("zsh");
+  });
+});
+
+describe("pane data", () => {
+  it("merges into a pane's data and remounts its layout", () => {
+    const { tab, a } = twoPaneTab();
+    const workspace = createWorkspace("w", [tab]);
+    useAppStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    store().updatePaneData(a.id, { cwd: "/tmp" });
+    const updated = findTabOfPane(store(), a.id);
+    expect(updated?.layoutRev).toBe(1);
+    expect(listPanes(updated!.layout).find((p) => p.id === a.id)?.data).toEqual({
+      kind: "terminal",
+      cwd: "/tmp",
+    });
+  });
+});

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { createId, findPane, listPanes, removePane, singlePaneLayout } from "./layout";
-import type { Layout, PaneNode, Tab, Workspace } from "./types";
+import { normalizeWorkspaceModel } from "react-resizable-panels";
+import type { Layout, PaneData, PaneNode, Tab, Workspace } from "./types";
 
 export type AppState = {
   workspaces: Workspace[];
@@ -15,7 +16,10 @@ export type AppActions = {
 
   /** Adds a tab to the active workspace and makes it active. */
   addTab: (options?: { title?: string; layout?: Layout }) => string;
+  /** Names a tab, which stops its title following its panes. An empty name undoes that. */
   renameTab: (tabId: string, title: string) => void;
+  /** Sets a tab's automatic title; ignored for a tab the user named. */
+  setAutoTitle: (tabId: string, title: string) => void;
   /** Closing a workspace's last tab replaces it with a fresh one. */
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
@@ -33,6 +37,11 @@ export type AppActions = {
   removePane: (paneId: string) => void;
   /** Moves a pane into a new tab of the same workspace and activates it. */
   movePaneToNewTab: (paneId: string) => void;
+  /**
+   * Merges `patch` into a pane's data in the stored layout (remounting its
+   * layout if mounted; prefer the layout handle for a mounted tab).
+   */
+  updatePaneData: (paneId: string, patch: Partial<PaneData>) => void;
 };
 
 export function createTab(options: { title?: string; layout?: Layout } = {}): Tab {
@@ -178,8 +187,21 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   renameTab: (tabId, title) => {
     const trimmed = title.trim();
+    set((state) =>
+      updateTab(state, tabId, (tab) =>
+        trimmed ? { ...tab, title: trimmed, titleLocked: true } : { ...tab, titleLocked: undefined },
+      ),
+    );
+  },
+
+  setAutoTitle: (tabId, title) => {
+    const trimmed = title.trim();
     if (!trimmed) return;
-    set((state) => updateTab(state, tabId, (tab) => ({ ...tab, title: trimmed })));
+    set((state) =>
+      updateTab(state, tabId, (tab) =>
+        tab.titleLocked || tab.title === trimmed ? tab : { ...tab, title: trimmed },
+      ),
+    );
   },
 
   closeTab: (tabId) => set((state) => withoutTab(state, tabId)),
@@ -252,6 +274,18 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
           return { ...workspace, tabs, activeTabId: tab.id };
         }),
       };
+    });
+  },
+
+  updatePaneData: (paneId, patch) => {
+    set((state) => {
+      const tab = findTabOfPane(state, paneId);
+      if (!tab) return state;
+      const layout = normalizeWorkspaceModel<PaneData>(tab.layout, {
+        mapTab: (pane) => (pane.id === paneId ? { ...pane, data: { ...pane.data, ...patch } } : pane),
+      });
+      if (!layout) return state;
+      return updateTab(state, tab.id, (current) => withLayout(current, layout, { remount: true }));
     });
   },
 }));

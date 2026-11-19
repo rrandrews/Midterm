@@ -11,6 +11,10 @@ use pty::PtyManager;
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
+        // Saves the window's size and position on exit and restores them
+        // when the window is created.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PtyManager::default())
         .menu(menu::build)
         .setup(|app| {

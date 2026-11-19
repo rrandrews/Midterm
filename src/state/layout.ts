@@ -12,8 +12,8 @@ export function createId(): string {
   return crypto.randomUUID();
 }
 
-export function createPane(kind: PaneKind = "terminal"): PaneNode {
-  return { id: createId(), title: PANE_LABELS[kind], data: { kind } };
+export function createPane(kind: PaneKind = "terminal", data: Omit<PaneData, "kind"> = {}): PaneNode {
+  return { id: createId(), title: PANE_LABELS[kind], data: { ...data, kind } };
 }
 
 /** A layout node holding a single pane. */

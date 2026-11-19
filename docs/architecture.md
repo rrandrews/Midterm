@@ -23,7 +23,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 
 | Path | What lives there |
 |---|---|
-| `src/state/` | Types, pure layout helpers, the zustand store. No React, no DOM. Unit-tested. |
+| `src/state/` | Types, pure layout helpers, the zustand store, saving/restoring it. Unit-tested. |
 | `src/actions.ts` | User-level commands (split, close, new tab…). Menus and shortcuts both call these. |
 | `src/shortcuts.ts` | Keyboard shortcut table and window-level handler. |
 | `src/layout/dock.ts` | Bridge to the mounted pane layout: imperative handles by tab id, pane focus. |
@@ -55,6 +55,26 @@ State that is **not** in the store, on purpose:
   pane id, and are reconciled against the store (see [terminal.md](terminal.md)).
 - **The mounted layout's transient state** (drag in progress, hover). The
   layout component reports finished changes back to the store.
+
+## Persistence
+
+The store's workspaces, tabs and layouts (including each pane's `data`, such
+as a terminal's `cwd`) are saved to `state.json` in the app data directory
+through tauri-plugin-store, and restored before the first render.
+
+- `src/state/persist.ts`: pure `snapshotState` / `restoreState`. The saved
+  shape has a `version` (`SCHEMA_VERSION`); bump it and migrate in
+  `restoreState` when the shape changes. Restoring validates everything:
+  layouts go through `normalizeWorkspaceModel`, panes of unknown kinds are
+  dropped, a tab with no valid panes becomes a fresh tab, duplicate ids are
+  replaced, and an unusable file means a fresh start.
+- `src/state/persistence.ts`: restores at startup and saves 300 ms after the
+  last change (skipped if nothing saved changed). The plugin writes the file
+  shortly after and again on exit.
+- Transient fields (`activity`, `layoutRev`) are not saved.
+- Dev runs with `?mockup` or `?selftest` neither restore nor save.
+
+Window size and position are saved separately by tauri-plugin-window-state.
 
 ## Rule for new pane kinds
 

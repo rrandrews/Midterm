@@ -15,8 +15,12 @@ import type { TabNode, WorkspaceModel, WorkspaceNodeInput } from "react-resizabl
 export const PANE_KINDS = ["terminal", "explorer", "editor", "viewer"] as const;
 export type PaneKind = (typeof PANE_KINDS)[number];
 
-/** Serializable per-pane data, stored in the layout model. */
-export type PaneData = { kind: PaneKind };
+/** Serializable per-pane data, stored in the layout model (and saved to disk). */
+export type PaneData = {
+  kind: PaneKind;
+  /** Terminal: last working directory the shell reported (OSC 7). New shells for this pane start there. */
+  cwd?: string;
+};
 
 export type PaneNode = TabNode<PaneData>;
 export type Layout = WorkspaceModel<PaneData>;
@@ -25,6 +29,11 @@ export type LayoutNodeInput = WorkspaceNodeInput<PaneData>;
 export type Tab = {
   id: string;
   title: string;
+  /**
+   * The user named this tab. Otherwise `title` follows the active pane
+   * (its foreground program, or its directory).
+   */
+  titleLocked?: boolean;
   layout: Layout;
   /**
    * Bumped when the layout is changed from outside the mounted layout

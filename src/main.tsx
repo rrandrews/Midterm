@@ -19,6 +19,12 @@ async function fontsReady(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  const params = new URLSearchParams(location.search);
+  // Dev seeds and self-tests use throwaway state that must not replace the saved one.
+  const persist = !import.meta.env.DEV || !(params.has("mockup") || params.has("selftest"));
+  const { restoreSavedState, startSaving } = await import("./state/persistence");
+  // Before any terminal exists, so restored ones start in their saved directories.
+  if (persist) await restoreSavedState();
   if (import.meta.env.DEV) {
     // Dev-only handles for poking at the app from the console or a test driver.
     const [actions, dock, store, sessions] = await Promise.all([
@@ -28,11 +34,11 @@ async function start(): Promise<void> {
       import("./terminal/sessions"),
     ]);
     Object.assign(window, { __midterm: { actions, dock, store, sessions } });
-    const params = new URLSearchParams(location.search);
     if (params.has("mockup")) (await import("./dev/seed")).seedMockupLayout();
     const selfTestPort = params.get("selftest");
     if (selfTestPort) void import("./dev/selftest").then((m) => m.runSelfTest(selfTestPort));
   }
+  if (persist) startSaving();
   await fontsReady();
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
