@@ -229,12 +229,12 @@ and the return to the prompt.
 provider and model are chosen**; nothing is sent before that. A suggestion is
 only ever placed in the input editor, never run.
 
-Backend (`src-tauri/src/ai/`):
+Backend (`src-tauri/src/ai/`; done, see [ai.md](ai.md)):
 
-- [ ] HTTP with `reqwest` (rustls). Two adapters: OpenAI-compatible chat completions (OpenAI, DeepSeek, OpenRouter, Gemini's OpenAI-compatible endpoint, a custom base URL) and Anthropic Messages (raw HTTP, as there is no official Rust SDK; do not route Anthropic through an OpenAI-compatible shim). Check request shapes against each provider's current docs when implementing: send no sampling parameters (current Claude models reject `temperature`), keep effort low, leave room in `max_tokens` for thinking, handle refusals and empty replies
-- [ ] Commands: `ai_suggest`, `ai_cancel`, `ai_models` (the provider's live model list, free text as a fallback; no model ids hard-coded), `ai_test`, `ai_key_set` / `ai_key_delete` / `ai_key_status`
-- [ ] Keys in the OS keychain (`keyring`): never in `settings.json`, write-only in the UI
-- [ ] CLI providers: Claude Code (`claude -p`), Codex (`codex exec`), Antigravity (`agy -p`). Found through the login shell's PATH (an app started from Finder has none; a login shell's output can carry OSC sequences from shell integration, so bracket the value with markers), with a path override; run headless with tools off or read-only, a neutral working directory, a timeout, and kill on cancel. `agy -p` printed nothing without a TTY in some versions (upstream issue 76), so run it under a PTY if that still holds. Verify flags against the installed versions
+- [x] HTTP with `reqwest` (rustls). Two adapters: OpenAI-compatible chat completions (OpenAI, DeepSeek, OpenRouter, Gemini's OpenAI-compatible endpoint, a custom base URL) and Anthropic Messages (raw HTTP, as there is no official Rust SDK; do not route Anthropic through an OpenAI-compatible shim). Check request shapes against each provider's current docs when implementing: send no sampling parameters (current Claude models reject `temperature`), keep effort low, leave room in `max_tokens` for thinking, handle refusals and empty replies
+- [x] Commands: `ai_suggest`, `ai_cancel`, `ai_models` (the provider's live model list, free text as a fallback; no model ids hard-coded), `ai_test`, `ai_key_set` / `ai_key_delete` / `ai_key_status`
+- [x] Keys in the OS keychain (`keyring`): never in `settings.json`, write-only in the UI
+- [x] CLI providers: Claude Code (`claude -p`), Codex (`codex exec`), Antigravity (`agy -p`). Found through the login shell's PATH (an app started from Finder has none; a login shell's output can carry OSC sequences from shell integration, so bracket the value with markers), with a path override; run headless with tools off or read-only, a neutral working directory, a timeout, and kill on cancel. `agy -p` printed nothing without a TTY in some versions (upstream issue 76), so run it under a PTY if that still holds. Verify flags against the installed versions
 
 Frontend (`src/ai/`):
 
@@ -254,7 +254,7 @@ New dependencies: `reqwest` 0.13, `keyring` 4.
 - [ ] Linux and Windows window chrome (no traffic lights; custom controls on the right)
 - [ ] Ctrl-based shortcut set that does not collide with terminal input
 - [ ] Windows shells (PowerShell, cmd, WSL) and ConPTY verification
-- [ ] Keychain backends, the `plugin://` scheme and AI CLI discovery verified on Linux and Windows
+- [ ] Keychain backends, the `plugin://` scheme and AI CLI discovery verified on Linux and Windows; on Windows, cancelling an AI CLI kills only the direct child (kill the process tree, e.g. with a job object)
 - [ ] App icon and name in bundles
 - [ ] Code signing and notarization (macOS)
 - [ ] Auto-update
