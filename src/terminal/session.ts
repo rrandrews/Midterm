@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
 import { openExternal } from "../ipc/shell";
 import { localHostname } from "../ipc/system";
+import { registerFileLinks } from "./fileLinkProvider";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { TERMINAL_OPTIONS } from "./theme";
@@ -115,6 +116,8 @@ export class TerminalSession {
         if (event.metaKey || event.ctrlKey) openExternal(uri);
       }),
     );
+
+    registerFileLinks(this.term, paneId, () => this.currentCwd);
 
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
