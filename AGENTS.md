@@ -3,7 +3,7 @@ Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with eac
 
 ## Documentation
 - Maintain up-to-date documentation for agent use in @docs/ directory, logically split into smallish files that pertain to a specific subsystem.
-- Roadmaps/plan files should be detailed and include checklist boxes. Remove them once completed.
+- Planned work (roadmap, backlog, bugs) is tracked in Linear (team `MID`), not in repo files. See @docs/planning.md for how it is organized and what is on hold. Short-lived implementation plans for work in progress may still go in docs/ with checklist boxes; remove them once completed.
 
 ## General coding guidelines
 - Prefer trusted, actively maintained open-source libraries over rolling your own when a library solves the problem well. Before adding a dependency, check recent releases and adoption. Don't add a dependency for something a few lines of code handle, and don't reimplement what an existing dependency already does.

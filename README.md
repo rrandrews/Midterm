@@ -15,4 +15,4 @@ bun run test         # frontend unit tests
 Backend tests: `cargo test` in `src-tauri/`.
 
 Documentation for contributors and agents is in [`docs/`](docs/architecture.md);
-planned work is in [`docs/roadmap.md`](docs/roadmap.md).
+planned work is tracked in Linear (see [`docs/planning.md`](docs/planning.md)).

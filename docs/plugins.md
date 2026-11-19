@@ -297,4 +297,4 @@ bundler should treat `react` as external and map it to those.
 - Plugin updates and an index.
 - Contributions other than panes.
 
-See [roadmap.md](roadmap.md).
+These are tracked in Linear (project "Plugin Platform v2"; see [planning.md](planning.md)).

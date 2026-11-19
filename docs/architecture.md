@@ -5,7 +5,7 @@ React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
 [explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
-[ai.md](ai.md) · [design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [roadmap.md](roadmap.md)
+[ai.md](ai.md) · [design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [planning.md](planning.md)
 
 ## Concepts
 

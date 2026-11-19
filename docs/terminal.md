@@ -255,7 +255,7 @@ same command.
   and, once, wraps the user's `fish_prompt` (`functions -c`) to print B
   after it; `fish_preexec` prints C, `fish_postexec` prints D.
 
-Known gaps are listed in the roadmap's "Later / unscheduled". The tests in
+Known gaps are tracked in Linear (project "Terminal & Shell Hardening"; see [planning.md](planning.md)). The tests in
 `src-tauri/src/pty/tests/shells.rs` run the real shells in a sandboxed
 `HOME` and check the exact sequence of marks (fish is skipped when it is
 not installed).
