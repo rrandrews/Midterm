@@ -123,21 +123,43 @@ impl ProviderId {
 }
 
 impl ProviderConfig {
-    /// The base URL to use: the override if set, else the default. `custom`
-    /// has no default. Only `http` and `https` URLs are accepted.
+    /// The base URL to use. Only `custom` takes one from the webview: the
+    /// other providers always use their default, so a stored key can only
+    /// go to its provider. The URL must be `https://`, or `http://` to a
+    /// loopback host (a local server), and have no query or fragment
+    /// (paths are appended to it).
     pub fn base_url(&self) -> Result<String, AiError> {
-        let chosen = self
-            .base_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .or(self.id.default_base_url())
-            .ok_or_else(|| AiError::other("set a base URL for this provider"))?;
+        let chosen = match self.id.default_base_url() {
+            Some(default) => default,
+            None => self
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| AiError::other("set a base URL for this provider"))?,
+        };
         let parsed = reqwest::Url::parse(chosen)
             .map_err(|e| AiError::other(format!("invalid base URL {chosen:?}: {e}")))?;
-        if !matches!(parsed.scheme(), "http" | "https") {
+        let loopback = parsed
+            .host_str()
+            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+            .is_some_and(|h| {
+                h.eq_ignore_ascii_case("localhost")
+                    || h.parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+        match parsed.scheme() {
+            "https" => {}
+            "http" if loopback => {}
+            _ => {
+                return Err(AiError::other(format!(
+                    "the base URL must use https:// (http:// only for localhost); got {chosen:?}"
+                )));
+            }
+        }
+        if parsed.query().is_some() || parsed.fragment().is_some() {
             return Err(AiError::other(format!(
-                "the base URL must start with http:// or https:// (got {chosen:?})"
+                "the base URL cannot have a query or fragment (got {chosen:?})"
             )));
         }
         Ok(chosen.trim_end_matches('/').to_string())
@@ -189,15 +211,29 @@ mod tests {
     fn base_url_defaults_overrides_and_validation() {
         let c = config(serde_json::json!({ "id": "openai" }));
         assert_eq!(c.base_url().unwrap(), "https://api.openai.com/v1");
+        // Only `custom` takes an override, so keys stay with their provider.
+        let c = config(serde_json::json!({ "id": "openai", "baseUrl": "https://evil.example/v1" }));
+        assert_eq!(c.base_url().unwrap(), "https://api.openai.com/v1");
         let c =
-            config(serde_json::json!({ "id": "openai", "baseUrl": " http://localhost:1234/v1/ " }));
+            config(serde_json::json!({ "id": "custom", "baseUrl": " http://localhost:1234/v1/ " }));
         assert_eq!(c.base_url().unwrap(), "http://localhost:1234/v1");
-        let c = config(serde_json::json!({ "id": "custom" }));
-        assert!(c.base_url().is_err());
-        let c = config(serde_json::json!({ "id": "custom", "baseUrl": "file:///etc" }));
-        assert!(c.base_url().is_err());
-        let c = config(serde_json::json!({ "id": "custom", "baseUrl": "" }));
-        assert!(c.base_url().is_err());
+        let c = config(serde_json::json!({ "id": "custom", "baseUrl": "http://127.0.0.1:8080" }));
+        assert_eq!(c.base_url().unwrap(), "http://127.0.0.1:8080");
+        let c = config(serde_json::json!({ "id": "custom", "baseUrl": "http://[::1]:9/v1" }));
+        assert_eq!(c.base_url().unwrap(), "http://[::1]:9/v1");
+        let c = config(serde_json::json!({ "id": "custom", "baseUrl": "https://gw.example/v1" }));
+        assert_eq!(c.base_url().unwrap(), "https://gw.example/v1");
+        for bad in [
+            serde_json::Value::Null,
+            "".into(),
+            "file:///etc".into(),
+            "http://gw.example/v1".into(),
+            "https://gw.example/v1?tenant=a".into(),
+            "https://gw.example/v1#x".into(),
+        ] {
+            let c = config(serde_json::json!({ "id": "custom", "baseUrl": bad }));
+            assert!(c.base_url().is_err(), "{:?} accepted", c.base_url);
+        }
     }
 
     #[test]

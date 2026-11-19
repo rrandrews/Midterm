@@ -51,6 +51,9 @@ pub fn output_budget(reply: Option<u32>) -> u32 {
 
 /// How many cancels of not-yet-started requests are remembered.
 const EARLY_CANCELS: usize = 64;
+/// How many started request ids are remembered, so a late cancel for one
+/// is ignored instead of being kept as an early cancel.
+const STARTED_IDS: usize = 256;
 
 #[derive(Default)]
 struct Requests {
@@ -59,6 +62,17 @@ struct Requests {
     running: HashMap<String, (u64, oneshot::Sender<()>)>,
     /// Ids cancelled before their request registered (the two commands race).
     early: VecDeque<String>,
+    /// Ids of recently started requests.
+    started: VecDeque<String>,
+}
+
+/// Removes `key` from an error message, in case a provider or gateway
+/// echoed it back: messages reach the webview.
+fn redact(mut error: AiError, key: Option<&str>) -> AiError {
+    if let Some(key) = key.map(str::trim).filter(|k| k.len() >= 4) {
+        error.message = error.message.replace(key, "[redacted]");
+    }
+    error
 }
 
 /// Tauri state for the AI commands.
@@ -94,13 +108,28 @@ impl AiManager {
             }
             requests.next += 1;
             let generation = requests.next;
+            if !requests.started.iter().any(|s| s == id) {
+                if requests.started.len() == STARTED_IDS {
+                    requests.started.pop_front();
+                }
+                requests.started.push_back(id.to_string());
+            }
             // A reused id replaces (and so cancels) the older request.
             requests.running.insert(id.to_string(), (generation, tx));
             generation
         };
+        let mut rx = rx;
         let result = tokio::select! {
+            biased;
+            _ = &mut rx => Err(AiError::cancelled()),
             result = work => result,
-            _ = rx => Err(AiError::cancelled()),
+        };
+        // A cancel (or a newer request with the same id) that landed while
+        // the result was being produced still wins: a cancelled request
+        // never delivers a result.
+        let result = match rx.try_recv() {
+            Err(oneshot::error::TryRecvError::Empty) => result,
+            _ => Err(AiError::cancelled()),
         };
         let mut requests = self.requests.lock().unwrap();
         if requests
@@ -117,7 +146,11 @@ impl AiManager {
         let mut requests = self.requests.lock().unwrap();
         if let Some((_, tx)) = requests.running.remove(id) {
             let _ = tx.send(());
-        } else if !requests.early.iter().any(|e| e == id) {
+        } else if !requests.started.iter().any(|s| s == id)
+            && !requests.early.iter().any(|e| e == id)
+        {
+            // Not started yet: remember it. (A late cancel for a request that
+            // already finished is ignored.)
             if requests.early.len() == EARLY_CANCELS {
                 requests.early.pop_front();
             }
@@ -164,12 +197,16 @@ impl AiManager {
             Backend::OpenAiCompatible(flavor) => {
                 let base = provider.base_url()?;
                 let key = self.key(provider.id).await?;
-                openai::complete(self.http()?, flavor, &base, key.as_deref(), &req).await
+                openai::complete(self.http()?, flavor, &base, key.as_deref(), &req)
+                    .await
+                    .map_err(|e| redact(e, key.as_deref()))
             }
             Backend::Anthropic => {
                 let base = provider.base_url()?;
                 let key = self.key(provider.id).await?.unwrap_or_default();
-                anthropic::complete(self.http()?, &base, &key, &req).await
+                anthropic::complete(self.http()?, &base, &key, &req)
+                    .await
+                    .map_err(|e| redact(e, Some(&key)))
             }
             Backend::Cli(kind) => {
                 self.discovery
@@ -184,12 +221,16 @@ impl AiManager {
             Backend::OpenAiCompatible(_) => {
                 let base = provider.base_url()?;
                 let key = self.key(provider.id).await?;
-                openai::models(self.http()?, &base, key.as_deref()).await
+                openai::models(self.http()?, &base, key.as_deref())
+                    .await
+                    .map_err(|e| redact(e, key.as_deref()))
             }
             Backend::Anthropic => {
                 let base = provider.base_url()?;
                 let key = self.key(provider.id).await?.unwrap_or_default();
-                anthropic::models(self.http()?, &base, &key).await
+                anthropic::models(self.http()?, &base, &key)
+                    .await
+                    .map_err(|e| redact(e, Some(&key)))
             }
             Backend::Cli(kind) => self.discovery.models(kind, provider.cli_path()).await,
         }
@@ -261,6 +302,44 @@ mod tests {
         assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(manager.requests.lock().unwrap().running.is_empty());
+    }
+
+    #[test]
+    fn redacts_keys() {
+        let e = AiError::other("HTTP 401: bad key sk-secret-123 given");
+        assert_eq!(
+            redact(e, Some("sk-secret-123")).message,
+            "HTTP 401: bad key [redacted] given"
+        );
+        let e = AiError::other("ab");
+        assert_eq!(redact(e, Some("")).message, "ab");
+    }
+
+    #[tokio::test]
+    async fn late_cancels_do_not_poison_reused_ids() {
+        let manager = AiManager::default();
+        assert_eq!(
+            manager.cancellable("done", async { Ok(1) }).await.unwrap(),
+            1
+        );
+        manager.cancel("done");
+        manager.cancel("done");
+        assert_eq!(
+            manager.cancellable("done", async { Ok(2) }).await.unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_wins_over_a_ready_result() {
+        let manager = AiManager::default();
+        let r = manager
+            .cancellable("both", async {
+                manager.cancel("both");
+                Ok(1)
+            })
+            .await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Cancelled);
     }
 
     #[tokio::test]

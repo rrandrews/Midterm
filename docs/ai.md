@@ -40,10 +40,17 @@ runs the CLI. The webview's CSP stays "nothing remote"
 | `codex` | CLI `codex` | | CLI's own login |
 | `antigravity` | CLI `agy` | | CLI's own login |
 
-`baseUrl` overrides the default for any HTTP provider (proxies, gateways);
-it must be `http://` or `https://`, and a trailing `/` is dropped. Paths are
-appended to it (`/chat/completions`, `/models`, `/messages`). No model ids
-are hard-coded anywhere: the UI lists them with `ai_models`.
+`baseUrl` is used **only by `custom`**; the other providers always use their
+default, so a stored key can only ever go to its own provider whatever the
+webview sends (a proxy or gateway is set up as `custom`, with its own key).
+It must be `https://`, or `http://` to a loopback host (`localhost`,
+`127.0.0.1`, `::1`) for a local server, with no query or fragment; a
+trailing `/` is dropped. Paths are appended to it (`/chat/completions`,
+`/models`, `/messages`). The HTTP client follows **no redirects** (a
+redirect to another origin would carry `x-api-key` along; reqwest strips
+only `Authorization`), and error messages have the request's key replaced
+with `[redacted]` in case a provider echoes it. No model ids are
+hard-coded anywhere: the UI lists them with `ai_models`.
 
 ### Request shapes
 
@@ -132,7 +139,10 @@ Code refuses to start "inside another session" when those are inherited).
 Every run: a fresh empty temporary directory as the working directory
 (deleted afterwards), stdout/stderr captured, a 120 s timeout, its own
 process group, and the whole group is SIGKILLed on timeout or cancel
-(`process.rs`). Output has ANSI escapes stripped and is trimmed; a non-zero
+(`process.rs`). The group is never signalled once the CLI has been reaped
+(its id could be reused), and output still held open by a leftover
+descendant is read for at most 2 s after the CLI exits. On Windows only the
+direct child is killed (an M11 item). Output has ANSI escapes stripped and is trimmed; a non-zero
 exit is an error with the tail of what the CLI printed (`auth` if it looks
 like a login problem). Flags, verified against the versions installed in
 November 2026:
@@ -193,8 +203,11 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
 - `ai_cancel`: aborts the HTTP request or kills the CLI; the pending
   `ai_suggest` rejects with `cancelled`. A cancel that arrives before its
   `ai_suggest` registered is remembered (the last 64), so the request is
-  cancelled as soon as it starts. Unknown or finished ids are ignored.
-  Reusing a running request's id cancels the older request.
+  cancelled as soon as it starts. Cancels for ids that already started
+  (the last 256) are ignored, so a late or repeated cancel never cancels a
+  later request that reuses the id. A request cancelled while its result
+  was arriving still rejects with `cancelled`. Reusing a running request's
+  id cancels the older request.
 - `ai_models`: the provider's live list; `[]` for Claude Code and Codex.
   Needs a key (except `custom`).
 - `ai_test`: a tiny request ("Reply with OK", 16 reply tokens). Never
@@ -219,7 +232,7 @@ Every command rejects with `{ kind, message }`:
 | `timeout` | 60 s for HTTP, 120 s for a CLI run. |
 | `cancelled` | `ai_cancel` was called. |
 | `notFound` | A CLI's executable was not found (or `cliPath` is not executable). |
-| `other` | Everything else: no model chosen, bad base URL, keychain failure, unexpected response, CLI failure. |
+| `other` | Everything else: no model chosen, bad base URL, keychain failure, unexpected response, CLI failure. A redirect (3xx) comes back as `http`. |
 
 ### Tests
 

@@ -16,6 +16,9 @@ pub fn build_client() -> Result<reqwest::Client, AiError> {
         .user_agent(concat!("Midterm/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
+        // The APIs do not redirect, and a redirect to another origin would
+        // carry `x-api-key` along (reqwest strips only `Authorization`).
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| AiError::other(format!("could not set up HTTP: {e}")))
 }

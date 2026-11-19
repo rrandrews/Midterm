@@ -254,7 +254,7 @@ New dependencies: `reqwest` 0.13, `keyring` 4.
 - [ ] Linux and Windows window chrome (no traffic lights; custom controls on the right)
 - [ ] Ctrl-based shortcut set that does not collide with terminal input
 - [ ] Windows shells (PowerShell, cmd, WSL) and ConPTY verification
-- [ ] Keychain backends, the `plugin://` scheme and AI CLI discovery verified on Linux and Windows
+- [ ] Keychain backends, the `plugin://` scheme and AI CLI discovery verified on Linux and Windows; on Windows, cancelling an AI CLI kills only the direct child (kill the process tree, e.g. with a job object)
 - [ ] App icon and name in bundles
 - [ ] Code signing and notarization (macOS)
 - [ ] Auto-update

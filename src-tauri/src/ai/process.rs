@@ -1,14 +1,19 @@
 //! Running a short-lived child process with a timeout, killed (with its
 //! whole process group on Unix) if the caller stops waiting: on timeout, or
-//! when the future is dropped because the request was cancelled.
+//! when the future is dropped because the request was cancelled. On
+//! Windows only the direct child is killed (descendants may survive; see
+//! the M11 item in the roadmap).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::AsyncWriteExt;
+use std::sync::{Arc, Mutex};
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::task::JoinHandle;
 
 use super::error::{AiError, ErrorKind};
 
@@ -32,6 +37,53 @@ pub struct Output {
     pub stderr: String,
 }
 
+/// How long to keep reading output after the process has exited.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Reads a pipe to its end in a task, into a buffer readable at any time.
+struct Collector {
+    buf: Arc<Mutex<Vec<u8>>>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl Collector {
+    fn start(pipe: Option<impl AsyncRead + Unpin + Send + 'static>) -> Self {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let task = pipe.map(|mut pipe| {
+            let buf = buf.clone();
+            tokio::spawn(async move {
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = pipe.read(&mut chunk).await {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.lock().unwrap().extend_from_slice(&chunk[..n]);
+                }
+            })
+        });
+        Self { buf, task }
+    }
+
+    async fn wait(&mut self) {
+        if let Some(task) = self.task.as_mut() {
+            let _ = task.await;
+            self.task = None;
+        }
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buf.lock().unwrap()).into_owned()
+    }
+}
+
+impl Drop for Collector {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+
 /// Kills the child's process group when dropped, unless disarmed.
 struct GroupKill(Option<u32>);
 
@@ -39,8 +91,8 @@ impl Drop for GroupKill {
     fn drop(&mut self) {
         #[cfg(unix)]
         if let Some(pid) = self.0 {
-            // SAFETY: plain syscall. The group leader has not been reaped
-            // (we never finished waiting), so the group id is still ours.
+            // SAFETY: plain syscall. The guard is disarmed as soon as the
+            // leader is reaped, so the group id is still ours here.
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
@@ -93,8 +145,14 @@ pub async fn run(spec: Run) -> Result<Output, AiError> {
             let _ = stdin.shutdown().await;
         });
     }
+    let mut stdout = Collector::start(child.stdout.take());
+    let mut stderr = Collector::start(child.stderr.take());
 
-    let output = tokio::time::timeout(spec.timeout, child.wait_with_output())
+    // Wait for the process itself, not its pipes: the guard must be
+    // disarmed the moment the leader is reaped (after that its group id may
+    // be reused), and a descendant that keeps a pipe open must not hold
+    // the reply hostage.
+    let status = tokio::time::timeout(spec.timeout, child.wait())
         .await
         .map_err(|_| {
             AiError::new(
@@ -107,14 +165,20 @@ pub async fn run(spec: Run) -> Result<Output, AiError> {
             )
         })?
         .map_err(|e| AiError::other(format!("waiting for {}: {e}", spec.program.display())))?;
-    // The leader has been reaped: its group id may be reused, so never
-    // signal it now.
     guard.0 = None;
+
+    // If something the process left behind still holds a pipe, keep what
+    // has arrived so far.
+    let drained = async {
+        stdout.wait().await;
+        stderr.wait().await;
+    };
+    let _ = tokio::time::timeout(DRAIN_TIMEOUT, drained).await;
     Ok(Output {
-        success: output.status.success(),
-        code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        success: status.success(),
+        code: status.code(),
+        stdout: stdout.text(),
+        stderr: stderr.text(),
     })
 }
 
@@ -146,6 +210,17 @@ mod tests {
         assert_eq!(out.code, Some(3));
         assert_eq!(out.stdout, "from stdin yes\n");
         assert_eq!(out.stderr, "err\n");
+    }
+
+    #[tokio::test]
+    async fn a_descendant_holding_the_pipe_does_not_block() {
+        let started = std::time::Instant::now();
+        let out = run(sh("echo done; sleep 30 &", Duration::from_secs(10)))
+            .await
+            .unwrap();
+        assert!(out.success);
+        assert_eq!(out.stdout, "done\n");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[tokio::test]
