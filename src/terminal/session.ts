@@ -144,14 +144,16 @@ export class TerminalSession {
     });
     this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
     this.term.onBell(() => this.ring());
-    this.term.onSelectionChange(() => {
+    // Copy on select: only selections made with the mouse (the search addon
+    // selects its matches too, and those must not reach the clipboard).
+    this.host.addEventListener("mouseup", () => {
       if (!getSettings().copyOnSelect) return;
-      // Once the selection settles (it changes on every mouse move while dragging).
+      // After xterm has finished the selection (a double click selects a word on release).
       clearTimeout(this.copyTimer);
       this.copyTimer = setTimeout(() => {
         const text = this.term.getSelection();
         if (text) void copyText(text);
-      }, 150);
+      }, 0);
     });
     this.term.onResize(({ cols, rows }) => {
       if (this.phase === "running") this.pty?.resize(cols, rows);
@@ -213,16 +215,22 @@ export class TerminalSession {
     return () => subscription.dispose();
   }
 
-  /** The bell: a flash of the pane or a short tone, per the settings. */
+  /**
+   * The bell: a flash of the pane or a short tone, per the settings. A burst
+   * of bells gives one flash: nothing is touched while one is showing.
+   */
   private ring(): void {
     const { bell } = getSettings();
     if (bell === "visual") {
-      clearTimeout(this.bellTimer);
-      this.host.classList.remove("is-ringing");
-      // Restart the animation even when bells come quickly.
-      void this.host.offsetWidth;
-      this.host.classList.add("is-ringing");
-      this.bellTimer = setTimeout(() => this.host.classList.remove("is-ringing"), 300);
+      if (this.bellTimer !== undefined || !this.attached) return;
+      // The pane, not the host, which is invisible in blocks mode.
+      const pane = this.host.closest<HTMLElement>("[data-pane-id]");
+      if (!pane) return;
+      pane.classList.add("is-ringing");
+      this.bellTimer = setTimeout(() => {
+        this.bellTimer = undefined;
+        pane.classList.remove("is-ringing");
+      }, 300);
     } else if (bell === "sound") {
       playBell();
     }

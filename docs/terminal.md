@@ -76,11 +76,15 @@ before the PTY handle is known are acknowledged as soon as it is.
   terminal's `find` pane action) that searches the scrollback with
   `@xterm/addon-search`: matches are highlighted in the accent, ↩ / ⌘G
   next, ⇧↩ / ⇧⌘G previous, Escape closes. In blocks mode the pane shows
-  the classic terminal while the bar is open.
+  the classic terminal while the bar is open; the blocks view stays
+  mounted but hidden, so the input editor keeps its draft, and the find
+  field comes first in the pane's focus routing.
 - Bell (BEL): per the `bell` setting, a short accent flash of the pane
-  (`.is-ringing`), a soft generated tone (Web Audio, at most one per
+  (`.pane.is-ringing`; bells during a flash are ignored, so a burst costs
+  one class change), a soft generated tone (Web Audio, at most one per
   100 ms), or nothing.
-- `copyOnSelect`: a selection is copied 150 ms after it stops changing.
+- `copyOnSelect`: the selection is copied when a mouse button is released
+  over the terminal. Selections made by search are not copied.
 
 ### Shell from the settings
 

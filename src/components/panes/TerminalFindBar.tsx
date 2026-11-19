@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronUp, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { TerminalSession } from "../../terminal/session";
 
 /*
@@ -13,11 +13,12 @@ type FindBarProps = {
   focusToken: number;
   /** Set by the bar: what ⌘G / ⇧⌘G should do while it is open. */
   stepRef: React.RefObject<((backwards: boolean) => void) | null>;
+  /** The query field, so the pane's focus routing can prefer it. */
+  inputRef: React.RefObject<HTMLInputElement | null>;
   onClose: () => void;
 };
 
-export function TerminalFindBar({ session, focusToken, stepRef, onClose }: FindBarProps) {
-  const inputRef = useRef<HTMLInputElement>(null);
+export function TerminalFindBar({ session, focusToken, stepRef, inputRef, onClose }: FindBarProps) {
   const [query, setQuery] = useState(session.selection.includes("\n") ? "" : session.selection);
   const [results, setResults] = useState<{ resultIndex: number; resultCount: number } | null>(null);
 
@@ -26,7 +27,7 @@ export function TerminalFindBar({ session, focusToken, stepRef, onClose }: FindB
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
-  }, [focusToken]);
+  }, [focusToken, inputRef]);
   useEffect(() => {
     if (query) session.find(query, { incremental: true });
     else {

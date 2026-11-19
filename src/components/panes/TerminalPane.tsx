@@ -39,17 +39,21 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
   const [finding, setFinding] = useState<number | null>(null);
   const findStep = useRef<((backwards: boolean) => void) | null>(null);
 
-  const showBlocks =
-    finding === null &&
-    (mode ?? defaultMode) === "blocks" &&
-    snapshot.integration !== "absent" &&
-    !snapshot.altScreen;
+  const findInputRef = useRef<HTMLInputElement>(null);
+
+  // Blocks mode applies; while Find is open the view stays mounted (keeping
+  // the input editor's draft) but hidden, and the classic terminal shows.
+  const blocksMode =
+    (mode ?? defaultMode) === "blocks" && snapshot.integration !== "absent" && !snapshot.altScreen;
+  const showBlocks = blocksMode && finding === null;
   const editorActive = showBlocks && snapshot.integration === "present" && snapshot.phase === "prompt";
 
-  // The keyboard goes to the input editor at a prompt in blocks mode, else to the terminal.
+  // The keyboard goes to the find field while it is open, else to the input
+  // editor at a prompt in blocks mode, else to the terminal.
   const focusTarget = useRef(() => {});
   focusTarget.current = () => {
-    if (editorActive && inputRef.current) inputRef.current.focus();
+    if (findInputRef.current) findInputRef.current.focus();
+    else if (editorActive && inputRef.current) inputRef.current.focus();
     else sessionRef.current?.focus();
   };
   /** Whether the keyboard is in this pane (kept while the focused element is hidden). */
@@ -100,6 +104,7 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
           session={session}
           focusToken={finding}
           stepRef={findStep}
+          inputRef={findInputRef}
           onClose={() => {
             findStep.current = null;
             setFinding(null);
@@ -107,8 +112,9 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
           }}
         />
       )}
-      {session && showBlocks && (
+      {session && blocksMode && (
         <BlocksView
+          hidden={!showBlocks}
           session={session}
           snapshot={snapshot}
           inputRef={inputRef}

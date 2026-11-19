@@ -36,11 +36,14 @@ export function BlocksView({
   snapshot,
   inputRef,
   onFocusRequest,
+  hidden = false,
 }: {
   session: TerminalSession;
   snapshot: BlocksSnapshot;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   onFocusRequest: () => void;
+  /** Kept mounted but not shown (the input editor keeps its draft), e.g. while Find is open. */
+  hidden?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -75,6 +78,7 @@ export function BlocksView({
   return (
     <div
       className="blocks-view"
+      style={hidden ? { display: "none" } : undefined}
       onMouseUp={(event) => {
         // A click (not a selection, not a button) gives the keyboard back.
         if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;

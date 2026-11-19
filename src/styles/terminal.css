@@ -31,7 +31,7 @@
 }
 
 /* Visual bell. */
-.terminal-host.is-ringing {
+.pane.is-ringing {
   animation: terminal-bell 300ms ease-out;
 }
 @keyframes terminal-bell {
