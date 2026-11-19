@@ -43,6 +43,9 @@ _midterm_report_cwd() {
 _midterm_precmd() {
   builtin local ret=$?  # exit status of the last command, for OSC 133;D
   _midterm_report_cwd
+  # Pass the status on to later hooks, except under errexit, where a
+  # failing hook would end the shell.
+  [[ -o errexit ]] && builtin return 0
   builtin return ret
 }
 

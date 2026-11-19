@@ -18,7 +18,13 @@ if set -q MIDTERM_FISH_DATA_DIR
             set -a __midterm_keep $__midterm_dir
         end
     end
-    if set -q MIDTERM_FISH_XDG_DATA_DIRS_UNSET; or test (count $__midterm_keep) -eq 0
+    # It was unset before: Midterm added the default list after its entry.
+    # Unset it again, unless something during startup added entries.
+    if test (count $__midterm_keep) -eq 0
+        or begin
+            set -q MIDTERM_FISH_XDG_DATA_DIRS_UNSET
+            and test "$__midterm_keep" = "/usr/local/share /usr/share"
+        end
         set -e XDG_DATA_DIRS
     else
         set -gx XDG_DATA_DIRS (string join : -- $__midterm_keep)

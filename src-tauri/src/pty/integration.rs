@@ -116,9 +116,11 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     let tmp = PathBuf::from(tmp);
-    let result = fs::File::create(&tmp)
-        .and_then(|mut file| file.write_all(contents))
-        .and_then(|()| fs::rename(&tmp, path));
+    // `create_new`: another process that happens to pick the same name (pids
+    // repeat across PID namespaces sharing a cache) fails here instead of
+    // truncating a file that is being written. Its file is not ours to remove.
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let result = file.write_all(contents).and_then(|()| fs::rename(&tmp, path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
