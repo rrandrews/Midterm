@@ -67,8 +67,10 @@ _midterm_prompt_command() {
 
 # Runs first, so that it sees the command's exit status, and passes that
 # status on to whatever the user's PROMPT_COMMAND does after it. bash 5.1+
-# also accepts PROMPT_COMMAND as an array.
-if [[ $(builtin declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+# runs every element of a PROMPT_COMMAND array; older versions only run the
+# first, which the string assignment below extends (other elements are kept).
+if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )) &&
+  [[ $(builtin declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
   PROMPT_COMMAND=(_midterm_prompt_command "${PROMPT_COMMAND[@]}")
 else
   PROMPT_COMMAND="_midterm_prompt_command${PROMPT_COMMAND:+

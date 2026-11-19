@@ -260,6 +260,50 @@ fn bash_reports_cwd_and_reads_the_login_startup_files() {
 }
 
 #[test]
+fn bash_keeps_an_array_prompt_command_working() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-array");
+    // bash < 5.1 runs only the first element, bash 5.1+ all of them.
+    sandbox.write(
+        ".bash_profile",
+        "user_hook() { HOOKED=yes; }\nPROMPT_COMMAND=(user_hook)\n",
+    );
+    let mut h = sandbox.spawn(&bash, &sandbox.home, |_| {});
+    h.session
+        .write(b"true\necho \"hooked=$HOOKED\"; exit\n".to_vec())
+        .unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let text = h.text();
+    assert!(text.contains("hooked=yes"), "output: {text:?}");
+    assert!(!osc7_urls(&text).is_empty(), "no OSC 7: {text:?}");
+}
+
+#[test]
+fn zsh_survives_options_set_in_the_global_zshenv() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    // A HOME with a space, and the user's .zshenv turning on options that
+    // change how unquoted expansions and arrays behave.
+    let sandbox = Sandbox::new("zsh options");
+    sandbox.write(
+        ".zshenv",
+        "setopt sh_word_split ksh_arrays no_unset err_return\n",
+    );
+    sandbox.write(".zshrc", "");
+    let start = sandbox.root.join("a dir");
+    fs::create_dir_all(&start).unwrap();
+    let mut h = sandbox.spawn(&zsh, &start, |_| {});
+    h.wait_for_cwd_report(&start);
+    h.session.write(b"exit 0\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+}
+
+#[test]
 fn bash_falls_back_to_dot_profile() {
     let Some(bash) = find_shell("bash") else {
         eprintln!("bash not installed; skipped");

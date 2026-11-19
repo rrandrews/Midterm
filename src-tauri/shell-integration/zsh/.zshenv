@@ -9,10 +9,10 @@
 # Nothing in here may assume any option is set: it runs before the user's
 # configuration, under whatever options zsh starts with.
 
-builtin typeset _midterm_si_dir=$ZDOTDIR
+_midterm_si_dir=$ZDOTDIR
 
 if [[ -n ${MIDTERM_ZSH_ZDOTDIR+set} ]]; then
-  builtin export ZDOTDIR=$MIDTERM_ZSH_ZDOTDIR
+  ZDOTDIR=$MIDTERM_ZSH_ZDOTDIR  # still exported: it came from the environment
   builtin unset MIDTERM_ZSH_ZDOTDIR
 else
   builtin unset ZDOTDIR
@@ -20,11 +20,11 @@ fi
 
 {
   # zsh falls back to $HOME when ZDOTDIR is unset (but not when it is empty).
-  builtin typeset _midterm_si_file=${ZDOTDIR-$HOME}/.zshenv
-  [[ ! -r $_midterm_si_file ]] || builtin source -- $_midterm_si_file
+  _midterm_si_file=${ZDOTDIR-$HOME}/.zshenv
+  [[ ! -r $_midterm_si_file ]] || builtin source -- "$_midterm_si_file"
 } always {
   if [[ -o interactive && -r $_midterm_si_dir/midterm-integration.zsh ]]; then
-    builtin source -- $_midterm_si_dir/midterm-integration.zsh
+    builtin source -- "$_midterm_si_dir/midterm-integration.zsh"
   fi
   builtin unset _midterm_si_dir _midterm_si_file
 }
