@@ -60,6 +60,21 @@ describe("snapshot and restore", () => {
     ]);
   });
 
+  it("keeps a valid terminal mode and drops an unknown one", () => {
+    const blocks = createPane("terminal", { terminalMode: "blocks" });
+    const bogus = createPane("terminal", { terminalMode: "fancy" as unknown as "blocks" });
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: [paneNode(blocks), paneNode(bogus)],
+    });
+    const restored = restoreLayout(roundTrip(layout));
+    expect(restored && listPanes(restored).map((pane) => pane.data)).toEqual([
+      { kind: "terminal", terminalMode: "blocks" },
+      { kind: "terminal" },
+    ]);
+  });
+
   it("does not save transient fields", () => {
     const state = sampleState();
     state.workspaces[0].tabs[0] = { ...state.workspaces[0].tabs[0], activity: true, layoutRev: 4 };

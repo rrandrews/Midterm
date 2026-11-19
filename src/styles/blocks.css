@@ -1,0 +1,171 @@
+/* Blocks mode (src/components/panes/BlocksView.tsx), as in the mockup. */
+
+.terminal-wrap {
+  position: relative;
+  height: 100%;
+}
+
+/* The terminal keeps running (and its size) underneath, invisible. */
+.terminal-pane.is-covered .terminal-host {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.blocks-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.blocks-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Bottom-aligned while the blocks do not fill the pane, still scrollable once they do. */
+.blocks-list {
+  margin-top: auto;
+}
+
+.block {
+  padding: 10px 16px 10px 18px;
+  font-family: var(--font-mono);
+  font-size: var(--text-ui);
+  line-height: 19px;
+  color: var(--color-fg-soft);
+  /* Off-screen blocks skip layout and paint. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
+}
+.block + .block {
+  border-top: 1px solid var(--color-line-block);
+}
+.block:last-child {
+  padding-bottom: 12px;
+}
+.block.is-running {
+  content-visibility: visible;
+}
+
+/* Header row and the input's status row. */
+.blocks-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-meta);
+  line-height: 16px;
+  color: var(--color-fg-dim);
+  white-space: nowrap;
+}
+.block-header {
+  margin-bottom: 4px;
+}
+
+.block-actions {
+  display: flex;
+  gap: 2px;
+  visibility: hidden;
+}
+.block:hover .block-actions,
+.block-actions:focus-within {
+  visibility: visible;
+}
+.block-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 16px;
+  border-radius: 3px;
+  color: var(--color-fg-dim);
+}
+.block-action:hover:not(:disabled) {
+  background: var(--color-raised);
+  color: var(--color-fg-bright);
+}
+.block-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.block-command {
+  color: var(--color-fg-bright);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.block-output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.block-cursor {
+  background: var(--color-accent);
+  color: var(--color-app) !important;
+}
+
+.block-more,
+.block-note {
+  font-family: var(--font-sans);
+  font-size: var(--text-meta);
+  color: var(--color-fg-dim);
+}
+.block-more:hover {
+  color: var(--color-fg-bright);
+}
+
+.blocks-input {
+  flex: none;
+  border-top: 1px solid var(--color-line-input);
+  padding: 10px 16px 12px 18px;
+}
+
+/* The ghost text sits behind a transparent textarea with identical metrics. */
+.blocks-input-field {
+  position: relative;
+}
+.blocks-input-ghost,
+.blocks-input-text {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-input);
+  line-height: 19px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.blocks-input-ghost {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.blocks-input-text {
+  position: relative;
+  resize: none;
+  overflow-y: auto;
+  background: transparent;
+  color: var(--color-fg-bright);
+  caret-color: var(--color-accent);
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.blocks-input-text:focus-visible {
+  outline: none;
+}
