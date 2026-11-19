@@ -42,6 +42,7 @@ fn local_hostname() -> Option<String> {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         // Saves the window's size and position on exit and restores them
