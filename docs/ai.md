@@ -48,8 +48,12 @@ It must be `https://`, or `http://` to a loopback host (`localhost`,
 trailing `/` is dropped. Paths are appended to it (`/chat/completions`,
 `/models`, `/messages`). The HTTP client follows **no redirects** (a
 redirect to another origin would carry `x-api-key` along; reqwest strips
-only `Authorization`), and error messages have the request's key replaced
-with `[redacted]` in case a provider echoes it. No model ids are
+only `Authorization`), and error messages have the request's key (of any
+length) replaced with `[redacted]` in case a provider echoes it. The
+provider's error detail is redacted **before** it is shortened to 300
+characters, so a key straddling the cut cannot leak half of itself. A
+`custom` key is bound to its base URL (see [Keys](#keys)), so editing the
+URL never sends the old key to the new host. No model ids are
 hard-coded anywhere: the UI lists them with `ai_models`.
 
 ### Request shapes
@@ -170,7 +174,24 @@ backend returns the text as printed.
 
 `keys.rs` stores one entry per HTTP provider in the OS credential store via
 `keyring` 4 (Keychain on macOS, Credential Manager on Windows, Secret
-Service on Linux): service `com.ron.midterm.ai`, account = the provider id.
+Service on Linux): service `com.ron.midterm.ai`, account =
+`ProviderConfig::key_account()`:
+
+- the provider id for every provider but `custom`;
+- `custom:<base URL>` for `custom`, with the URL normalized exactly as
+  requests use it (`ProviderConfig::base_url()`: trimmed, validated,
+  trailing `/` dropped), e.g. `custom:http://localhost:1234/v1`.
+
+So a custom key only ever goes to the endpoint it was saved for: changing
+the base URL finds no key, and since `custom`'s key is optional the request
+goes out without one (the UI shows "no key" for the new URL). Keys saved for
+older URLs stay in the store until deleted with that URL.
+
+If the lookup itself fails (no Secret Service on Linux, a denied Keychain
+prompt), a provider whose key is optional (`custom`) logs it and continues
+without a key, so a keyless local server works without a credential store.
+Other providers reject with the store's error (`other`).
+
 Keys are never written to settings files. The webview can set, delete and
 ask whether a key is set; **no command returns a key**. The calls run on
 the blocking pool, since the OS may show a prompt (a re-signed dev build can
@@ -191,9 +212,9 @@ ai_suggest({ requestId: string, provider: ProviderConfig, model: string, system:
 ai_cancel({ requestId: string }) -> void
 ai_models({ provider: ProviderConfig }) -> string[]
 ai_test({ provider: ProviderConfig, model: string }) -> { ok: boolean, message: string }
-ai_key_set({ provider: ProviderId, key: string }) -> void
-ai_key_delete({ provider: ProviderId }) -> void
-ai_key_status({ provider: ProviderId }) -> boolean
+ai_key_set({ provider: ProviderConfig, key: string }) -> void
+ai_key_delete({ provider: ProviderConfig }) -> void
+ai_key_status({ provider: ProviderConfig }) -> boolean
 ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, version?: string }
 ```
 
@@ -205,15 +226,23 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
   `ai_suggest` registered is remembered (the last 64), so the request is
   cancelled as soon as it starts. Cancels for ids that already started
   (the last 256) are ignored, so a late or repeated cancel never cancels a
-  later request that reuses the id. A request cancelled while its result
-  was arriving still rejects with `cancelled`. Reusing a running request's
-  id cancels the older request.
+  later request that reuses the id. Reusing a running request's id cancels
+  the older request. Completion is decided under the registry lock:
+  `ai_cancel` and a replacement both remove the request's entry under that
+  lock, and the request delivers its result only if its own entry (same
+  generation) is still registered when it finalizes, removing it in the
+  same critical section. So a request cancelled or replaced at any point
+  before it finalizes, even after its result was ready, rejects with
+  `cancelled`.
 - `ai_models`: the provider's live list; `[]` for Claude Code and Codex.
   Needs a key (except `custom`).
 - `ai_test`: a tiny request ("Reply with OK", 16 reply tokens). Never
   rejects for provider failures: they come back as `{ ok: false, message }`.
 - `ai_key_set` trims the key and rejects an empty one; `ai_key_delete` of a
-  missing key succeeds. Both, and `ai_key_status`, reject CLI providers.
+  missing key succeeds. All three key commands take the full
+  `ProviderConfig` and reject CLI providers. For `custom`, `baseUrl` is
+  required (and validated like a request's): the key is stored under that
+  URL. Other providers ignore `baseUrl`.
 - `ai_cli_status`: rejects HTTP providers. `version` is the first line of
   `--version`.
 
@@ -240,7 +269,11 @@ Every command rejects with `{ kind, message }`:
 hand-rolled HTTP server on `127.0.0.1:0` serving canned responses and
 recording requests): success, request shape (no sampling fields, effort
 fields, headers), retry without effort, refusal, empty, 401/5xx, unreachable
-server, model listing and pagination, cancel mid-request. CLI tests use
+server, model listing and pagination, cancel mid-request, a cancel or
+replacement landing after the result is ready, redaction before
+truncation, keychain accounts (`custom` bound to its URL), and keyless
+`custom` surviving a failed key lookup. The credential store itself is not
+exercised by tests. CLI tests use
 fake executables (flags, empty working directory, stdin) and check that
 cancel kills the process group. Pure helpers (PATH markers, merge, lookup,
 argument builders, response parsing, ANSI stripping) have unit tests.

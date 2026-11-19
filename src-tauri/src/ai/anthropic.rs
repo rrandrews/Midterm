@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 use super::Completion;
 use super::error::{AiError, ErrorKind};
-use super::http::{self, Failure};
+use super::http;
 
 pub const API_VERSION: &str = "2026-10-21";
 
@@ -89,13 +89,13 @@ pub async fn complete(
     let url = format!("{base_url}/messages");
     let send = |with_effort: bool| {
         let body = build_body(req, with_effort);
-        http::send(request(client.post(&url), key).json(&body))
+        http::send(request(client.post(&url), key).json(&body), Some(key))
     };
     let response = match send(true).await {
         Err(f) if f.is_bad_request_about(EFFORT_WORDS) => send(false).await,
         other => other,
     }
-    .map_err(Failure::into_error)?;
+    .map_err(|f| f.into_error(Some(key)))?;
     parse_reply(&response)
 }
 
@@ -114,9 +114,9 @@ pub async fn models(
         if let Some(after) = &after {
             url.query_pairs_mut().append_pair("after_id", after);
         }
-        let page = http::send(request(client.get(url), key))
+        let page = http::send(request(client.get(url), key), Some(key))
             .await
-            .map_err(Failure::into_error)?;
+            .map_err(|f| f.into_error(Some(key)))?;
         if let Some(models) = page["data"].as_array() {
             ids.extend(
                 models
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(e.kind, ErrorKind::Empty);
 
         let server = stub::serve(vec![Canned::json(401, json!({ "type": "error", "error": { "type": "authentication_error", "message": "invalid x-api-key" } }))]).await;
-        let e = complete(&stub::client(), &server.url, "k", &req())
+        let e = complete(&stub::client(), &server.url, "sk-ant-test", &req())
             .await
             .unwrap_err();
         assert_eq!(e.kind, ErrorKind::Auth);
