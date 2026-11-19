@@ -137,6 +137,31 @@ Right-click menus:
 - New pane kinds add their own items the way terminals do, in
   `PaneContent.tsx`.
 
+## Content Security Policy
+
+Set in `src-tauri/tauri.conf.json` (`app.security`):
+
+| Directive | Value | Why |
+|---|---|---|
+| `default-src` | `'self'` | Nothing remote, ever. |
+| `script-src` | `'self'` | Bundled scripts only; Tauri adds hashes for its own. No `eval`. |
+| `style-src` | `'self' 'unsafe-inline'` | React `style` attributes, and `<style>` elements injected by xterm and CodeMirror. Tauri's nonce injection is turned off for this directive (`dangerousDisableAssetCspModification: ["style-src"]`), since a nonce would make browsers ignore `'unsafe-inline'`. |
+| `img-src` | `'self' blob: data:` | The viewer shows images (and local Markdown images) as `blob:` URLs read through the backend. |
+| `media-src` | `'self' blob:` | |
+| `font-src` | `'self' data:` | Bundled fonts. |
+| `connect-src` | `'self' ipc: http://ipc.localhost` | Tauri IPC (see [terminal.md](terminal.md#content-security-policy)). |
+| `object-src`, `frame-src`, `form-action`, `base-uri` | `'none'` | Unused. |
+
+`devCsp` is the same plus what Vite's dev server needs: inline scripts
+(React Refresh's preamble) and `ws://` / `http://localhost:1420`.
+Rendered Markdown is sanitized (DOMPurify) and never loads anything by
+itself, so it does not rely on the CSP alone.
+
+To check a production build against the policy without Tauri, serve
+`dist/` with the policy as a `Content-Security-Policy` header and watch the
+console for violations (opening files and images from the palette
+exercises the viewer).
+
 ## Running
 
 | Command | What it does |

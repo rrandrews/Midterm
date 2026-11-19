@@ -5,7 +5,7 @@ import { createPane } from "../state/layout";
 import { useAppStore } from "../state/store";
 import { queueStartupInput } from "../terminal/sessions";
 import type { PaletteAction, PaletteMode } from "./items";
-import { activeDirectory, noteRecentFile } from "./sources";
+import { activeDirectory } from "./sources";
 
 /*
  * The command palette's open state, its commands, and what choosing an
@@ -61,7 +61,6 @@ export function performPaletteAction(action: PaletteAction): void {
     case "file": {
       const from = activePaneId();
       if (!from) return;
-      noteRecentFile(action.path);
       openFile(action.path, { fromPaneId: from });
       return;
     }

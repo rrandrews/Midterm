@@ -7,7 +7,8 @@ it for files only, ⇧⌘P for commands only.
 | File | Role |
 |---|---|
 | `src/palette/items.ts` | Pure: query parsing and ranking (fuzzysort). Unit-tested. |
-| `src/palette/sources.ts` | Project root, the file list (cached 15 s), recent files and commands (`recent.json`). |
+| `src/palette/sources.ts` | Project root and the file list (cached 15 s). |
+| `src/palette/recent.ts` | Recent files (recorded by `openFile`) and commands, saved to `recent.json`. |
 | `src/palette/state.ts` | Open state, the palette commands, carrying out a chosen item. |
 | `src/palette/Palette.tsx` | The dialog: Radix Dialog + cmdk (cmdk's own filtering is off; ranking is ours). |
 

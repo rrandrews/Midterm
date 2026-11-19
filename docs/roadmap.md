@@ -34,16 +34,13 @@ Done so far:
   programs and shells without integration; per-pane toggle with the
   default in settings; copy command/output and re-run. See
   [terminal.md](terminal.md#blocks-mode).
-
-## M7 — Settings and theming
-
-- [x] Settings file and UI: font family and size, cursor style, scrollback, default shell and args
-- [x] Accent color picker (the mockup offers `#8B9CFF`, `#5EEAD4`, `#F5A524`, `#F472B6`)
-- [x] Rebindable keyboard shortcuts
-- [x] Native menu bar generated from the command registry
-- [ ] Content Security Policy (currently `null` in `tauri.conf.json`)
-- [x] Terminal: search in scrollback, copy-on-select option, bell handling
-- [x] Decide whether the transparent terminal background is worth its rendering cost; offer a solid option
+- M7: settings dialog (fonts, cursor, scrollback, shell, terminal mode,
+  copy on select, bell, background) applied live; accent presets and
+  custom color; rebindable shortcuts; native menu bar generated from the
+  command registry; find in terminal scrollback; a Content Security
+  Policy. Transparent terminal backgrounds stay the default, with a solid
+  option. See [commands.md](commands.md) and
+  [architecture.md](architecture.md#content-security-policy).
 
 ## M8 — Cross-platform and packaging
 

@@ -28,7 +28,7 @@ const LAYOUT: { title: string; items: string[] }[] = [
   { title: "app", items: ["settings.open", "settings.keyboard"] },
   {
     title: "File",
-    items: ["tab.new", "workspace.new", "-", "palette.openFile", "pane.save", "-", "pane.close", "tab.close"],
+    items: ["tab.new", "workspace.new", "-", "palette.openFile", "pane.save", "editor.revert", "-", "pane.close", "tab.close"],
   },
   {
     title: "Edit",

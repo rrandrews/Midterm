@@ -1,5 +1,6 @@
 import { hasUnsavedChanges, renameOpenModels, revealInPane } from "./editor/registry";
 import { isImagePath } from "./files/kinds";
+import { noteRecentFile } from "./palette/recent";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { countPanes, createPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
 import {
@@ -247,6 +248,7 @@ export function openFile(path: string, { fromPaneId, newPane = false, line, colu
   const tab = findTabOfPane(store(), fromPaneId);
   const dock = tab && getDock(tab);
   if (!tab || !dock) return;
+  noteRecentFile(path);
   const layout = dock.getModel();
   const panes = listPanes(layout);
   // A line can only be shown in an editor.
