@@ -3,29 +3,16 @@
 Milestones are ordered; each builds on the ones before it. Check items off as
 they land, and delete a milestone's section once all of it is done.
 
-Done so far (Milestone 1): app shell matching the mockup, workspaces and
-tabs, nested split layout with resize and drag-to-dock, pane menu and
-shortcuts, PTY-backed classic terminals. See [architecture.md](architecture.md).
+Done so far:
 
-## M2 — Persistence and tab polish
-
-Goal: quitting and reopening the app brings back the same workspaces, tabs
-and layouts, with terminals in the directories they were in.
-
-- [ ] Persist `workspaces` / `activeWorkspaceId` (tauri-plugin-store), debounced, with a schema version
-- [ ] Validate saved layouts on load with `normalizeWorkspaceModel`; fall back to a fresh tab if invalid
-- [ ] Track each terminal's cwd from OSC 7 and store it in `PaneData`
-- [ ] Shell integration snippets that emit OSC 7 (zsh, bash, fish), injected without touching user rc files
-- [ ] Spawn restored terminals in their saved cwd (`pty_spawn` already takes `cwd`)
-- [ ] New splits and tabs start in the focused terminal's cwd
-- [ ] Restore window size and position (tauri-plugin-window-state)
-- [ ] Tab titles follow the foreground process / cwd unless renamed by the user
-- [ ] Drag tabs to reorder
-- [ ] Drag a pane onto a tab (or the `+`) to move it to that tab
-- [ ] Tab strip overflow: scroll or a "more tabs" menu when tabs don't fit
-- [ ] Collapse the traffic-light gutter in fullscreen
-- [ ] Maximize / restore a pane (the layout library supports it: `maximizeTabset`)
-- [ ] Confirm before closing a pane, tab or window with a running foreground process
+- M1: app shell matching the mockup, workspaces and tabs, nested split
+  layout with resize and drag-to-dock, pane menu and shortcuts, PTY-backed
+  classic terminals. See [architecture.md](architecture.md).
+- M2: saved and restored workspaces, tabs, layouts and window state; shell
+  integration (OSC 7) for zsh, bash and fish; terminals reopen in their
+  directory; automatic tab titles; tab reordering, pane-to-tab drops, tab
+  overflow; maximize pane; confirmation before closing running programs.
+  See [terminal.md](terminal.md) and [layout.md](layout.md).
 
 ## M3 — File explorer pane
 
@@ -100,6 +87,9 @@ input is a separate editor at the bottom.
 - [ ] CI: typecheck, vitest, cargo test, clippy, build on all three platforms
 
 ## Later / unscheduled
+
+- [ ] Shell integration follow-ups: run the fish script and test on a machine with fish; bash 5.1+ and Linux paths are untested; Debian reads `/etc/bash.bashrc` twice (once itself, once via `/etc/profile`); an `/etc/zshenv` that sets `ZDOTDIR` skips integration; a `.zshrc` that assigns `precmd_functions=(…)` drops our hook
+- [ ] Busy check misses programs started with `exec` (same pid as the shell)
 
 - [ ] Stack several panes in one frame as tabs (currently rejected; see [layout.md](layout.md))
 - [ ] Floating panes and pop-out windows (supported by the layout library)
