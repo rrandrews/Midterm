@@ -5,6 +5,9 @@
 
 #![cfg(unix)]
 
+/// Shell integration and the foreground process, against the real shells.
+mod shells;
+
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -12,7 +15,7 @@ use portable_pty::CommandBuilder;
 
 use super::manager::PtyManager;
 use super::session::{FlowLimits, PtyEvent, Session, Sinks, wait_until_terminated};
-use super::shell::shell_command;
+use super::shell::base_command;
 
 /// Upper bound for anything that is expected to happen.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -402,7 +405,7 @@ fn default_shell_is_a_login_shell_with_terminal_env() {
     let home = std::env::temp_dir()
         .canonicalize()
         .expect("temp dir must exist");
-    let mut cmd = shell_command(home.to_str());
+    let mut cmd = base_command(home.to_str());
     // Pin the shell and keep the developer's own profile out of the test.
     cmd.env("SHELL", "/bin/sh");
     cmd.env("HOME", &home);

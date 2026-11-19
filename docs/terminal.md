@@ -83,6 +83,8 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 | `session.rs` | One child on a PTY and its threads. No Tauri types, so it is unit-tested directly (`tests.rs`). |
 | `manager.rs` | `PtyManager`: id → session registry in Tauri managed state. |
 | `shell.rs` | Which program to run, its environment and working directory. |
+| `process.rs` | Executable name of a pid, for the foreground process (Unix). |
+| `integration.rs` | Shell integration: writes the scripts in `src-tauri/shell-integration/` to disk and makes the shell load them (Unix). |
 | `commands.rs` | The `pty_*` commands: thin adapters from channels to a session's sinks. |
 
 ### Commands
@@ -95,6 +97,7 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 | `pty_resize` | `id`, `cols`, `rows` | Errors on an unknown id. |
 | `pty_ack` | `id`, `bytes` | Flow-control acknowledgement. Unknown ids are ignored. |
 | `pty_kill` | `id` | SIGHUP, then SIGKILL after 250ms. Idempotent. An exit event still follows. |
+| `pty_foreground` | `id` | `{ pid, name, isShell }` or `null`. See below. |
 
 - `onData` receives an `ArrayBuffer` of raw bytes (sent as
   `InvokeResponseBody::Raw`; a `Channel<Vec<u8>>` would arrive as a JSON
@@ -107,6 +110,19 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 
 `src/ipc/pty.ts` is the only caller.
 
+### Foreground process
+
+`pty_foreground` (`Pty.foreground()` in `src/ipc/pty.ts`) returns the
+terminal's foreground process, e.g. `{ "pid": 4242, "name": "vim",
+"isShell": false }`, for tab titles and for asking before closing a pane
+with something running. It is the leader of the terminal's foreground
+process group (`tcgetpgrp` on the master, via portable-pty's
+`process_group_leader`). `name` is the executable name (macOS `proc_name`,
+Linux `/proc/<pid>/comm`, so `zsh` rather than `-zsh`; empty if unreadable).
+`isShell` is true when that process is the session's own child, i.e. the
+shell is at its prompt. `null` for unknown or exited sessions and on
+Windows. Lookup code is in `process.rs`. The mock PTY reports a shell.
+
 ### Shell and environment
 
 - `CommandBuilder::new_default_prog()`: `$SHELL` if executable, else the
@@ -118,6 +134,53 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
   variable is present (Finder-launched apps have none).
 - Working directory: the `cwd` argument if it is an existing directory,
   otherwise the home directory.
+- zsh, bash and fish additionally get shell integration (below); bash is
+  then started as `bash --rcfile …` instead of `-bash`.
+
+### Shell integration
+
+zsh, bash and fish report their working directory with OSC 7
+(`ESC ] 7 ; file://<host><percent-encoded path> BEL`) before every prompt
+(fish also whenever `$PWD` changes). The user's startup files are never
+modified. The shell is recognised by the file name of the program
+`new_default_prog` picks (`$SHELL`, else the passwd entry); anything else
+starts exactly as before.
+
+The scripts are in `src-tauri/shell-integration/`, embedded with
+`include_str!` and written by `integration::install` on every spawn to
+`~/Library/Caches/com.ron.midterm/shell-integration/<version>/` (Linux:
+`$XDG_CACHE_HOME` or `~/.cache`). Unchanged files are left alone and changed
+ones are replaced by atomic rename, so concurrent spawns and app instances
+are safe. If writing fails the shell starts without integration.
+
+| Shell | How it is injected |
+|---|---|
+| zsh | `ZDOTDIR=<dir>/zsh`, original in `MIDTERM_ZSH_ZDOTDIR` (absent if `ZDOTDIR` was unset). Our `.zshenv` restores/unsets `ZDOTDIR`, sources the user's `.zshenv`, then (interactive only) `midterm-integration.zsh`. zsh reads `.zprofile`/`.zshrc`/`.zlogin` from the restored location, so it stays a normal login shell (`-zsh`). Hooks are added to `precmd_functions` at the first prompt, in front of the user's. |
+| bash | `bash --rcfile <dir>/bash/midterm.bash`. The script reads the login files itself (`/etc/profile`, then the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`) and puts its hook **first** in `PROMPT_COMMAND` (string or 5.1+ array), passing `$?` through so the user's hooks still see it. |
+| fish | `<dir>` prepended to `XDG_DATA_DIRS`, so fish sources `<dir>/fish/vendor_conf.d/midterm.fish`. It removes the entry (`MIDTERM_FISH_DATA_DIR`) or unsets the variable if it was unset before (`MIDTERM_FISH_XDG_DATA_DIRS_UNSET`). |
+
+Every integrated shell gets `MIDTERM_SHELL_INTEGRATION=1`. The scripts guard
+against being sourced twice.
+
+Why bash is not a real login shell: the Ghostty/kitty approach (`--posix`
+with `ENV` pointing at the script) does not work with bash 3.2, the macOS
+`/bin/bash`, which ignores `ENV` in posix mode, and an `argv[0]` of `-bash`
+makes bash ignore `--rcfile`. The script reads the same files a login shell
+would, but `$0` is the shell's path, `shopt login_shell` is off, `logout`
+does not work (use `exit`) and `~/.bash_logout` is not read.
+
+Paths are percent-encoded byte by byte (everything except `A-Za-z0-9/._~-`)
+in zsh and bash, and with `string escape --style=url` in fish. The host is
+`$HOST` (zsh), `$HOSTNAME` (bash) or `$hostname` (fish).
+
+**Adding OSC 133 (M6)**: each script has a prompt hook (`_midterm_precmd`
+in zsh, `_midterm_prompt_command` in bash, `__midterm_prompt` in fish) that
+runs before the prompt and already captures the previous command's exit
+status in `ret` (zsh, bash), plus a preexec hook (`_midterm_preexec`,
+`__midterm_preexec`; bash needs a DEBUG trap or `PS0`). Emit `D;$ret` and
+`A` from the prompt hook, `B` at the end of the prompt and `C` from preexec.
+The tests in `src-tauri/src/pty/tests/shells.rs` run the real shells in a
+sandboxed `HOME` and are the place to check new marks.
 
 ### Threads per session
 

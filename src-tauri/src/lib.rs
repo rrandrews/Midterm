@@ -53,6 +53,7 @@ pub fn run() {
             pty::commands::pty_resize,
             pty::commands::pty_ack,
             pty::commands::pty_kill,
+            pty::commands::pty_foreground,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

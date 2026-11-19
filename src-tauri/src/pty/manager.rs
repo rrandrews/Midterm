@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use portable_pty::CommandBuilder;
 
-use super::session::{FlowLimits, PtyEvent, Session, Sinks};
+use super::session::{FlowLimits, Foreground, PtyEvent, Session, Sinks};
 
 /// Owns every running session. Registered as Tauri managed state, but has no
 /// dependency on Tauri itself.
@@ -122,6 +122,13 @@ impl PtyManager {
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
         self.with(id, |session| session.resize(cols, rows))
+    }
+
+    /// The session's foreground process. `None` for unknown (including
+    /// exited) sessions: callers ask about sessions that may have just ended.
+    pub fn foreground(&self, id: u32) -> Option<Foreground> {
+        let registry = self.inner.registry();
+        registry.sessions.get(&id)?.session.foreground()
     }
 
     /// Acknowledges output. Unknown ids are ignored: the last acks of a

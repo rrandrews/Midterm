@@ -4,7 +4,17 @@ use std::path::{Path, PathBuf};
 
 use portable_pty::CommandBuilder;
 
-/// The user's shell, started as a login shell in `cwd`.
+/// The user's shell, started as a login shell in `cwd`, with shell
+/// integration where the shell is supported (see `super::integration`).
+pub fn shell_command(cwd: Option<&str>) -> CommandBuilder {
+    #[allow(unused_mut)]
+    let mut cmd = base_command(cwd);
+    #[cfg(unix)]
+    super::integration::setup(&mut cmd);
+    cmd
+}
+
+/// [`shell_command`] without the shell integration.
 ///
 /// `CommandBuilder::new_default_prog` does the platform work:
 ///
@@ -17,7 +27,7 @@ use portable_pty::CommandBuilder;
 /// * Windows: runs `%ComSpec%`, falling back to `cmd.exe`.
 ///
 /// The process environment is inherited.
-pub fn shell_command(cwd: Option<&str>) -> CommandBuilder {
+pub fn base_command(cwd: Option<&str>) -> CommandBuilder {
     let mut cmd = CommandBuilder::new_default_prog();
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -59,12 +69,12 @@ mod tests {
     #[test]
     fn sets_terminal_environment() {
         let cmd = shell_command(None);
-        assert!(cmd.is_default_prog());
         let env = |key: &str| cmd.get_env(key).and_then(|v| v.to_str());
         assert_eq!(env("TERM"), Some("xterm-256color"));
         assert_eq!(env("COLORTERM"), Some("truecolor"));
         assert_eq!(env("TERM_PROGRAM"), Some("midterm"));
         assert_eq!(env("TERM_PROGRAM_VERSION"), Some(env!("CARGO_PKG_VERSION")));
+        assert!(base_command(None).is_default_prog());
     }
 
     #[test]

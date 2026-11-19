@@ -31,6 +31,20 @@ export type Pty = {
    */
   ack: (bytes: number) => void;
   kill: () => void;
+  /**
+   * The process in the foreground of the terminal: the shell while it waits
+   * at a prompt, otherwise the job it is running. `null` once the shell has
+   * exited or when it cannot be determined.
+   */
+  foreground: () => Promise<PtyForeground | null>;
+};
+
+export type PtyForeground = {
+  pid: number;
+  /** Executable name, e.g. `zsh` or `vim`; empty if unknown. */
+  name: string;
+  /** True when the foreground process is the shell itself (nothing running). */
+  isShell: boolean;
 };
 
 type PtyEvent = { event: "exit"; data: PtyExit };
@@ -70,6 +84,11 @@ async function spawnTauriPty(options: PtyOptions): Promise<Pty> {
       void invoke("pty_resize", { id, cols, rows }).catch(logFailure("pty_resize")),
     ack: (bytes) => void invoke("pty_ack", { id, bytes }).catch(logFailure("pty_ack")),
     kill: () => void invoke("pty_kill", { id }).catch(logFailure("pty_kill")),
+    foreground: () =>
+      invoke<PtyForeground | null>("pty_foreground", { id }).catch((error: unknown) => {
+        logFailure("pty_foreground")(error);
+        return null;
+      }),
   };
 }
 
@@ -116,6 +135,7 @@ function spawnMockPty(options: PtyOptions): Pty {
     resize: () => {},
     ack: () => {},
     kill: () => {},
+    foreground: async () => ({ pid: 0, name: "mock", isShell: true }),
   };
 }
 
