@@ -309,9 +309,11 @@ does the following:
   the previous theme set and this one does not, and sets `color-scheme` and
   `data-theme`. Tailwind's utilities read the variables, so CSS follows
   without any work.
-- Updates the native window when the kind or background changes:
-  `setTheme("dark" | "light")` (the traffic lights) and
-  `setBackgroundColor` (what shows while resizing). This needs the
+- Updates the native window when its appearance or background changes:
+  `setTheme("dark" | "light")` (the traffic lights), or `setTheme(null)`
+  while following the system (a forced appearance would also pin the
+  webview's `prefers-color-scheme`, so system changes would go unnoticed),
+  and `setBackgroundColor` (what shows while resizing). This needs the
   `core:window:allow-set-theme` and `allow-set-background-color` permissions.
 - Calls `noteThemeApplied()`, which reaches everyone who draws theme colors
   outside CSS:
@@ -373,7 +375,13 @@ preview on the real terminals and files beside it. Its pane data is
     one, "Name (custom)", and shows it.
   - **Discard** goes back to the saved theme, and can be undone.
   - Closing the last editor pane drops the draft; closing with unsaved edits
-    asks first (`closeBlockers`).
+    asks first (`closeBlockers`). Picking another theme in the editor, or
+    Edit on another theme, asks before discarding unsaved edits.
+  - One editor pane owns the draft (`claimEditor`); any other theme
+    editor pane says so and offers to show it. Edit reveals the editor
+    wherever it is (`revealPane`).
+  - After "Save as new" the pane edits the new theme. Saving a kind change
+    lets go of a light or dark pick that no longer fits.
 - **Layout:**
   - At the top: the theme picker, light/dark, name, undo/redo,
     discard/save and a filter.

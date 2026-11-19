@@ -70,6 +70,18 @@ export function newTab(kind?: PaneKind): void {
   focusPane(pane.id);
 }
 
+/** Shows a pane wherever it is (its workspace and tab) and focuses it. */
+export function revealPane(paneId: string): void {
+  const state = store();
+  const workspace = state.workspaces.find((w) => w.tabs.some((tab) => findPane(tab.layout, paneId)));
+  const tab = findTabOfPane(state, paneId);
+  if (!workspace || !tab) return;
+  if (state.activeWorkspaceId !== workspace.id) state.setActiveWorkspace(workspace.id);
+  state.setActiveTab(tab.id);
+  state.setActivePane(paneId);
+  focusActivePane();
+}
+
 export function selectTab(tabId: string): void {
   store().setActiveTab(tabId);
   focusActivePane();

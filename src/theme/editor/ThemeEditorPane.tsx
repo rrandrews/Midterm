@@ -10,8 +10,12 @@ import { normalizeHex } from "../color";
 import { contrastRatio, resolveTheme } from "../resolve";
 import { allThemes, findTheme, isBundled, useThemeState } from "../state";
 import { ANSI_NAMES, type AnsiName, BUILTIN_PANES, TOKEN_GROUPS, type Theme, type TokenName, ansiToken } from "../types";
+import { revealPane } from "../../actions";
 import {
   type BaseField,
+  claimEditor,
+  mayEditAnother,
+  releaseEditor,
   discardDraft,
   isDraftDirty,
   redo,
@@ -199,20 +203,69 @@ function Samples({ theme }: { theme: Theme }) {
   );
 }
 
-export function ThemeEditorPane({ paneId, themeId, onPick }: { paneId: string; themeId?: string; onPick: (id: string) => void }) {
+export function ThemeEditorPane({
+  paneId,
+  themeId,
+  onPick,
+  onSaved,
+}: {
+  paneId: string;
+  themeId?: string;
+  /** Another theme was picked (after confirming a dirty draft away). */
+  onPick: (id: string) => void;
+  /** The draft was saved as `id` (a bundled theme saves as a new one). */
+  onSaved: (id: string) => void;
+}) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const { draft, sourceId, past, future } = useThemeDraft();
+  const { draft, sourceId, past, future, ownerPaneId } = useThemeDraft();
   useThemeState((state) => state.custom);
   const [filter, setFilter] = useState("");
+  const owner = ownerPaneId === paneId;
 
-  // The pane's theme: the one in its data, else the one showing.
+  // One editor pane owns the draft; another one points to it.
   useEffect(() => {
-    const id = themeId && findTheme(themeId) ? themeId : undefined;
-    if (id && id !== sourceId) startEditing(id);
-  }, [themeId, sourceId]);
+    if (ownerPaneId === null) claimEditor(paneId);
+  }, [ownerPaneId, paneId]);
+  useEffect(() => () => releaseEditor(paneId), [paneId]);
+
+  // The pane's theme, from its data: loaded when the data names another
+  // one (its picker and the Edit command confirm a dirty draft first).
+  const requested = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!owner) {
+      requested.current = undefined;
+      return;
+    }
+    if (themeId === requested.current) return;
+    requested.current = themeId;
+    if (themeId && findTheme(themeId) && themeId !== useThemeDraft.getState().sourceId) startEditing(themeId);
+  }, [owner, themeId]);
+
+  const save = () => {
+    const saved = saveDraft();
+    if (saved) {
+      requested.current = saved.id;
+      onSaved(saved.id);
+    }
+  };
+  const saveRef = useRef(save);
+  saveRef.current = save;
 
   useEffect(() => registerPaneFocuser(paneId, () => rootRef.current?.focus({ preventScroll: true })), [paneId]);
-  useEffect(() => registerPaneActions(paneId, { save: () => saveDraft(), undo, redo }), [paneId]);
+  useEffect(() => registerPaneActions(paneId, { save: () => saveRef.current(), undo, redo }), [paneId]);
+
+  if (!owner) {
+    return (
+      <div ref={rootRef} tabIndex={-1} className="flex h-full flex-col items-center justify-center gap-2 text-meta text-fg-dim outline-none">
+        <span>The theme editor is open in another pane.</span>
+        {ownerPaneId && (
+          <button type="button" className={BUTTON} onClick={() => revealPane(ownerPaneId)}>
+            Show it
+          </button>
+        )}
+      </div>
+    );
+  }
 
   const resolved = useMemo(() => (draft ? resolveTheme(draft) : null), [draft]);
   if (!draft || !resolved) {
@@ -262,7 +315,10 @@ export function ThemeEditorPane({ paneId, themeId, onPick }: { paneId: string; t
             aria-label="Theme to edit"
             className={`${FIELD} min-w-0 flex-1`}
             value={sourceId ?? ""}
-            onChange={(event) => onPick(event.target.value)}
+            onChange={(event) => {
+              const id = event.target.value;
+              void mayEditAnother(id).then((ok) => ok && onPick(id));
+            }}
           >
             {allThemes().map((theme) => (
               <option key={theme.id} value={theme.id}>
@@ -286,7 +342,7 @@ export function ThemeEditorPane({ paneId, themeId, onPick }: { paneId: string; t
           <button type="button" className={BUTTON} disabled={!dirty} onClick={discardDraft}>
             Discard
           </button>
-          <button type="button" className={`${BUTTON} ${dirty ? "bg-accent-soft text-accent-fg" : ""}`} disabled={!dirty} onClick={() => saveDraft()}>
+          <button type="button" className={`${BUTTON} ${dirty ? "bg-accent-soft text-accent-fg" : ""}`} disabled={!dirty} onClick={save}>
             {sourceId && isBundled(sourceId) ? "Save as new" : "Save"}
           </button>
         </div>
