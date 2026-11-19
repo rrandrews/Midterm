@@ -23,6 +23,12 @@ Done so far:
   file open in the project root, run a shell command in a new pane,
   recent items first. See [palette.md](palette.md) and
   [commands.md](commands.md).
+- M6: blocks terminal mode: OSC 133 marks from zsh, bash and fish; output
+  cut into blocks with cwd, branch, exit status and duration; input editor
+  with history and autosuggestions; classic fallback for full-screen
+  programs and shells without integration; per-pane toggle with the
+  default in settings; copy command/output and re-run. See
+  [terminal.md](terminal.md#blocks-mode).
 
 ## M4 — Editor and viewer panes
 
@@ -37,20 +43,6 @@ Goal: the `editor` and `viewer` pane kinds open files.
 - [ ] Find in file (⌘F), go to line
 - [ ] Clickable `path:line` in terminal output opens the editor there
 
-## M6 — Blocks terminal mode
-
-Goal: a per-pane alternative to the classic terminal, as drawn in the mockup:
-each command is a block with its cwd, branch, exit code and duration, and
-input is a separate editor at the bottom.
-
-- [ ] OSC 133 shell integration (prompt start / command start / command end with exit code) for zsh, bash, fish
-- [ ] Segment xterm output into blocks from those marks
-- [ ] Block header: cwd, git branch, exit status (red when non-zero), duration
-- [ ] Separate input editor with history
-- [ ] Autosuggestions from history (⇥ accept, ⏎ run), as in the mockup
-- [ ] Fall back to classic rendering while a full-screen program (alternate screen) is running
-- [ ] Per-pane toggle between blocks and classic; default in settings
-- [ ] Block actions: copy command, copy output, re-run
 
 ## M7 — Settings and theming
 
@@ -79,6 +71,9 @@ Terminals and shells:
 - [ ] Shell integration follow-ups: run the fish script and test on a machine with fish; bash 5.1+ and Linux paths are untested; Debian reads `/etc/bash.bashrc` twice (once itself, once via `/etc/profile`); an `/etc/zshenv` that sets `ZDOTDIR` skips integration; a `.zshrc` that assigns `precmd_functions=(…)` drops our hook
 - [ ] Shells inherit the launching terminal's environment in dev (e.g. another terminal's `ZDOTDIR`, which swaps in its history file and integration)
 - [ ] Busy check misses programs started with `exec` (same pid as the shell)
+- [ ] Blocks mode: no tab completion or ⌃R search in the input editor (switch to classic); a line already typed into the shell's own prompt in classic mode is not cleared before the editor sends one; RPROMPT text can end up in a command read back from the prompt (typed in classic mode); output printed before the first prompt (and between a command's end and the next prompt) is only visible in classic mode; a full buffer that is erased (`ESC [ 2 J`) re-anchors the running block at the top of the scrollback; the cursor is drawn even when a program hides it; block cursor in the editor is the browser caret, not a block
+- [ ] Blocks mode: per-block virtualisation (blocks use `content-visibility` and cap their DOM at 300 lines plus "Show earlier lines"), `git status` per prompt is computed in full just to get the branch, no "ahead" count in the status line
+- [ ] OSC 133 follow-ups: bash marks a command line that is only a subshell (`(exit 3)`) with no C/D (DEBUG trap; PS0 on bash 4.4+ untested); a DEBUG trap installed after startup (bash-preexec) replaces ours; fish 4 may print its own 133 marks (the frontend tolerates duplicates, but `fish_emits_prompt_marks` expects exactly ours and is untested on fish 4: use fish's native marks where available); a `fish_prompt` defined after the first prompt loses B
 
 Explorer:
 

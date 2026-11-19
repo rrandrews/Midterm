@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 use portable_pty::CommandBuilder;
 
@@ -11,7 +12,7 @@ use super::super::integration;
 use super::super::manager::PtyManager;
 use super::super::session::{Foreground, Session};
 use super::super::shell::base_command;
-use super::{Harness, wait_until};
+use super::{Harness, Msg, TIMEOUT, wait_until};
 
 /// A fresh, empty directory under the temp dir, with symlinks resolved so
 /// that it matches what the shell reports as `$PWD`.
@@ -189,7 +190,7 @@ fn zsh_reports_cwd_and_reads_the_users_startup_files() {
     h.session.write(probe.into_bytes()).unwrap();
     assert_eq!(h.wait_for_exit(), Some(0));
     let expected = format!(
-        "marks=.zshenv .zprofile .zshrc .zlogin  zdotdir={} hooked=yes hooks=_midterm_precmd user_hook left=none si=1",
+        "marks=.zshenv .zprofile .zshrc .zlogin  zdotdir={} hooked=yes hooks=_midterm_precmd user_hook _midterm_prompt_end left=none si=1",
         zdotdir.display()
     );
     assert!(h.text().contains(&expected), "output: {:?}", h.text());
@@ -254,7 +255,7 @@ fn bash_reports_cwd_and_reads_the_login_startup_files() {
         "output: {text:?}"
     );
     assert!(
-        text.contains("pc=[_midterm_prompt_command|user_hook]"),
+        text.contains("pc=[_midterm_prompt_command|user_hook|_midterm_prompt_end]"),
         "output: {text:?}"
     );
 }
@@ -346,6 +347,237 @@ fn fish_reports_cwd_and_restores_xdg_data_dirs() {
         text.contains("mark=config xdg=/a:/b left= si=1"),
         "output: {text:?}"
     );
+}
+
+const MARK_B: &str = "\x1b]133;B\x07";
+
+/// Every OSC 133 mark in `output` (terminated by BEL or ST) with the byte
+/// offset where it starts, e.g. `(120, "D;0")`.
+fn osc133_marks(output: &str) -> Vec<(usize, String)> {
+    output
+        .match_indices("\x1b]133;")
+        .filter_map(|(at, intro)| {
+            let rest = &output[at + intro.len()..];
+            Some((at, rest[..rest.find(['\x07', '\x1b'])?].to_string()))
+        })
+        .collect()
+}
+
+fn mark_names(marks: &[(usize, String)]) -> Vec<&str> {
+    marks.iter().map(|(_, mark)| mark.as_str()).collect()
+}
+
+impl Harness {
+    /// Waits until the output holds at least `count` OSC 133 marks.
+    fn wait_for_marks(&mut self, count: usize) {
+        let deadline = Instant::now() + TIMEOUT;
+        while osc133_marks(&self.text()).len() < count {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next(left) {
+                Some(Msg::Data(_)) => {}
+                other => panic!(
+                    "{other:?} while waiting for {count} OSC 133 marks; output: {:?}",
+                    self.text()
+                ),
+            }
+        }
+    }
+
+    /// Types `line` plus Enter and waits for the marks it should produce.
+    fn run_line(&mut self, line: &str, marks_after: usize) {
+        self.session
+            .write(format!("{line}\n").into_bytes())
+            .unwrap();
+        self.wait_for_marks(marks_after);
+    }
+}
+
+/// Runs a failing command (`fail`, exiting with 3), `echo hi`, an empty
+/// line and `exit`, waiting for each prompt, and checks the OSC 133 marks:
+/// A and B around every prompt, C before and D;<status> after each command,
+/// and nothing for the empty line. Returns the output.
+fn check_prompt_marks(h: &mut Harness, fail: &str) -> String {
+    h.wait_for_output(MARK_B);
+    h.wait_for_marks(2);
+    h.run_line(fail, 6);
+    h.run_line("echo hi", 10);
+    h.run_line("", 12);
+    h.session.write(b"exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+
+    let text = h.text();
+    let marks = osc133_marks(&text);
+    let names = mark_names(&marks);
+    let expected = [
+        "A", "B", "C", "D;3", "A", "B", "C", "D;0", "A", "B", "A", "B",
+    ];
+    assert!(
+        names.starts_with(&expected) && matches!(&names[expected.len()..], [] | ["C"]),
+        "marks {names:?} in {text:?}"
+    );
+    // C follows the echo of what was typed after the prompt.
+    let typed_fail = marks[1].0 + text[marks[1].0..].find(fail).expect("no echo");
+    assert!(typed_fail < marks[2].0, "C before the echo: {text:?}");
+    let typed_echo = marks[5].0 + text[marks[5].0..].find("echo hi").expect("no echo");
+    assert!(typed_echo < marks[6].0, "C before the echo: {text:?}");
+    // The command's output is between its C and D.
+    assert!(
+        text[marks[6].0..marks[7].0].contains("hi\r\n"),
+        "output not between C and D: {text:?}"
+    );
+    text
+}
+
+#[test]
+fn zsh_emits_prompt_marks() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-marks");
+    sandbox.write(".zshrc", "PS1='zsh> '\n");
+    let mut h = sandbox.spawn(&zsh, &sandbox.home, |_| {});
+    let text = check_prompt_marks(&mut h, "(exit 3)");
+    assert_eq!(
+        text.matches(&format!("zsh> {MARK_B}")).count(),
+        4,
+        "{text:?}"
+    );
+}
+
+#[test]
+fn zsh_puts_b_after_a_prompt_rewritten_by_a_hook() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-theme");
+    // A theme rebuilding PS1 at every prompt, from a hook that runs after
+    // ours were installed.
+    sandbox.write(
+        ".zshrc",
+        "set_ps1() { PS1=\"custom$((++N))> \" }\nprecmd_functions+=(set_ps1)\n",
+    );
+    let mut h = sandbox.spawn(&zsh, &sandbox.home, |_| {});
+    check_prompt_marks(&mut h, "(exit 3)");
+    let text = h.text();
+    for n in 1..=4 {
+        assert!(
+            text.contains(&format!("custom{n}> {MARK_B}")),
+            "no B after prompt {n}: {text:?}"
+        );
+    }
+
+    // With a `precmd` function of the user's, B still follows from the
+    // second prompt on, and the function keeps working.
+    sandbox.write(
+        ".zshrc",
+        "set_ps1() { PS1=\"custom$((++N))> \" }\nprecmd_functions+=(set_ps1)\n\
+         precmd() { PRECMD_RUNS=$((PRECMD_RUNS+1)) }\n",
+    );
+    let mut h = sandbox.spawn(&zsh, &sandbox.home, |_| {});
+    h.wait_for_output("custom1> ");
+    h.session.write(b"true\n".to_vec()).unwrap();
+    h.wait_for_output(&format!("custom2> {MARK_B}"));
+    h.session
+        .write(b"echo \"runs=$PRECMD_RUNS\"; exit\n".to_vec())
+        .unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    assert!(h.text().contains("runs=2"), "output: {:?}", h.text());
+}
+
+#[test]
+fn bash_emits_prompt_marks() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-marks");
+    // Under extdebug, a DEBUG trap that fails skips the command: ours must
+    // not, even after a command that failed.
+    sandbox.write(".bash_profile", "PS1='bash> '\nshopt -s extdebug\nset -T\n");
+    let mut h = sandbox.spawn(&bash, &sandbox.home, |_| {});
+    // A subshell alone gets no marks in bash (the DEBUG trap does not see
+    // it), so the failing command is a simple one.
+    let text = check_prompt_marks(&mut h, "sh -c 'exit 3'");
+    assert_eq!(
+        text.matches(&format!("bash> {MARK_B}")).count(),
+        4,
+        "{text:?}"
+    );
+}
+
+#[test]
+fn bash_marks_work_next_to_the_users_hook_and_debug_trap() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-trap");
+    // The user's trap records `$?` and `$_` as it sees them, and their hook
+    // rebuilds PS1 at every prompt.
+    sandbox.write(
+        ".bash_profile",
+        "trap 'TRAP_SAW=\"$? $_\"; DEBUG_HITS=$((DEBUG_HITS+1))' DEBUG\n\
+         user_hook() { HOOK_STATUS=$?; PS1=\"custom$((++N))> \"; }\n\
+         PROMPT_COMMAND=user_hook\n",
+    );
+    let mut h = sandbox.spawn(&bash, &sandbox.home, |_| {});
+    check_prompt_marks(&mut h, "sh -c 'exit 3'");
+    let text = h.text();
+    for n in 1..=4 {
+        assert!(
+            text.contains(&format!("custom{n}> {MARK_B}")),
+            "no B after prompt {n}: {text:?}"
+        );
+    }
+
+    let mut h = sandbox.spawn(&bash, &sandbox.home, |_| {});
+    h.wait_for_marks(2);
+    // A subshell alone: no C, so no D either.
+    h.run_line("(exit 4)", 4);
+    h.run_line("echo \"hook=$HOOK_STATUS\"", 8);
+    h.run_line("echo one two; false", 12);
+    h.run_line("echo \"saw=$TRAP_SAW hits=$DEBUG_HITS\"", 16);
+    h.session.write(b"exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let text = h.text();
+    let marks = osc133_marks(&text);
+    let names = mark_names(&marks);
+    assert_eq!(
+        names[..16],
+        [
+            "A", "B", "A", "B", "C", "D;0", "A", "B", "C", "D;1", "A", "B", "C", "D;0", "A", "B"
+        ],
+        "{text:?}"
+    );
+    assert!(text.contains("hook=4"), "output: {text:?}");
+    // The trap ran before the last echo with the status of `false` and
+    // `$_` from it.
+    let saw = text.find("saw=1 false hits=").expect("trap state");
+    let hits: u32 = text[saw + "saw=1 false hits=".len()..]
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(hits >= 4, "the user's trap ran only {hits} times");
+}
+
+#[test]
+fn fish_emits_prompt_marks() {
+    let Some(fish) = find_shell("fish") else {
+        eprintln!("fish not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("fish-marks");
+    sandbox.write(
+        ".config/fish/config.fish",
+        "function fish_prompt; printf 'fish> '; end\n",
+    );
+    let mut h = sandbox.spawn(&fish, &sandbox.home, |_| {});
+    let text = check_prompt_marks(&mut h, "sh -c 'exit 3'");
+    assert!(text.contains(&format!("fish> {MARK_B}")), "{text:?}");
 }
 
 /// Waits until the session's foreground process satisfies `pred`.

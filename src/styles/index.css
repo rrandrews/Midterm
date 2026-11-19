@@ -2,6 +2,7 @@
 @import "./dock.css";
 @import "./terminal.css";
 @import "./explorer.css";
+@import "./blocks.css";
 
 /*
  * Design tokens. Values are taken from the reference mockup; see
@@ -21,6 +22,8 @@
   --color-line: #1f2128;
   --color-line-menu: #262931;
   --color-line-strong: #2a2d35;
+  --color-line-block: #ffffff0f;
+  --color-line-input: #ffffff12;
 
   /* Text, brightest to faintest */
   --color-fg-bright: #f2f3f5;

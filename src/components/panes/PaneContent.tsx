@@ -45,7 +45,7 @@ export const PaneContent = memo(function PaneContent({ pane }: { pane: PaneNode 
           }}
         >
           {kind === "terminal" ? (
-            <TerminalPane paneId={pane.id} />
+            <TerminalPane paneId={pane.id} mode={pane.data.terminalMode} />
           ) : kind === "explorer" ? (
             <ExplorerPane paneId={pane.id} />
           ) : (

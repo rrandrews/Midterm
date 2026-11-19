@@ -18,6 +18,8 @@ Use the tokens. Do not write raw hex values or pixel font sizes in components.
 | `raised` | `#2A2D35` | Pressed/open icon buttons |
 | `line` | `#1F2128` | Hairlines: title bar border, pane separators, tab edges |
 | `line-menu` | `#262931` | Menu separators |
+| `line-block` | `#FFFFFF0F` | Between blocks (blocks mode) |
+| `line-input` | `#FFFFFF12` | Above the blocks input editor |
 | `fg-bright` | `#F2F3F5` | Active tab, emphasized text |
 | `fg` | `#E4E5E9` | Default text |
 | `fg-soft` | `#D5D7DC` | Menu items, terminal text |
