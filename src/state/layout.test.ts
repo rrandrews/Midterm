@@ -6,7 +6,6 @@ import {
   findPane,
   frameIdOf,
   listPanes,
-  paneIdInFrame,
   paneNode,
   removePane,
   singlePaneLayout,
@@ -48,13 +47,11 @@ describe("layout helpers", () => {
     expect(findPane(layout, "missing")).toBeUndefined();
   });
 
-  it("maps between panes and their frames", () => {
+  it("finds the frame that holds a pane", () => {
     const { layout, b } = threePanes();
     const frameId = frameIdOf(layout, b.id);
     expect(frameId).toBeDefined();
-    expect(paneIdInFrame(layout, frameId as string)).toBe(b.id);
     expect(frameIdOf(layout, "missing")).toBeUndefined();
-    expect(paneIdInFrame(layout, "missing")).toBeUndefined();
   });
 
   it("gives every frame a unique id", () => {

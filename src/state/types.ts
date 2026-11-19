@@ -33,6 +33,8 @@ export type Tab = {
   layoutRev: number;
   /** A pane produced output while this tab was in the background. */
   activity: boolean;
+  /** The pane that last had keyboard focus; restored when the tab is shown. */
+  activePaneId?: string;
 };
 
 export type Workspace = {

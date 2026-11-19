@@ -63,12 +63,6 @@ export function frameIdOf(layout: Layout, paneId: string): string | undefined {
   return tabsets(layout).find((tabset) => tabset.tabs.some((pane) => pane.id === paneId))?.id;
 }
 
-/** The pane shown in a frame. */
-export function paneIdInFrame(layout: Layout, frameId: string): string | undefined {
-  const tabset = tabsets(layout).find((candidate) => candidate.id === frameId);
-  return tabset?.selectedId ?? tabset?.tabs[0]?.id;
-}
-
 /**
  * Removes a pane, collapsing the splits it leaves behind.
  * Returns `null` when it was the last pane (the caller closes the tab), and

@@ -137,6 +137,21 @@ describe("panes", () => {
     expect(selectAllPanes(store())).toHaveLength(paneCount);
   });
 
+  it("remembers the focused pane per tab and carries it to a new tab", () => {
+    const { tab, a, b } = twoPaneTab();
+    store().addTab(tab);
+    store().setActivePane(b.id);
+    expect(selectActiveTab(store()).activePaneId).toBe(b.id);
+    const before = store().workspaces;
+    store().setActivePane(b.id);
+    expect(store().workspaces).toBe(before);
+    store().setActivePane("missing");
+    expect(store().workspaces).toBe(before);
+
+    store().movePaneToNewTab(a.id);
+    expect(selectActiveTab(store()).activePaneId).toBe(a.id);
+  });
+
   it("does nothing when asked to move a tab's only pane", () => {
     const before = store().workspaces;
     const pane = listPanes(selectActiveTab(store()).layout)[0];

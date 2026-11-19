@@ -22,6 +22,8 @@ export type AppActions = {
   /** Records a layout reported by the mounted layout component. */
   setTabLayout: (tabId: string, layout: Layout) => void;
   markActivity: (tabId: string) => void;
+  /** Records which pane has keyboard focus, in whichever tab holds it. */
+  setActivePane: (paneId: string) => void;
 
   /**
    * Removes a pane from whichever tab holds it, without going through the
@@ -184,6 +186,14 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     });
   },
 
+  setActivePane: (paneId) => {
+    set((state) => {
+      const tab = findTabOfPane(state, paneId);
+      if (!tab || tab.activePaneId === paneId) return state;
+      return updateTab(state, tab.id, (current) => ({ ...current, activePaneId: paneId }));
+    });
+  },
+
   removePane: (paneId) => {
     set((state) => {
       const tab = findTabOfPane(state, paneId);
@@ -206,7 +216,10 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       const remaining = removePane(source.layout, paneId);
       // Already alone in its tab: nothing to move.
       if (!remaining) return state;
-      const tab = createTab({ title: source.title, layout: singlePaneLayout(pane) });
+      const tab = {
+        ...createTab({ title: source.title, layout: singlePaneLayout(pane) }),
+        activePaneId: pane.id,
+      };
       const next = updateTab(state, source.id, (current) => ({
         ...current,
         layout: remaining,
