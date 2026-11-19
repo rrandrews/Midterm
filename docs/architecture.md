@@ -35,7 +35,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
 | `src/components/panes/` | Pane content by kind. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
-| `src/terminal/` | xterm.js sessions and their registry. |
+| `src/terminal/` | xterm.js sessions and their registry; blocks mode model, rendering and history ([terminal.md](terminal.md)). |
 | `src/explorer/` | File explorer models, their registry, pure tree helpers. |
 | `src/ipc/` | Typed wrappers over Tauri commands. The only place that calls `invoke`. |
 | `src/styles/` | Tailwind entry + design tokens, and CSS for the layout and terminal. |
@@ -115,7 +115,7 @@ Right-click menus:
 | Area | Items | Where |
 |---|---|---|
 | Any pane | kind-specific items, then split, change type, maximize, move to tab, close | `PaneContent.tsx`, `PaneMenuItems.tsx` (shared with the pane toolbar's ⋯ menu) |
-| Terminal (on top of the above) | copy, paste, select all, clear | `TerminalMenuItems.tsx` |
+| Terminal (on top of the above) | copy/re-run a block (blocks mode), copy, paste, select all, clear, blocks mode | `TerminalMenuItems.tsx` |
 | Tab | rename, new tab, close, close others, close to the right | `TabStrip.tsx` |
 | Workspace switcher | new, rename, delete | `WorkspaceSwitcher.tsx` |
 | Empty title bar | new tab, new workspace | `TitleBar.tsx` |

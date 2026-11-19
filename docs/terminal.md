@@ -70,9 +70,13 @@ before the PTY handle is known are acknowledged as soon as it is.
 
 ### Without Tauri
 
-`spawnPty` falls back to a mock when the page is not running inside Tauri
-(`bun run dev` in a browser). The mock echoes lines and understands `exit`.
-It exists for layout work and is not a shell.
+`spawnPty` falls back to a mock (`src/ipc/ptyMock.ts`) when the page is not
+running inside Tauri (`bun run dev` in a browser). It is not a shell, but it
+prints OSC 7 and OSC 133 marks like the real integration, so blocks mode can
+be worked on in a browser, and knows a few commands: `ls`, `cd`, `pwd`,
+`echo`, `git status`, `seq N`, `sleep N` (⌃C stops it), `ask` (reads a
+line), `vim`/`less` (alternate screen, `q` quits), `clear`, `true`,
+`false`, `exit [n]`.
 
 ## Backend (`src-tauri/src/pty/`)
 
@@ -141,7 +145,8 @@ Windows. Lookup code is in `process.rs`. The mock PTY reports a shell.
 
 zsh, bash and fish report their working directory with OSC 7
 (`ESC ] 7 ; file://<host><percent-encoded path> BEL`) before every prompt
-(fish also whenever `$PWD` changes). The user's startup files are never
+(fish also whenever `$PWD` changes), and mark prompts and commands with
+OSC 133 (below). The user's startup files are never
 modified. The shell is recognised by the file name of the program
 `new_default_prog` picks (`$SHELL`, else the passwd entry); anything else
 starts exactly as before.
@@ -155,8 +160,8 @@ are safe. If writing fails the shell starts without integration.
 
 | Shell | How it is injected |
 |---|---|
-| zsh | `ZDOTDIR=<dir>/zsh`, original in `MIDTERM_ZSH_ZDOTDIR` (absent if `ZDOTDIR` was unset). Our `.zshenv` restores/unsets `ZDOTDIR`, sources the user's `.zshenv`, then (interactive only) `midterm-integration.zsh`. zsh reads `.zprofile`/`.zshrc`/`.zlogin` from the restored location, so it stays a normal login shell (`-zsh`). Hooks are added to `precmd_functions` at the first prompt, in front of the user's. |
-| bash | `bash --rcfile <dir>/bash/midterm.bash`. The script reads the login files itself (`/etc/profile`, then the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`) and puts its hook **first** in `PROMPT_COMMAND` (string or 5.1+ array), passing `$?` through so the user's hooks still see it. |
+| zsh | `ZDOTDIR=<dir>/zsh`, original in `MIDTERM_ZSH_ZDOTDIR` (absent if `ZDOTDIR` was unset). Our `.zshenv` restores/unsets `ZDOTDIR`, sources the user's `.zshenv`, then (interactive only) `midterm-integration.zsh`. zsh reads `.zprofile`/`.zshrc`/`.zlogin` from the restored location, so it stays a normal login shell (`-zsh`). Hooks are added to `precmd_functions` at the first prompt: ours first, and `_midterm_prompt_end` last (moved back to the end at every prompt). |
+| bash | `bash --rcfile <dir>/bash/midterm.bash`. The script reads the login files itself (`/etc/profile`, then the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`) and puts its hook **first** in `PROMPT_COMMAND` (string or 5.1+ array), passing `$?` through so the user's hooks still see it, and `_midterm_prompt_end` **last**. A DEBUG trap (chained to the user's) marks the start of a command. |
 | fish | `<dir>` prepended to `XDG_DATA_DIRS`, so fish sources `<dir>/fish/vendor_conf.d/midterm.fish`. It removes the entry (`MIDTERM_FISH_DATA_DIR`) or unsets the variable if it was unset before (`MIDTERM_FISH_XDG_DATA_DIRS_UNSET`). |
 
 Every integrated shell gets `MIDTERM_SHELL_INTEGRATION=1`. The scripts guard
@@ -173,14 +178,46 @@ Paths are percent-encoded byte by byte (everything except `A-Za-z0-9/._~-`)
 in zsh and bash, and with `string escape --style=url` in fish. The host is
 `$HOST` (zsh), `$HOSTNAME` (bash) or `$hostname` (fish).
 
-**Adding OSC 133 (M6)**: each script has a prompt hook (`_midterm_precmd`
-in zsh, `_midterm_prompt_command` in bash, `__midterm_prompt` in fish) that
-runs before the prompt and already captures the previous command's exit
-status in `ret` (zsh, bash), plus a preexec hook (`_midterm_preexec`,
-`__midterm_preexec`; bash needs a DEBUG trap or `PS0`). Emit `D;$ret` and
-`A` from the prompt hook, `B` at the end of the prompt and `C` from preexec.
-The tests in `src-tauri/src/pty/tests/shells.rs` run the real shells in a
-sandboxed `HOME` and are the place to check new marks.
+### OSC 133: prompt and command marks
+
+Each script marks the parts of the screen (all terminated by BEL):
+
+| Mark | Meaning | Emitted by |
+|---|---|---|
+| `ESC ] 133 ; A` | prompt starts | the prompt hook, after D and OSC 7 |
+| `ESC ] 133 ; B` | prompt ends, input starts | the end of the prompt (`PS1`, or fish's wrapped `fish_prompt`) |
+| `ESC ] 133 ; C` | command accepted, output starts | preexec |
+| `ESC ] 133 ; D ; <status>` | command finished | the prompt hook (fish: `fish_postexec`), only if a C was printed since the last prompt |
+
+So one command is `C … output … D;n (OSC 7) A prompt B`. An empty Enter or
+⌃C at the prompt gives only `A B`. Redraws (zle `reset-prompt`, ⌃L) can
+print B again; the frontend allows that, and ignores a second C for the
+same command.
+
+- **zsh**: `_midterm_precmd` (first precmd hook) prints D, OSC 7 and A;
+  `_midterm_prompt_end` (last precmd hook, so themes that rewrite `PS1` in
+  their own hooks keep it) strips and re-appends `%{ESC]133;B BEL%}` to
+  `PS1` (only with `prompt_percent`); `_midterm_preexec` prints C. zsh
+  runs the `precmd` function before a copy of `precmd_functions`, so when
+  the user has no `precmd` function the script installs a one-off one that
+  puts the hooks in order before the first prompt.
+- **bash**: `_midterm_prompt_command` (first in `PROMPT_COMMAND`) prints
+  D, OSC 7 and A and disarms the DEBUG trap; `_midterm_prompt_end` (last)
+  appends `\[ESC]133;B BEL\]` to `PS1` and arms it. The trap prints C for
+  the first command after it is armed, unless that command is our own
+  prompt hook (nothing ran), and stays quiet inside functions (`set -T`).
+  A DEBUG trap the user set in their startup files is chained: it still
+  runs, with `$?` and `$_` as it would have seen them. The trap returns 0,
+  so `extdebug` does not skip commands. (PS0 would be simpler on bash
+  4.4+, but bash 3.2 has no PS0 and the trap works everywhere.)
+- **fish**: `__midterm_prompt` (`fish_prompt` event) prints OSC 7 and A
+  and, once, wraps the user's `fish_prompt` (`functions -c`) to print B
+  after it; `fish_preexec` prints C, `fish_postexec` prints D.
+
+Known gaps are listed in the roadmap's "Later / unscheduled". The tests in
+`src-tauri/src/pty/tests/shells.rs` run the real shells in a sandboxed
+`HOME` and check the exact sequence of marks (fish is skipped when it is
+not installed).
 
 ### Threads per session
 
@@ -286,3 +323,103 @@ bun run tauri dev --config '{"build":{"devUrl":"http://localhost:1420/?selftest=
 ```
 
 It runs harmless commands in your login shell. Dev builds only.
+
+## Blocks mode
+
+A terminal pane can show its output as **blocks**, one per command, with an
+input editor at the bottom, instead of the classic terminal. The pane's
+`PaneData.terminalMode` (`"blocks"` / `"classic"`, saved with the layout)
+picks it, falling back to the `terminalMode` setting. It is toggled from
+the terminal's right-click menu or the `terminal.toggleBlocks` command
+(`src/terminal/blockMode.ts`).
+
+| File | Role |
+|---|---|
+| `src/terminal/blocks.ts` | `parseOsc133`, `BlockTracker`: follows the marks and keeps the list of blocks. Tested with `@xterm/headless`. |
+| `src/terminal/blockRender.ts` | Buffer rows → styled runs (and plain text), duration format. |
+| `src/terminal/history.ts` | History and autosuggestions; the global list in `history.json`. |
+| `src/terminal/gitBranch.ts` | Branch of a directory (`gitStatus`, cached 3 s). |
+| `src/terminal/blockMode.ts` | Mode, block actions, context-menu target, the toggle command. |
+| `src/components/panes/BlocksView.tsx` | The blocks and their headers; `BlockInput.tsx` is the editor. |
+| `src/styles/blocks.css` | Layout and look, from the mockup. |
+
+### The terminal stays the source of truth
+
+The xterm instance is unchanged in blocks mode: same size, same parsing,
+same flow control. It stays attached under the blocks view, invisible
+(`opacity: 0`), so switching to classic shows the full history and a
+full-screen program can take over at once.
+
+`session.blocks` (a `BlockTracker`) registers an OSC 133 handler on the
+terminal's parser. On C it places an xterm marker (`registerMarker`) on
+the cursor's row: the block's first output row. On D it places another:
+its end (that row counts only if D was printed after some text on it, i.e.
+output without a final newline). Markers follow their rows through
+scrollback trimming and reflow. When a finished block loses a marker (its
+rows left the scrollback, or were erased) it is dropped. The running
+block is re-anchored instead, at the top of the screen (erased) or of the
+buffer (trimmed), and flagged `truncated`. `ESC [ 3 J` (what `clear`
+sends), ⌃L in the editor and the Clear menu item drop all blocks; a
+running `clear` is dropped when it ends.
+
+Each block has its command (what the editor sent, else read back from the
+buffer between B and C), the cwd at C (from OSC 7), the branch of that cwd
+(looked up at C), the exit status from D and the duration from C to D,
+measured in the frontend.
+
+The tracker also knows the **phase** (`prompt` after A/B/D, `running`
+after C), whether the **alternate screen** is active
+(`buffer.onBufferChange`), and whether the shell has **integration**:
+`pending` until the first mark, `absent` if none came within 3 s of the
+first output.
+
+### What is shown
+
+`TerminalPane` draws `BlocksView` over the terminal when the pane is in
+blocks mode, the shell has not turned out to lack integration, and no
+program is on the alternate screen. Otherwise the classic terminal shows
+(vim, less, htop run full-pane as usual and the blocks come back when they
+exit; a shell without integration stays classic, and the menu item says
+so).
+
+- Finished blocks are DOM, rendered once from their buffer rows
+  (`renderRows`: cell colors and attributes to spans, soft-wrapped rows
+  joined into one line so the DOM wraps them at its own width). At most
+  the last 300 lines are rendered; "Show earlier lines" adds 2000 at a
+  time. Blocks use `content-visibility: auto`.
+- The running block is redrawn from the buffer at most once a frame while
+  output arrives (the last 500 rows, with the cursor), so progress bars and
+  `\r` updates look right.
+- Blocks are bottom-aligned and the list sticks to the bottom unless the
+  user scrolls up; running a command scrolls back down.
+- Header: cwd (`~`-relative), branch, and `exit N · duration` (err color
+  when non-zero), with copy command / copy output / run again buttons on
+  hover. The same actions are at the top of the right-click menu on a
+  block.
+- Text in blocks is selectable; the menu's Copy uses the page selection.
+
+### Keyboard
+
+- At a prompt the **input editor** (a textarea with a ghost-text overlay)
+  has the keyboard. ⏎ runs, ⇧⏎ adds a line, ⇥ or → (at the end) accepts
+  the suggestion, ↑/↓ walk the history (from the first/last line), Esc
+  leaves the history, ⌃C clears the line, ⌃D on an empty line sends EOF,
+  ⌃L clears the blocks. App shortcuts still run first (capture phase).
+  Paste from the menu goes into the editor.
+- Running a command sends it to the shell as if typed
+  (`session.runCommand`): a multi-line one as a bracketed paste when the
+  shell enabled it, so it is one command line.
+- While a command runs, the hidden terminal has the keyboard, so
+  interactive prompts, ⌃C and typeahead work as in classic mode. Clicking
+  the blocks gives the keyboard back to whichever target is current.
+- `registerPaneFocuser` focuses the editor at a prompt, the terminal
+  otherwise, and the pane hands focus over when the phase or mode changes
+  while it has it.
+
+### History and suggestions
+
+The suggestion is the most recent history entry that starts with what is
+typed. History is the pane's own commands (kept by its tracker, newest
+first) followed by the global list, which every pane adds to and which is
+saved in `history.json` (last 1000, via `openJsonFile`). Shell history
+files are not read.
