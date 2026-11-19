@@ -4,7 +4,7 @@ Midterm is a Tauri 2 app: a Rust backend (`src-tauri/`) that owns PTYs, and a
 React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
-[explorer.md](explorer.md) ·
+[explorer.md](explorer.md) · [commands.md](commands.md) ·
 [design-tokens.md](design-tokens.md) · [roadmap.md](roadmap.md)
 
 ## Concepts
@@ -26,8 +26,10 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | Path | What lives there |
 |---|---|
 | `src/state/` | Types, pure layout helpers, the zustand store, saving/restoring it. Unit-tested. |
-| `src/actions.ts` | User-level commands (split, close, new tab…). Menus and shortcuts both call these. |
-| `src/shortcuts.ts` | Keyboard shortcut table and window-level handler. |
+| `src/actions.ts` | User-level actions (split, close, new tab…). Commands, menus and shortcuts call these. |
+| `src/commands/` | Command registry: ids, titles, key bindings; see [commands.md](commands.md). |
+| `src/shortcuts.ts` | Window-level shortcut handler, driven by the registry. |
+| `src/settings/` | User settings: schema, validation, persisted store. |
 | `src/layout/dock.ts` | Bridge to the mounted pane layout: imperative handles by tab id, pane focus. |
 | `src/components/titlebar/` | Title bar = tab bar: workspace switcher, tabs, app menu. |
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
@@ -90,8 +92,9 @@ attach to that state on mount and detach on unmount.
 
 ## Commands and focus
 
-- Anything a user can do is a function in `src/actions.ts`. Add new commands
-  there, then reference them from menus and `src/shortcuts.ts`.
+- Anything a user can do is a function in `src/actions.ts`, registered as a
+  command (`src/commands/`) so it gets a binding and a palette entry.
+  Menus show its shortcut with `shortcutLabel(id)`.
 - Keyboard focus should always be in a pane. `focusPane(id)` in
   `src/layout/dock.ts` sets the pane that *should* have focus; it takes focus
   now, or when its content mounts. Menus and rename fields call

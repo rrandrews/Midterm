@@ -1,5 +1,6 @@
 import { movePaneToNewTab, movePaneToTab, splitPane, toggleMaximizePane } from "../../actions";
 import { changePaneKind, closePane } from "../../closing";
+import { shortcutLabel } from "../../commands/registry";
 import { getDock } from "../../layout/dock";
 import { PANE_LABELS, countPanes, findPane, frameIdOf } from "../../state/layout";
 import { findTabOfPane, selectActiveWorkspace, useAppStore } from "../../state/store";
@@ -24,10 +25,10 @@ export function PaneMenuItems({ paneId }: { paneId: string }) {
 
   return (
     <>
-      <MenuItem shortcut="⌘D" onSelect={() => splitPane("right", paneId)}>
+      <MenuItem shortcut={shortcutLabel("pane.splitRight")} onSelect={() => splitPane("right", paneId)}>
         Split right
       </MenuItem>
-      <MenuItem shortcut="⇧⌘D" onSelect={() => splitPane("bottom", paneId)}>
+      <MenuItem shortcut={shortcutLabel("pane.splitDown")} onSelect={() => splitPane("bottom", paneId)}>
         Split down
       </MenuItem>
       <MenuSub>
@@ -44,7 +45,7 @@ export function PaneMenuItems({ paneId }: { paneId: string }) {
           ))}
         </MenuSubContent>
       </MenuSub>
-      <MenuItem shortcut="⇧⌘↩" disabled={alone} onSelect={() => toggleMaximizePane(paneId)}>
+      <MenuItem shortcut={shortcutLabel("pane.toggleMaximize")} disabled={alone} onSelect={() => toggleMaximizePane(paneId)}>
         {maximized ? "Restore pane" : "Maximize pane"}
       </MenuItem>
       <MenuSub>
@@ -62,7 +63,7 @@ export function PaneMenuItems({ paneId }: { paneId: string }) {
         </MenuSubContent>
       </MenuSub>
       <MenuSeparator />
-      <MenuItem shortcut="⌘W" onSelect={() => void closePane(paneId)}>
+      <MenuItem shortcut={shortcutLabel("pane.close")} onSelect={() => void closePane(paneId)}>
         Close pane
       </MenuItem>
     </>

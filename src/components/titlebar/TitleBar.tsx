@@ -2,6 +2,7 @@ import { closeTab } from "../../closing";
 import { Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { newTab, newWorkspace, splitPane } from "../../actions";
+import { shortcutLabel } from "../../commands/registry";
 import { watchFullscreen } from "../../ipc/window";
 import { DotsIcon } from "../ui/icons";
 import {
@@ -27,19 +28,19 @@ function AppMenu() {
         <DotsIcon size={15} radius={1.6} />
       </MenuTrigger>
       <MenuContent>
-        <MenuItem shortcut="⌘T" onSelect={newTab}>
+        <MenuItem shortcut={shortcutLabel("tab.new")} onSelect={newTab}>
           New tab
         </MenuItem>
         <MenuItem onSelect={newWorkspace}>New workspace</MenuItem>
         <MenuSeparator />
-        <MenuItem shortcut="⌘D" onSelect={() => splitPane("right")}>
+        <MenuItem shortcut={shortcutLabel("pane.splitRight")} onSelect={() => splitPane("right")}>
           Split right
         </MenuItem>
-        <MenuItem shortcut="⇧⌘D" onSelect={() => splitPane("bottom")}>
+        <MenuItem shortcut={shortcutLabel("pane.splitDown")} onSelect={() => splitPane("bottom")}>
           Split down
         </MenuItem>
         <MenuSeparator />
-        <MenuItem shortcut="⇧⌘W" onSelect={() => closeTab()}>
+        <MenuItem shortcut={shortcutLabel("tab.close")} onSelect={() => closeTab()}>
           Close tab
         </MenuItem>
       </MenuContent>
@@ -90,7 +91,7 @@ export function TitleBar() {
         </header>
       </ContextMenuTrigger>
       <ContextMenuContent aria-label="Title bar">
-        <MenuItem shortcut="⌘T" onSelect={newTab}>
+        <MenuItem shortcut={shortcutLabel("tab.new")} onSelect={newTab}>
           New tab
         </MenuItem>
         <MenuItem onSelect={newWorkspace}>New workspace</MenuItem>

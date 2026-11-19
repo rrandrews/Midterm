@@ -24,11 +24,13 @@ async function start(): Promise<void> {
   const persist = !import.meta.env.DEV || !(params.has("mockup") || params.has("selftest"));
   const { restoreSavedState, startSaving } = await import("./state/persistence");
   const { loadHomeDirectory, loadLocalHostname } = await import("./ipc/system");
+  const { loadSettings } = await import("./settings/settings");
   // All before any pane exists: restored terminals start in their saved
   // directories, directory reports are checked against the host name, and
   // explorers start in (and abbreviate) the home directory.
   await Promise.all([
     persist ? restoreSavedState() : undefined,
+    loadSettings({ persist }),
     loadLocalHostname(),
     loadHomeDirectory(),
   ]);
