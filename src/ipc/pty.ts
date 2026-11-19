@@ -2,7 +2,12 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 
 /* Typed wrapper around the Rust PTY commands (src-tauri/src/pty). */
 
-export type PtyExit = { code: number | null };
+export type PtyExit = {
+  /** `null` when the shell was ended by a signal. */
+  code: number | null;
+  /** How long the shell ran, as measured by the backend. */
+  runtimeMs: number;
+};
 
 export type PtyOptions = {
   cols: number;
@@ -17,6 +22,8 @@ export type PtyOptions = {
 
 export type Pty = {
   write: (data: string) => void;
+  /** Sends a "binary string" (one char per byte) without UTF-8 encoding it. */
+  writeBinary: (data: string) => void;
   resize: (cols: number, rows: number) => void;
   /**
    * Reports that `bytes` of output have been processed. The backend stops
@@ -54,6 +61,11 @@ async function spawnTauriPty(options: PtyOptions): Promise<Pty> {
 
   return {
     write: (data) => void invoke("pty_write", { id, data }).catch(logFailure("pty_write")),
+    writeBinary: (data) =>
+      void invoke("pty_write_bytes", {
+        id,
+        data: Array.from(data, (char) => char.charCodeAt(0) & 0xff),
+      }).catch(logFailure("pty_write_bytes")),
     resize: (cols, rows) =>
       void invoke("pty_resize", { id, cols, rows }).catch(logFailure("pty_resize")),
     ack: (bytes) => void invoke("pty_ack", { id, bytes }).catch(logFailure("pty_ack")),
@@ -70,6 +82,7 @@ function spawnMockPty(options: PtyOptions): Pty {
   const encoder = new TextEncoder();
   const send = (text: string) => queueMicrotask(() => options.onData(encoder.encode(text)));
   const prompt = "\x1b[38;2;133;138;150m~/mock\x1b[0m \x1b[38;2;139;156;255m❯\x1b[0m ";
+  const started = performance.now();
   let line = "";
 
   send(`\x1b[38;2;133;138;150m[mock pty — run \`bun run tauri dev\` for a real shell]\x1b[0m\r\n${prompt}`);
@@ -82,7 +95,9 @@ function spawnMockPty(options: PtyOptions): Pty {
           line = "";
           if (command === "exit") {
             send("\r\n");
-            queueMicrotask(() => options.onExit({ code: 0 }));
+            queueMicrotask(() =>
+              options.onExit({ code: 0, runtimeMs: performance.now() - started }),
+            );
             return;
           }
           send(command ? `\r\n${command}\r\n${prompt}` : `\r\n${prompt}`);
@@ -97,6 +112,7 @@ function spawnMockPty(options: PtyOptions): Pty {
         }
       }
     },
+    writeBinary: () => {},
     resize: () => {},
     ack: () => {},
     kill: () => {},

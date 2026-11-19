@@ -4,7 +4,7 @@ import { type Pty, spawnPty } from "../ipc/pty";
 import { getDock } from "../layout/dock";
 import { frameIdOf, listPanes } from "../state/layout";
 import { selectActiveTab, useAppStore } from "../state/store";
-import { sessionCount } from "../terminal/sessions";
+import { peekSession, sessionCount } from "../terminal/sessions";
 
 /*
  * Development aid: exercises the real app (real webview, real PTY) and posts
@@ -37,7 +37,7 @@ async function openShell(cols = 80, rows = 24) {
   const shell = {
     text: "",
     bytes: 0,
-    exit: undefined as { code: number | null } | undefined,
+    exit: undefined as { code: number | null; runtimeMs: number } | undefined,
     bytesAfterExit: 0,
     pty: undefined as unknown as Pty,
     pendingAck: 0,
@@ -66,12 +66,16 @@ async function ptyChecks(checks: Check[]): Promise<void> {
   const onData = new Channel<unknown>();
   const onEvent = new Channel<unknown>();
   let rawId = 0;
+  let unacked = 0;
   onData.onmessage = (message) => {
     kinds.add(message instanceof ArrayBuffer ? "ArrayBuffer" : Object.prototype.toString.call(message));
     const size = message instanceof ArrayBuffer ? message.byteLength : (message as unknown[]).length;
+    // Output can arrive before the id does; acknowledge it once we have one.
     if (rawId) void invoke("pty_ack", { id: rawId, bytes: size });
+    else unacked += size;
   };
   rawId = await invoke<number>("pty_spawn", { cols: 80, rows: 24, cwd: null, onData, onEvent });
+  if (unacked) await invoke("pty_ack", { id: rawId, bytes: unacked });
   // Small (inline) and large (fetched) chunks take different IPC paths.
   await invoke("pty_write", { id: rawId, data: "head -c 300000 /dev/zero | base64\r" });
   await sleep(2500);
@@ -114,7 +118,11 @@ async function ptyChecks(checks: Check[]): Promise<void> {
   shell.pty.write("exit 3\r");
   await waitFor(() => shell.exit !== undefined, 5000);
   await sleep(300);
-  checks.push({ name: "exit code", ok: shell.exit?.code === 3, detail: shell.exit });
+  checks.push({
+    name: "exit code and runtime",
+    ok: shell.exit?.code === 3 && (shell.exit?.runtimeMs ?? 0) > 100,
+    detail: shell.exit,
+  });
   checks.push({ name: "no output after exit", ok: shell.bytesAfterExit === 0, detail: shell.bytesAfterExit });
 
   // 6. Kill ends a busy shell.
@@ -164,22 +172,47 @@ async function uiChecks(checks: Check[]): Promise<void> {
     detail: { ratio, canvases },
   });
 
-  // Re-dock the new pane along the bottom edge: its terminal must survive.
+  // Re-dock the new pane along the bottom edge: the same terminal must end
+  // up there, full width, below the first.
   const sessionsBefore = sessionCount();
-  const dock = getDock(tab().id);
+  const sessionBefore = second ? peekSession(second) : undefined;
+  const rectOf = (paneId: string | undefined) =>
+    document.querySelector(`[data-pane-id="${paneId}"]`)?.getBoundingClientRect();
+  const dock = getDock(tab());
   const frameId = second && frameIdOf(tab().layout, second);
   if (dock && frameId) dock.moveTabset(frameId, { edge: "bottom" });
   await sleep(700);
   const moved = canvasReport();
+  const [top, bottom] = [rectOf(first), rectOf(second)];
+  checks.push({
+    name: "re-dock moves the pane to the bottom edge",
+    ok:
+      top !== undefined &&
+      bottom !== undefined &&
+      bottom.top >= top.bottom &&
+      Math.abs(bottom.width - window.innerWidth) < 2 &&
+      Math.abs(top.width - window.innerWidth) < 2,
+    detail: { top: top && [top.x, top.y, top.width, top.height], bottom: bottom && [bottom.x, bottom.y, bottom.width, bottom.height] },
+  });
   checks.push({
     name: "terminal survives a re-dock",
     ok:
+      sessionBefore !== undefined &&
+      peekSession(second ?? "") === sessionBefore &&
+      sessionBefore.isAttached &&
       sessionCount() === sessionsBefore &&
       moved.length === 2 &&
       moved.every((c) => c.scale !== null && Math.abs(c.scale - ratio) < 0.1),
     detail: { sessions: [sessionsBefore, sessionCount()], moved },
   });
   checks.push({ name: "focus returns after a re-dock", ok: focusedPane() === second, detail: focusedPane() });
+
+  // Dragging a separator with the mouse must not leave focus on it.
+  const separator = document.querySelector<HTMLElement>("[data-separator]");
+  separator?.focus();
+  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  await sleep(100);
+  checks.push({ name: "focus leaves a separator after a pointer release", ok: focusedPane() === second });
 
   if (second) closePane(second);
   await sleep(500);

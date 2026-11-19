@@ -73,6 +73,29 @@ function updateTab(state: AppState, tabId: string, update: (tab: Tab) => Tab): A
   return changed ? { ...state, workspaces } : state;
 }
 
+/**
+ * The tab with a new layout. If the layout no longer has the tab's active
+ * pane, the nearest pane before it (else the first pane) becomes active.
+ */
+function withLayout(tab: Tab, layout: Layout, options: { remount: boolean }): Tab {
+  let { activePaneId } = tab;
+  if (activePaneId && !findPane(layout, activePaneId)) {
+    const before = listPanes(tab.layout);
+    const index = before.findIndex((pane) => pane.id === activePaneId);
+    const survivor = before
+      .slice(0, Math.max(index, 0))
+      .reverse()
+      .find((pane) => findPane(layout, pane.id));
+    activePaneId = survivor?.id ?? listPanes(layout)[0]?.id;
+  }
+  return {
+    ...tab,
+    layout,
+    activePaneId,
+    layoutRev: tab.layoutRev + (options.remount ? 1 : 0),
+  };
+}
+
 function withoutTab(state: AppState, tabId: string): AppState {
   return {
     ...state,
@@ -176,7 +199,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   },
 
   setTabLayout: (tabId, layout) => {
-    set((state) => updateTab(state, tabId, (tab) => ({ ...tab, layout })));
+    set((state) => updateTab(state, tabId, (tab) => withLayout(tab, layout, { remount: false })));
   },
 
   markActivity: (tabId) => {
@@ -200,11 +223,7 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       if (!tab) return state;
       const layout = removePane(tab.layout, paneId);
       if (!layout) return withoutTab(state, tab.id);
-      return updateTab(state, tab.id, (current) => ({
-        ...current,
-        layout,
-        layoutRev: current.layoutRev + 1,
-      }));
+      return updateTab(state, tab.id, (current) => withLayout(current, layout, { remount: true }));
     });
   },
 
@@ -220,11 +239,9 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
         ...createTab({ title: source.title, layout: singlePaneLayout(pane) }),
         activePaneId: pane.id,
       };
-      const next = updateTab(state, source.id, (current) => ({
-        ...current,
-        layout: remaining,
-        layoutRev: current.layoutRev + 1,
-      }));
+      const next = updateTab(state, source.id, (current) =>
+        withLayout(current, remaining, { remount: true }),
+      );
       return {
         ...next,
         workspaces: next.workspaces.map((workspace) => {
@@ -249,6 +266,14 @@ export function selectActiveWorkspace(state: AppState): Workspace {
 export function selectActiveTab(state: AppState): Tab {
   const workspace = selectActiveWorkspace(state);
   return workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? workspace.tabs[0];
+}
+
+export function findTab(state: AppState, tabId: string): Tab | undefined {
+  for (const workspace of state.workspaces) {
+    const tab = workspace.tabs.find((candidate) => candidate.id === tabId);
+    if (tab) return tab;
+  }
+  return undefined;
 }
 
 export function findTabOfPane(state: AppState, paneId: string): Tab | undefined {

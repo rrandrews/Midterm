@@ -36,8 +36,16 @@ follow.
 ### Exit
 
 When the shell exits the pane closes (`closePane`). Exception: a shell that
-exits within 1.5s of starting stays open and prints the error, so a broken
-shell configuration is visible instead of making panes vanish.
+ran for less than 1.5s (the backend reports the runtime) stays open and prints
+the error, so a broken shell configuration is visible instead of making panes
+vanish. After an exit, input is dropped.
+
+### Acknowledging output
+
+Every byte received is acknowledged to the backend exactly once (see "Flow
+control" below): when xterm has parsed it, or, for a session that is disposed
+with output still queued or in flight, when it is discarded. Bytes settled
+before the PTY handle is known are acknowledged as soon as it is.
 
 ### Rendering
 
@@ -57,7 +65,8 @@ shell configuration is visible instead of making panes vanish.
   `attachCustomKeyEventHandler`; the window-level handler runs them.
 - Links open in the default browser on ⌘-click (`src/ipc/shell.ts`, http(s)
   only).
-- Input typed before the PTY is ready is buffered and sent once it is.
+- Input typed while the shell is starting is queued and sent, in order, once
+  it is running.
 
 ### Without Tauri
 
@@ -82,6 +91,7 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 |---|---|---|
 | `pty_spawn` | `cols`, `rows`, `cwd?`, `onData`, `onEvent` | Returns the session id. Output can start arriving before the id does. |
 | `pty_write` | `id`, `data` | UTF-8 input. Queued; never blocks. Errors on an unknown id. |
+| `pty_write_bytes` | `id`, `data` (byte array) | Input that is not text, e.g. legacy mouse reports (xterm's `onBinary`). |
 | `pty_resize` | `id`, `cols`, `rows` | Errors on an unknown id. |
 | `pty_ack` | `id`, `bytes` | Flow-control acknowledgement. Unknown ids are ignored. |
 | `pty_kill` | `id` | SIGHUP, then SIGKILL after 250ms. Idempotent. An exit event still follows. |
@@ -89,8 +99,9 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 - `onData` receives an `ArrayBuffer` of raw bytes (sent as
   `InvokeResponseBody::Raw`; a `Channel<Vec<u8>>` would arrive as a JSON
   number array). Chunks can split UTF-8 sequences, which xterm handles.
-- `onEvent` receives `{ event: "exit", data: { code } }`; `code` is `null`
-  when the child was ended by a signal.
+- `onEvent` receives `{ event: "exit", data: { code, runtimeMs } }`. `code` is
+  `null` when the child was ended by a signal; `runtimeMs` is how long it ran,
+  measured in the backend because delivery of the event can lag the exit.
 - All commands are synchronous, so Tauri runs them in arrival order on the
   main thread. That is what keeps keystrokes in order. Keep them that way.
 
@@ -151,8 +162,8 @@ arrays (still handled by `src/ipc/pty.ts`, but slower). Allow
 
 `src/dev/selftest.ts` drives the running app (real webview, real shell) and
 posts a JSON report to a local listener: raw-byte delivery, running commands,
-environment, resize, an 8 MB flood, exit codes, kill, terminal scaling, and a
-terminal surviving a re-dock with focus restored.
+environment, resize, an 8 MB flood, exit codes, kill, terminal scaling, a
+terminal surviving a re-dock, and focus after layout changes.
 
 ```sh
 # 1. a listener that accepts one POST on PORT and saves the body

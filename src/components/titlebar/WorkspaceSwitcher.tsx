@@ -1,6 +1,6 @@
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
-import { focusActivePane, newWorkspace, removeWorkspace, selectWorkspace } from "../../actions";
+import { newWorkspace, removeWorkspace, selectWorkspace } from "../../actions";
 import { refocusPane } from "../../layout/dock";
 import { selectActiveWorkspace, useAppStore } from "../../state/store";
 import { InlineEdit } from "../ui/InlineEdit";
@@ -32,7 +32,7 @@ export function WorkspaceSwitcher() {
           onCommit={(name) => renameWorkspace(active.id, name)}
           onDone={() => {
             setRenaming(false);
-            focusActivePane();
+            refocusPane();
           }}
         />
       </div>

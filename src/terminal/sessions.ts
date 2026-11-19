@@ -1,4 +1,5 @@
 import { closePane } from "../actions";
+import { findPane } from "../state/layout";
 import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
 import { TerminalSession } from "./session";
 
@@ -18,8 +19,15 @@ export function acquireSession(paneId: string): TerminalSession {
   let session = sessions.get(paneId);
   if (!session) {
     session = new TerminalSession(paneId, {
-      onExit: (id) => closePane(id),
-      onBackgroundOutput: (id) => {
+      onExit: (exited) => {
+        // Only the pane's current session, and only while it is still a
+        // terminal: the pane may have changed kind since this shell started.
+        if (sessions.get(exited.paneId) !== exited) return;
+        const tab = findTabOfPane(useAppStore.getState(), exited.paneId);
+        const pane = tab && findPane(tab.layout, exited.paneId);
+        if (pane?.data.kind === "terminal") closePane(exited.paneId);
+      },
+      onBackgroundOutput: ({ paneId: id }) => {
         const state = useAppStore.getState();
         const tab = findTabOfPane(state, id);
         if (tab) state.markActivity(tab.id);
@@ -65,4 +73,9 @@ useAppStore.subscribe(scheduleReconcile);
 /** Number of live sessions (for tests and diagnostics). */
 export function sessionCount(): number {
   return sessions.size;
+}
+
+/** The pane's live session, if it has one (for tests and diagnostics). */
+export function peekSession(paneId: string): TerminalSession | undefined {
+  return sessions.get(paneId);
 }

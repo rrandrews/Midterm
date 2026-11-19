@@ -1,6 +1,7 @@
 import { Plus, X } from "lucide-react";
 import { useState } from "react";
-import { closeTab, focusActivePane, newTab, selectTab } from "../../actions";
+import { closeTab, newTab, selectTab } from "../../actions";
+import { refocusPane } from "../../layout/dock";
 import { countPanes } from "../../state/layout";
 import { selectActiveWorkspace, useAppStore } from "../../state/store";
 import type { Tab } from "../../state/types";
@@ -38,7 +39,7 @@ function TabItem({ tab, active }: { tab: Tab; active: boolean }) {
           onCommit={(title) => renameTab(tab.id, title)}
           onDone={() => {
             setRenaming(false);
-            focusActivePane();
+            refocusPane();
           }}
         />
       ) : (

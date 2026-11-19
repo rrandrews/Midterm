@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   type DisableDropArgs,
   Workspace as Dock,
@@ -8,7 +8,7 @@ import {
 } from "react-resizable-panels";
 import { type DockHandle, registerDock, restoreFocusAfterLayoutChange } from "../../layout/dock";
 import { PANE_LABELS, countPanes } from "../../state/layout";
-import { useAppStore } from "../../state/store";
+import { findTab, useAppStore } from "../../state/store";
 import type { Layout, PaneData, PaneNode, Tab } from "../../state/types";
 import { PaneContent } from "../panes/PaneContent";
 import { PaneToolbar } from "./PaneToolbar";
@@ -57,16 +57,23 @@ const renderDragPreview = (frame: Frame) => {
  */
 export function PaneLayout({ tab }: { tab: Tab }) {
   const tabId = tab.id;
+  // The revision this instance was mounted for; a newer one means the store
+  // has moved on and this instance is about to be replaced.
+  const [layoutRev] = useState(tab.layoutRev);
   const alone = countPanes(tab.layout) <= 1;
 
   const dockRef = useCallback(
-    (handle: DockHandle | null) => (handle ? registerDock(tabId, handle) : undefined),
-    [tabId],
+    (handle: DockHandle | null) =>
+      handle ? registerDock({ id: tabId, layoutRev }, handle) : undefined,
+    [tabId, layoutRev],
   );
 
   const onModelChanged = useCallback(
     (layout: Layout) => {
-      const { setTabLayout, closeTab } = useAppStore.getState();
+      const state = useAppStore.getState();
+      // Never let a stale layout overwrite the one that replaced it.
+      if (findTab(state, tabId)?.layoutRev !== layoutRev) return;
+      const { setTabLayout, closeTab } = state;
       if (countPanes(layout) === 0) {
         closeTab(tabId);
         return;
@@ -74,7 +81,7 @@ export function PaneLayout({ tab }: { tab: Tab }) {
       setTabLayout(tabId, layout);
       restoreFocusAfterLayoutChange();
     },
-    [tabId],
+    [tabId, layoutRev],
   );
 
   const renderToolbar = useCallback(

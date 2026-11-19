@@ -7,6 +7,7 @@ import {
   selectTabAt,
   splitPane,
 } from "./actions";
+import { editingElsewhere } from "./layout/dock";
 
 /*
  * App keyboard shortcuts (macOS: all use ⌘).
@@ -54,6 +55,8 @@ export function isAppShortcut(event: KeyboardEvent): boolean {
 /** Starts handling shortcuts; returns a function that stops. */
 export function installShortcuts(): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
+    // A rename field owns the keyboard while it is open.
+    if (editingElsewhere()) return;
     const shortcut = match(event);
     if (!shortcut) return;
     event.preventDefault();

@@ -4,24 +4,34 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { type Pty, spawnPty } from "../ipc/pty";
+import { type Pty, type PtyExit, spawnPty } from "../ipc/pty";
 import { openExternal } from "../ipc/shell";
 import { isAppShortcut } from "../shortcuts";
 import { TERMINAL_OPTIONS } from "./theme";
 
 export type SessionEvents = {
   /** The shell exited after running for a while (see `QUICK_EXIT_MS`). */
-  onExit: (paneId: string) => void;
+  onExit: (session: TerminalSession) => void;
   /** Output arrived while the terminal was off screen. Fires once per stretch off screen. */
-  onBackgroundOutput: (paneId: string) => void;
+  onBackgroundOutput: (session: TerminalSession) => void;
 };
 
 /**
- * A shell that dies this soon after starting probably failed to start.
- * Its pane stays open showing the error instead of vanishing (and, for a
- * tab's last pane, instead of looping through close-tab → new-tab → spawn).
+ * A shell that ran for less than this probably failed to start. Its pane
+ * stays open showing the error instead of vanishing (and, for a tab's last
+ * pane, instead of looping through close-tab → new-tab → spawn).
  */
 const QUICK_EXIT_MS = 1500;
+
+/**
+ * - `idle`: no shell yet (never shown).
+ * - `starting`: spawn requested; input is queued.
+ * - `running`: input goes to the shell.
+ * - `ended`: the shell exited or never started; input is dropped.
+ */
+type Phase = "idle" | "starting" | "running" | "ended";
+
+type Input = { binary: boolean; data: string };
 
 /**
  * One terminal: an xterm.js instance bound to a PTY.
@@ -38,14 +48,24 @@ export class TerminalSession {
   private webgl: WebglAddon | null = null;
   private fitFrame = 0;
 
-  private pty: Pty | null = null;
-  private spawned = false;
-  private startedAt = 0;
+  private phase: Phase = "idle";
   private disposed = false;
   private attached = false;
   private notifiedBackgroundOutput = false;
-  /** Input typed, and output processed, before the PTY handle was available. */
-  private pendingInput = "";
+  /** Input typed while the shell was starting, in order. */
+  private queuedInput: Input[] = [];
+
+  /*
+   * Flow-control accounting: every byte received must be acknowledged to the
+   * backend exactly once, or it throttles the shell and delays its exit.
+   * A byte is "settled" when xterm has parsed it, or when we know it never
+   * will be (the session was disposed).
+   */
+  /** The PTY handle, once known. Kept after exit and disposal: late acknowledgements still go through it. */
+  private pty: Pty | null = null;
+  /** Bytes handed to xterm whose parse callback has not fired yet. */
+  private unsettled = 0;
+  /** Bytes settled before the PTY handle was known. */
   private pendingAck = 0;
 
   constructor(
@@ -67,11 +87,12 @@ export class TerminalSession {
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
 
-    this.term.onData((data) => {
-      if (this.pty) this.pty.write(data);
-      else this.pendingInput += data;
+    this.term.onData((data) => this.send({ binary: false, data }));
+    // Reports that are bytes rather than text, e.g. legacy mouse encoding.
+    this.term.onBinary((data) => this.send({ binary: true, data }));
+    this.term.onResize(({ cols, rows }) => {
+      if (this.phase === "running") this.pty?.resize(cols, rows);
     });
-    this.term.onResize(({ cols, rows }) => this.pty?.resize(cols, rows));
   }
 
   get isAttached(): boolean {
@@ -109,62 +130,98 @@ export class TerminalSession {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.phase = "ended";
+    this.queuedInput = [];
     this.detach();
+    // xterm drops its queued writes on dispose, so their callbacks never run.
+    this.settle(this.unsettled);
+    this.unsettled = 0;
     this.pty?.kill();
-    this.pty = null;
     this.term.dispose();
   }
 
   private start(): void {
-    if (this.spawned) return;
-    this.spawned = true;
-    this.startedAt = performance.now();
+    if (this.phase !== "idle") return;
+    this.phase = "starting";
 
     spawnPty({
       cols: this.term.cols,
       rows: this.term.rows,
       onData: (bytes) => this.receive(bytes),
-      onExit: ({ code }) => this.handleExit(code),
+      onExit: (exit) => this.handleExit(exit),
     }).then(
       (pty) => {
+        this.pty = pty;
+        if (this.pendingAck) pty.ack(this.pendingAck);
+        this.pendingAck = 0;
+
         if (this.disposed) {
           pty.kill();
           return;
         }
-        this.pty = pty;
-        // Catch up on whatever happened while the spawn was in flight.
+        // The shell may already have exited while the spawn was in flight.
+        if (this.phase !== "starting") return;
+
+        this.phase = "running";
         pty.resize(this.term.cols, this.term.rows);
-        if (this.pendingAck) pty.ack(this.pendingAck);
-        if (this.pendingInput) pty.write(this.pendingInput);
-        this.pendingAck = 0;
-        this.pendingInput = "";
+        for (const input of this.queuedInput) this.write(pty, input);
+        this.queuedInput = [];
       },
-      (error) => this.report(`Could not start a shell: ${String(error)}`),
+      (error) => {
+        this.phase = "ended";
+        this.queuedInput = [];
+        this.report(`Could not start a shell: ${String(error)}`);
+      },
     );
   }
 
+  private send(input: Input): void {
+    if (this.phase === "running" && this.pty) this.write(this.pty, input);
+    else if (this.phase === "starting") this.queuedInput.push(input);
+    // Otherwise there is no shell to receive it.
+  }
+
+  private write(pty: Pty, input: Input): void {
+    if (input.binary) pty.writeBinary(input.data);
+    else pty.write(input.data);
+  }
+
   private receive(bytes: Uint8Array): void {
-    if (this.disposed) return;
+    if (this.disposed) {
+      // In flight when the session ended: discarded, but still accounted for.
+      this.settle(bytes.length);
+      return;
+    }
     // Acknowledge only once xterm has parsed the chunk: that is what paces
     // the backend's reads to how fast the terminal can actually render.
+    this.unsettled += bytes.length;
     this.term.write(bytes, () => {
-      if (this.pty) this.pty.ack(bytes.length);
-      else this.pendingAck += bytes.length;
+      // `dispose` has already settled everything that was outstanding.
+      if (this.disposed) return;
+      this.unsettled -= bytes.length;
+      this.settle(bytes.length);
     });
     if (!this.attached && !this.notifiedBackgroundOutput) {
       this.notifiedBackgroundOutput = true;
-      this.events.onBackgroundOutput(this.paneId);
+      this.events.onBackgroundOutput(this);
     }
   }
 
-  private handleExit(code: number | null): void {
+  private settle(bytes: number): void {
+    if (!bytes) return;
+    if (this.pty) this.pty.ack(bytes);
+    else this.pendingAck += bytes;
+  }
+
+  private handleExit({ code, runtimeMs }: PtyExit): void {
     if (this.disposed) return;
-    this.pty = null;
-    if (performance.now() - this.startedAt < QUICK_EXIT_MS) {
+    this.phase = "ended";
+    this.queuedInput = [];
+    if (runtimeMs < QUICK_EXIT_MS) {
       this.report(`Shell exited immediately${code === null ? "" : ` (code ${code})`}.`);
       return;
     }
-    this.events.onExit(this.paneId);
+    this.events.onExit(this);
   }
 
   /** Prints a message from the app (not the shell) into the terminal. */

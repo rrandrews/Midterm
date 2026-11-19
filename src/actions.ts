@@ -1,4 +1,4 @@
-import { focusPane, getDock } from "./layout/dock";
+import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { countPanes, createPane, frameIdOf, listPanes } from "./state/layout";
 import { findTabOfPane, selectActiveTab, selectActiveWorkspace, useAppStore } from "./state/store";
 import type { Layout, PaneKind } from "./state/types";
@@ -11,9 +11,10 @@ import type { Layout, PaneKind } from "./state/types";
 const store = () => useAppStore.getState();
 
 /** The active tab's layout, as current as possible. */
-function activeLayout(): { tabId: string; layout: Layout } {
+function activeLayout(): { dock: DockHandle | null; layout: Layout } {
   const tab = selectActiveTab(store());
-  return { tabId: tab.id, layout: getDock(tab.id)?.getModel() ?? tab.layout };
+  const dock = getDock(tab);
+  return { dock, layout: dock?.getModel() ?? tab.layout };
 }
 
 /** The pane that last had focus in the active tab (its first pane if none has yet). */
@@ -70,8 +71,7 @@ export function removeWorkspace(workspaceId: string): void {
 
 /** Adds a terminal beside (`right`) or below (`bottom`) a pane, taking half its space. */
 export function splitPane(region: "right" | "bottom", paneId = activePaneId()): void {
-  const { tabId, layout } = activeLayout();
-  const dock = getDock(tabId);
+  const { dock, layout } = activeLayout();
   const frameId = paneId && frameIdOf(layout, paneId);
   if (!dock || !frameId) return;
   const pane = createPane("terminal");
@@ -85,7 +85,7 @@ export function closePane(paneId = activePaneId()): void {
   if (!tab) return;
   const wasActive = selectActiveTab(store()).id === tab.id;
 
-  const dock = getDock(tab.id);
+  const dock = getDock(tab);
   const layout = dock?.getModel() ?? tab.layout;
   if (countPanes(layout) <= 1) {
     store().closeTab(tab.id);
@@ -106,10 +106,10 @@ export function closePane(paneId = activePaneId()): void {
 }
 
 export function setPaneKind(paneId: string, kind: PaneKind): void {
-  const { tabId, layout } = activeLayout();
+  const { dock, layout } = activeLayout();
   const pane = listPanes(layout).find((candidate) => candidate.id === paneId);
-  if (!pane || pane.data.kind === kind) return;
-  getDock(tabId)?.updateTab(paneId, { data: { ...pane.data, kind } });
+  if (!dock || !pane || pane.data.kind === kind) return;
+  dock.updateTab(paneId, { data: { ...pane.data, kind } });
   focusPane(paneId);
 }
 

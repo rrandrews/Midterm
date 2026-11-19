@@ -36,12 +36,18 @@ whether it is mounted:
 
 | Layout is… | Change it with | Example |
 |---|---|---|
-| mounted (active tab) | its imperative handle, `getDock(tabId)` | split, close, change kind |
+| mounted (active tab) | its imperative handle, `getDock(tab)` | split, close, change kind |
 | not mounted, or the change spans tabs | a store action that edits `tab.layout` and bumps `tab.layoutRev` | shell exits in a background tab; move pane to new tab |
 
 `PaneLayout` is keyed by `tab.id` and `tab.layoutRev`, so bumping the revision
 remounts it with the new model. Remounting is cheap because pane state lives
 outside React.
+
+Between a store-side edit and the remount, the old layout is still mounted
+but stale. Two guards keep it from doing damage: `getDock(tab)` only returns
+the handle registered for the tab's *current* revision (so pass the tab as it
+is in the store now), and `onModelChanged` ignores reports from an instance
+whose revision is no longer current.
 
 Pure helpers for reading and editing models are in `src/state/layout.ts`
 (`listPanes`, `findPane`, `frameIdOf`, `removePane`, …). `removePane` relies on

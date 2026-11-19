@@ -69,8 +69,10 @@ attach to that state on mount and detach on unmount.
   there, then reference them from menus and `src/shortcuts.ts`.
 - Keyboard focus should always be in a pane. `focusPane(id)` in
   `src/layout/dock.ts` sets the pane that *should* have focus; it takes focus
-  now, or when its content mounts. Menus call `refocusPane()` when they close,
-  and a focus keeper returns focus after clicks on app chrome.
+  now, or when its content mounts. Menus and rename fields call
+  `refocusPane()` when they close, and a focus keeper returns focus after
+  clicks on app chrome. While a rename field is open it owns the keyboard:
+  pane focus requests wait and app shortcuts are ignored.
 
 ## Running
 

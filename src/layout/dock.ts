@@ -5,26 +5,36 @@ import type { PaneData } from "../state/types";
  * Bridge between app code and the mounted pane layout.
  *
  * The layout component is uncontrolled: changes to a mounted layout go
- * through its imperative handle, which is registered here by tab id. Only
- * the active tab's layout is mounted, so `getDock` returns `null` for
- * background tabs (callers fall back to editing the stored layout).
+ * through its imperative handle, which is registered here by tab id and
+ * layout revision. Only the active tab's layout is mounted, so `getDock`
+ * returns `null` for background tabs (callers fall back to editing the
+ * stored layout).
  */
 
 export type DockHandle = WorkspaceImperativeHandle<PaneData>;
 
-const docks = new Map<string, DockHandle>();
+/** Identifies one mounted layout: a tab at a particular layout revision. */
+type DockKey = { id: string; layoutRev: number };
 
-export function registerDock(tabId: string, handle: DockHandle): () => void {
-  docks.set(tabId, handle);
+const docks = new Map<string, DockHandle>();
+const keyOf = ({ id, layoutRev }: DockKey) => `${id}:${layoutRev}`;
+
+export function registerDock(tab: DockKey, handle: DockHandle): () => void {
+  const key = keyOf(tab);
+  docks.set(key, handle);
   return () => {
-    // A remounted layout registers its new handle before or after the old one
-    // unregisters; only remove the entry if it is still ours.
-    if (docks.get(tabId) === handle) docks.delete(tabId);
+    if (docks.get(key) === handle) docks.delete(key);
   };
 }
 
-export function getDock(tabId: string): DockHandle | null {
-  return docks.get(tabId) ?? null;
+/**
+ * The handle of the mounted layout showing exactly this revision of the
+ * tab's layout, or `null`. Pass the tab as it is in the store *now*: after a
+ * store-side layout edit the still-mounted old layout is stale, and this
+ * deliberately does not return it.
+ */
+export function getDock(tab: DockKey): DockHandle | null {
+  return docks.get(keyOf(tab)) ?? null;
 }
 
 /*
@@ -40,7 +50,7 @@ const focusers = new Map<string, () => void>();
 let wanted: string | null = null;
 
 /** The user is typing in a field outside the panes (e.g. renaming a tab). */
-function editingElsewhere(): boolean {
+export function editingElsewhere(): boolean {
   const el = document.activeElement;
   if (!(el instanceof HTMLElement) || el.closest("[data-pane-id]")) return false;
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
@@ -54,11 +64,14 @@ export function registerPaneFocuser(paneId: string, focus: () => void): () => vo
   };
 }
 
-/** Moves keyboard focus to a pane, now or as soon as its content mounts. */
+/**
+ * Moves keyboard focus to a pane: now, as soon as its content mounts, or
+ * (if the user is typing in a field outside the panes) when they finish.
+ */
 export function focusPane(paneId: string | undefined): void {
   if (!paneId) return;
   wanted = paneId;
-  focusers.get(paneId)?.();
+  if (!editingElsewhere()) focusers.get(paneId)?.();
 }
 
 /** Records that a pane took focus by itself (a click, or tabbing into it). */
@@ -89,14 +102,17 @@ export function restoreFocusAfterLayoutChange(): void {
 
 /**
  * Keeps the keyboard in a pane: when a press on app chrome (the title bar, a
- * separator, a cancelled pane drag) leaves nothing focused, focus returns to
- * the wanted pane. Returns a function that stops.
+ * separator, a cancelled pane drag) leaves nothing useful focused, focus
+ * returns to the wanted pane. Returns a function that stops.
  */
 export function installFocusKeeper(): () => void {
   const onPointerUp = () => {
     // After the press has finished moving focus (or failing to).
     setTimeout(() => {
-      if (document.activeElement === document.body) refocusPane();
+      const focused = document.activeElement;
+      // The layout focuses a separator when it is pressed, for keyboard
+      // resizing; after a mouse drag the keyboard belongs to the pane again.
+      if (focused === document.body || focused?.matches("[data-separator]")) refocusPane();
     }, 0);
   };
   window.addEventListener("pointerup", onPointerUp, true);

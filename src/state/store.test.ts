@@ -152,6 +152,35 @@ describe("panes", () => {
     expect(selectActiveTab(store()).activePaneId).toBe(a.id);
   });
 
+  it("re-points the active pane when it is removed or moved away", () => {
+    const { tab, a, b } = twoPaneTab();
+    store().addTab(tab);
+    const sourceId = selectActiveTab(store()).id;
+    const source = () => selectActiveWorkspace(store()).tabs.find((t) => t.id === sourceId);
+
+    store().setActivePane(b.id);
+    store().movePaneToNewTab(b.id);
+    expect(source()?.activePaneId).toBe(a.id);
+
+    const { tab: other, a: c, b: d } = twoPaneTab();
+    store().addTab(other);
+    store().setActivePane(d.id);
+    store().removePane(d.id);
+    expect(selectActiveTab(store()).activePaneId).toBe(c.id);
+  });
+
+  it("re-points the active pane when the mounted layout reports it gone", () => {
+    const { tab, a, b } = twoPaneTab();
+    store().addTab(tab);
+    store().setActivePane(a.id);
+    const current = selectActiveTab(store());
+    store().setTabLayout(current.id, createLayout(paneNode(b)));
+    const after = selectActiveTab(store());
+    expect(after.activePaneId).toBe(b.id);
+    // A layout reported by the mounted component is not a reason to remount it.
+    expect(after.layoutRev).toBe(current.layoutRev);
+  });
+
   it("does nothing when asked to move a tab's only pane", () => {
     const before = store().workspaces;
     const pane = listPanes(selectActiveTab(store()).layout)[0];
