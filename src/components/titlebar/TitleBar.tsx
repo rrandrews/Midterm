@@ -49,9 +49,9 @@ export function TitleBar() {
   return (
     <header
       data-tauri-drag-region
-      className="flex h-(--titlebar-height) flex-none items-stretch border-b border-line"
+      className="box-content flex h-(--titlebar-height) flex-none items-stretch border-b border-line"
     >
-      <div data-tauri-drag-region className="w-[68px] flex-none" aria-hidden="true" />
+      <div data-tauri-drag-region className="w-[82px] flex-none" aria-hidden="true" />
       <WorkspaceSwitcher />
       <TabStrip />
       <div data-tauri-drag-region className="min-w-4 flex-1" aria-hidden="true" />
