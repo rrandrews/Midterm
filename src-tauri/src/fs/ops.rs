@@ -50,7 +50,7 @@ pub fn rename(from: &Path, to: &Path) -> Result<(), String> {
 /// An atomic rename that fails with `AlreadyExists` instead of replacing;
 /// `None` where the platform or file system cannot do that.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn rename_no_replace(from: &Path, to: &Path) -> Option<io::Result<()>> {
+pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> Option<io::Result<()>> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let from = CString::new(from.as_os_str().as_bytes()).ok()?;
@@ -75,7 +75,7 @@ fn rename_no_replace(from: &Path, to: &Path) -> Option<io::Result<()>> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn rename_no_replace(_from: &Path, _to: &Path) -> Option<io::Result<()>> {
+pub(crate) fn rename_no_replace(_from: &Path, _to: &Path) -> Option<io::Result<()>> {
     None
 }
 
