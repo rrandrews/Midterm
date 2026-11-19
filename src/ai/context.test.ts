@@ -34,7 +34,7 @@ describe("trimOutput", () => {
     expect(out).toHaveLength(OUTPUT_HEAD_LINES + OUTPUT_TAIL_LINES + 1);
     expect(out[0]).toBe("line 0");
     expect(out[OUTPUT_HEAD_LINES]).toBe("… (60 lines omitted)");
-    expect(out.at(-1)).toBe("line 99");
+    expect(out[out.length - 1]).toBe("line 99");
   });
 });
 

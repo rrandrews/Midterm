@@ -115,13 +115,16 @@ export function BlocksView({
         <BlockInput
           session={session}
           inputRef={inputRef}
-          footer={
+          footer={(status) => (
             <div className="blocks-meta mt-1.5">
               {cwd && <span className="truncate">{displayPath(cwd)}</span>}
               {branch && <span className="truncate">{branch}</span>}
-              <span className="ml-auto shrink-0">⇥ accept · ⏎ run</span>
+              <span className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
+                {status}
+                <span>⇥ accept · ⏎ run</span>
+              </span>
             </div>
-          }
+          )}
         />
       )}
     </div>

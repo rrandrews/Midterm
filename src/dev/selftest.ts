@@ -11,11 +11,12 @@ import { peekSession, sessionCount } from "../terminal/sessions";
 import { menuSpecs } from "../commands/nativeMenu";
 import { findFiles, readTextFile, writeTextFile } from "../ipc/fs";
 import { getSettings, useSettings } from "../settings/settings";
-import { blockOutput, canRun } from "../terminal/blockMode";
+import { blockOutput, canRun, requestedMode, toggleBlocks } from "../terminal/blockMode";
 import { importPlugin, removePlugin } from "../ipc/plugins";
 import { refreshInstalled } from "../plugins/loader";
 import { getPlugin, loadErrorOf } from "../plugins/registry";
 import { getSkill, invokeSkillTool } from "../plugins/skills";
+import { suggestNow, useAiSuggestions } from "../ai/engine";
 import { runCommand } from "../commands/registry";
 import { bundledTheme } from "../theme/bundled";
 import { editTheme } from "../theme/commands";
@@ -428,6 +429,50 @@ async function pluginChecks(checks: Check[]): Promise<void> {
   checks.push({ name: "plugins: removing unregisters it", ok: getPlugin(id) === undefined });
 }
 
+/**
+ * M10: suggestions end to end through the `custom` provider pointed at
+ * scripts/ai-stub.ts: inert without a provider, then a suggestion shows as
+ * ghost text, with the secret in the history redacted on the way.
+ */
+async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
+  const paneId = listPanes(selectActiveTab(useAppStore.getState()).layout)[0]?.id;
+  const session = paneId ? peekSession(paneId) : undefined;
+  if (!paneId || !session) {
+    checks.push({ name: "ai: a terminal to test in", ok: false });
+    return;
+  }
+  if (requestedMode(paneId) !== "blocks") toggleBlocks(paneId);
+  await waitFor(() => canRun(session), 8000);
+  const before = session.blocks.snapshot().blocks.length;
+  session.runCommand("export MIDTERM_SELFTEST_PASSWORD=hunter2-selftest; true");
+  await waitFor(() => session.blocks.snapshot().blocks.length > before && canRun(session), 8000);
+  const input = () => document.querySelector<HTMLTextAreaElement>(`[data-pane-id="${CSS.escape(paneId)}"] .blocks-input-text`);
+  const ghost = () => document.querySelector(`[data-pane-id="${CSS.escape(paneId)}"] .blocks-input-ghost`)?.textContent ?? "";
+  await waitFor(() => input() !== null, 3000);
+  input()?.focus();
+  await sleep(600);
+  checks.push({ name: "ai: nothing is asked before a provider is chosen", ok: useAiSuggestions.getState()[paneId] === undefined });
+
+  useSettings.getState().updateAi({ suggestions: true, provider: "custom", baseUrl: `http://127.0.0.1:${stubPort}/v1`, model: "stub-model" });
+  const asked = suggestNow(paneId);
+  const shown = await waitFor(() => ghost().includes("echo "), 8000);
+  checks.push({
+    name: "ai: a suggestion from the provider shows as ghost text, secrets redacted",
+    ok: asked && shown && ghost().includes("echo midterm-ai-ok"),
+    detail: { ghost: ghost(), entry: useAiSuggestions.getState()[paneId] },
+  });
+  input()?.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+  await sleep(100);
+  checks.push({ name: "ai: ⇥ accepts it into the editor", ok: input()?.value === "echo midterm-ai-ok", detail: input()?.value });
+  useSettings.getState().updateAi({ provider: "", baseUrl: "", model: "" });
+  if (input()) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(input(), "");
+    input()?.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  toggleBlocks(paneId);
+}
+
 export async function runSelfTest(port: string): Promise<void> {
   const checks: Check[] = [];
   const environment = {
@@ -443,6 +488,8 @@ export async function runSelfTest(port: string): Promise<void> {
     await themeChecks(checks);
     await integrationChecks(checks);
     await featureChecks(checks);
+    const stubPort = new URLSearchParams(location.search).get("aistub");
+    if (stubPort) await aiChecks(checks, stubPort);
     await uiChecks(checks);
     await ptyChecks(checks);
   } catch (caught) {

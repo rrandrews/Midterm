@@ -1,3 +1,4 @@
+import { aiMenuItems } from "../ai/commands";
 import { copyText, pasteText } from "../ipc/clipboard";
 import type { MenuItemSpec } from "../plugins/types";
 import {
@@ -54,5 +55,6 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
       run: () => toggleBlocks(paneId),
     },
   );
+  if (blocks && integration !== false) items.push(...aiMenuItems(paneId));
   return items;
 }

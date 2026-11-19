@@ -1,4 +1,5 @@
-import { type KeyboardEvent, type RefObject, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useMemo, useState } from "react";
+import { atPrompt, dismiss, leftPrompt, shownSuggestion, typed, useAiSuggestions } from "../../ai/engine";
 import { runFromBlocks } from "../../terminal/blockMode";
 import { globalHistory, historyEntries, loadGlobalHistory, suggestion } from "../../terminal/history";
 import type { TerminalSession } from "../../terminal/session";
@@ -8,8 +9,12 @@ const MAX_ROWS = 12;
 
 /**
  * The blocks mode command line: a textarea with history (↑/↓) and an
- * autosuggestion from it drawn as ghost text (⇥ or → accepts, ⏎ runs,
- * ⇧⏎ adds a line). Shown only while the shell waits at a prompt.
+ * autosuggestion drawn as ghost text (⇥ or → accepts, ⏎ runs, ⇧⏎ adds a
+ * line). At an empty prompt the suggestion comes from the AI provider, if
+ * one is set up (src/ai/engine.ts); once the user types, the history's
+ * suggestion wins unless the AI's continues what was typed. Esc dismisses
+ * the AI suggestion. Shown only while the shell waits at a prompt (so it
+ * remounts at every prompt).
  */
 export function BlockInput({
   session,
@@ -18,8 +23,10 @@ export function BlockInput({
 }: {
   session: TerminalSession;
   inputRef: RefObject<HTMLTextAreaElement | null>;
-  footer: React.ReactNode;
+  /** The line below the editor; `status` says where the suggestion comes from, or that one is loading or failed. */
+  footer: (status: ReactNode) => ReactNode;
 }) {
+  const paneId = session.paneId;
   const [value, setValue] = useState("");
   const [caretAtEnd, setCaretAtEnd] = useState(true);
   /** Position in `walk.entries` while walking the history with ↑/↓; -1 when not. */
@@ -43,7 +50,19 @@ export function BlockInput({
     // The lists only change between commands (and when the saved history loads).
     [session, historyLoaded, session.blocks.commands.length],
   );
-  const suggested = walk.index === -1 && caretAtEnd ? suggestion(entries, value) : undefined;
+  // The AI's suggestion: asked for at an empty prompt, dropped when the prompt goes.
+  useEffect(() => {
+    atPrompt(paneId);
+    return () => leftPrompt(paneId);
+  }, [paneId]);
+  const ai = shownSuggestion(useAiSuggestions((state) => state[paneId]), session);
+  const aiText = ai?.status === "ready" ? ai.text : undefined;
+  const aiContinues = aiText !== undefined && aiText.length > value.length && aiText.startsWith(value);
+
+  const fromHistory = walk.index === -1 && caretAtEnd ? suggestion(entries, value) : undefined;
+  const source: "ai" | "history" | undefined =
+    walk.index !== -1 || !caretAtEnd ? undefined : aiContinues ? "ai" : fromHistory ? "history" : undefined;
+  const suggested = source === "ai" ? aiText : source === "history" ? fromHistory : undefined;
   const ghost = suggested?.slice(value.length) ?? "";
 
   const set = (next: string) => {
@@ -102,6 +121,9 @@ export function BlockInput({
       event.preventDefault();
       set(walk.draft);
       setWalk({ index: -1, draft: "", entries: [] });
+    } else if (event.key === "Escape" && ai && (source === "ai" || ai.status === "loading" || ai.status === "error")) {
+      event.preventDefault();
+      dismiss(paneId);
     } else if (event.ctrlKey && !event.metaKey && !event.altKey) {
       const key = event.key.toLowerCase();
       if (key === "c") {
@@ -138,8 +160,13 @@ export function BlockInput({
           autoCorrect="off"
           autoComplete="off"
           aria-label="Command"
+          onFocus={() => {
+            if (!value) atPrompt(paneId);
+          }}
           onChange={(event) => {
             setValue(event.target.value);
+            if (event.target.value) typed(paneId);
+            else atPrompt(paneId);
             setCaretAtEnd(event.target.selectionEnd === event.target.value.length);
             if (walk.index !== -1) setWalk({ index: -1, draft: "", entries: [] });
           }}
@@ -150,7 +177,20 @@ export function BlockInput({
           onKeyDown={onKeyDown}
         />
       </div>
-      {footer}
+      {footer(<SuggestionStatus source={source} loading={ai?.status === "loading"} error={ai?.status === "error" ? ai.error : undefined} />)}
     </div>
   );
+}
+
+function SuggestionStatus({ source, loading, error }: { source?: "ai" | "history"; loading: boolean; error?: string }) {
+  if (loading) return <span className="blocks-ai-status animate-pulse">AI…</span>;
+  if (error)
+    return (
+      <span className="blocks-ai-status truncate text-err/80" title={error}>
+        AI unavailable
+      </span>
+    );
+  if (source === "ai") return <span className="blocks-ai-status">AI suggestion · esc dismisses</span>;
+  if (source === "history") return <span className="blocks-ai-status">from history</span>;
+  return null;
 }

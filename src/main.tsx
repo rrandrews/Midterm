@@ -25,6 +25,7 @@ async function start(): Promise<void> {
   // Plugins first: restoring validates each pane's data with its plugin.
   (await import("./plugins")).installPlugins();
   (await import("./theme/commands")).installThemeCommands();
+  (await import("./ai/commands")).installAi();
   const { restoreSavedState, startSaving } = await import("./state/persistence");
   const { loadHomeDirectory, loadLocalHostname } = await import("./ipc/system");
   const { loadSettings } = await import("./settings/settings");
