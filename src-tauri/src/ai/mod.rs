@@ -67,12 +67,42 @@ struct Requests {
 }
 
 /// Removes `key` from an error message, in case a provider or gateway
-/// echoed it back: messages reach the webview.
+/// echoed it back: messages reach the webview. HTTP error bodies are
+/// already redacted before truncation (`http.rs`); this catches the rest.
 fn redact(mut error: AiError, key: Option<&str>) -> AiError {
-    if let Some(key) = key.map(str::trim).filter(|k| k.len() >= 4) {
-        error.message = error.message.replace(key, "[redacted]");
-    }
+    error.message = error::redact(&error.message, key);
     error
+}
+
+/// The key a request uses, from the keychain lookup's outcome. Missing is
+/// `noKey` unless the provider's key is optional (`custom`). For such a
+/// provider a failed lookup (no Secret Service, a denied prompt) is logged
+/// and the request goes out without a key: a keyless local server must not
+/// need a working credential store.
+fn resolve_key(
+    provider: ProviderId,
+    lookup: Result<Option<String>, AiError>,
+) -> Result<Option<String>, AiError> {
+    let key = match lookup {
+        Ok(key) => key,
+        Err(e) if provider.key_optional() => {
+            eprintln!(
+                "ai: key lookup for {} failed, continuing without a key: {}",
+                provider.as_str(),
+                e.message
+            );
+            None
+        }
+        Err(e) => return Err(e),
+    };
+    let key = key.filter(|k| !k.trim().is_empty());
+    if key.is_none() && !provider.key_optional() {
+        return Err(AiError::new(
+            ErrorKind::NoKey,
+            format!("no API key is set for {}", provider.as_str()),
+        ));
+    }
+    Ok(key)
 }
 
 /// Tauri state for the AI commands.
@@ -124,22 +154,22 @@ impl AiManager {
             _ = &mut rx => Err(AiError::cancelled()),
             result = work => result,
         };
-        // A cancel (or a newer request with the same id) that landed while
-        // the result was being produced still wins: a cancelled request
-        // never delivers a result.
-        let result = match rx.try_recv() {
-            Err(oneshot::error::TryRecvError::Empty) => result,
-            _ => Err(AiError::cancelled()),
-        };
+        // Finalize under the registry lock. `cancel` and a newer request
+        // with the same id both take our entry out of `running` under that
+        // lock, so whether it is still ours decides, atomically, between
+        // delivering the result and `cancelled`: a cancel that lands at any
+        // point before this, even after the result was ready, still wins.
         let mut requests = self.requests.lock().unwrap();
-        if requests
+        let ours = requests
             .running
             .get(id)
-            .is_some_and(|(g, _)| *g == generation)
-        {
+            .is_some_and(|(g, _)| *g == generation);
+        if ours {
             requests.running.remove(id);
+            result
+        } else {
+            Err(AiError::cancelled())
         }
-        result
     }
 
     pub fn cancel(&self, id: &str) {
@@ -158,20 +188,16 @@ impl AiManager {
         }
     }
 
-    /// The stored key for an HTTP provider. Missing is `noKey`, except for
-    /// `custom`, where it is optional.
-    async fn key(&self, provider: ProviderId) -> Result<Option<String>, AiError> {
-        let key = tauri::async_runtime::spawn_blocking(move || keys::get(provider))
+    /// The stored key for an HTTP provider (see [`resolve_key`]). A
+    /// `custom` key is looked up under its base URL, so it only ever goes to
+    /// the endpoint it was saved for.
+    async fn key(&self, provider: &ProviderConfig) -> Result<Option<String>, AiError> {
+        let account = provider.key_account()?;
+        let lookup = tauri::async_runtime::spawn_blocking(move || keys::get(&account))
             .await
-            .map_err(|e| AiError::other(format!("keychain task failed: {e}")))??;
-        let key = key.filter(|k| !k.trim().is_empty());
-        if key.is_none() && !provider.key_optional() {
-            return Err(AiError::new(
-                ErrorKind::NoKey,
-                format!("no API key is set for {}", provider.as_str()),
-            ));
-        }
-        Ok(key)
+            .map_err(|e| AiError::other(format!("keychain task failed: {e}")))
+            .and_then(|r| r);
+        resolve_key(provider.id, lookup)
     }
 
     /// One completion from `provider`.
@@ -196,14 +222,14 @@ impl AiManager {
         match backend {
             Backend::OpenAiCompatible(flavor) => {
                 let base = provider.base_url()?;
-                let key = self.key(provider.id).await?;
+                let key = self.key(provider).await?;
                 openai::complete(self.http()?, flavor, &base, key.as_deref(), &req)
                     .await
                     .map_err(|e| redact(e, key.as_deref()))
             }
             Backend::Anthropic => {
                 let base = provider.base_url()?;
-                let key = self.key(provider.id).await?.unwrap_or_default();
+                let key = self.key(provider).await?.unwrap_or_default();
                 anthropic::complete(self.http()?, &base, &key, &req)
                     .await
                     .map_err(|e| redact(e, Some(&key)))
@@ -220,14 +246,14 @@ impl AiManager {
         match provider.id.backend() {
             Backend::OpenAiCompatible(_) => {
                 let base = provider.base_url()?;
-                let key = self.key(provider.id).await?;
+                let key = self.key(provider).await?;
                 openai::models(self.http()?, &base, key.as_deref())
                     .await
                     .map_err(|e| redact(e, key.as_deref()))
             }
             Backend::Anthropic => {
                 let base = provider.base_url()?;
-                let key = self.key(provider.id).await?.unwrap_or_default();
+                let key = self.key(provider).await?.unwrap_or_default();
                 anthropic::models(self.http()?, &base, &key)
                     .await
                     .map_err(|e| redact(e, Some(&key)))
@@ -313,6 +339,47 @@ mod tests {
         );
         let e = AiError::other("ab");
         assert_eq!(redact(e, Some("")).message, "ab");
+        // Short keys too: the setter accepts them.
+        let e = AiError::other("key x7 rejected");
+        assert_eq!(redact(e, Some("x7")).message, "key [redacted] rejected");
+    }
+
+    #[test]
+    fn optional_keys_survive_a_broken_credential_store() {
+        let broken = || Err(AiError::other("keychain: no Secret Service"));
+        // `custom` goes out without a key.
+        assert_eq!(resolve_key(ProviderId::Custom, broken()).unwrap(), None);
+        assert_eq!(resolve_key(ProviderId::Custom, Ok(None)).unwrap(), None);
+        assert_eq!(
+            resolve_key(ProviderId::Custom, Ok(Some("k".into()))).unwrap(),
+            Some("k".into())
+        );
+        // A provider that needs a key reports the failure, or `noKey`.
+        let e = resolve_key(ProviderId::Openai, broken()).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Other);
+        let e = resolve_key(ProviderId::Openai, Ok(Some("  ".into()))).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::NoKey);
+    }
+
+    #[tokio::test]
+    async fn replacement_wins_over_a_ready_result() {
+        // A newer request with the same id registers after the older one's
+        // work finished but before it finalized: the older one must not
+        // deliver its result, and must leave the newer entry alone.
+        let manager = AiManager::default();
+        let (tx, _rx) = oneshot::channel();
+        let r = manager
+            .cancellable("same", async {
+                let mut requests = manager.requests.lock().unwrap();
+                requests.next += 1;
+                let generation = requests.next;
+                requests.running.insert("same".into(), (generation, tx));
+                Ok(1)
+            })
+            .await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Cancelled);
+        let requests = manager.requests.lock().unwrap();
+        assert_eq!(requests.running.get("same").map(|(g, _)| *g), Some(2));
     }
 
     #[tokio::test]

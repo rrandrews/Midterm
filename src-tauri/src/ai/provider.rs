@@ -165,6 +165,24 @@ impl ProviderConfig {
         Ok(chosen.trim_end_matches('/').to_string())
     }
 
+    /// The keychain account this provider's key is stored under: the
+    /// provider id, except for `custom`, whose key is bound to its endpoint
+    /// as `custom:<base URL>` (normalized exactly as requests use it). A key
+    /// saved for one custom URL is then never sent to another: changing the
+    /// URL finds no key. CLI providers take no key.
+    pub fn key_account(&self) -> Result<String, AiError> {
+        if !self.id.uses_key() {
+            return Err(AiError::other(format!(
+                "{} does not use an API key",
+                self.id.as_str()
+            )));
+        }
+        Ok(match self.id {
+            ProviderId::Custom => format!("custom:{}", self.base_url()?),
+            id => id.as_str().to_string(),
+        })
+    }
+
     /// The CLI path override, if any (blank counts as none).
     pub fn cli_path(&self) -> Option<&str> {
         self.cli_path
@@ -242,5 +260,35 @@ mod tests {
         assert!(!ProviderId::Codex.uses_key());
         assert!(ProviderId::Custom.key_optional());
         assert!(!ProviderId::Openai.key_optional());
+    }
+
+    #[test]
+    fn key_accounts() {
+        let account = |json| config(json).key_account();
+        assert_eq!(
+            account(serde_json::json!({ "id": "openai" })).unwrap(),
+            "openai"
+        );
+        // Other providers ignore `baseUrl`.
+        assert_eq!(
+            account(serde_json::json!({ "id": "anthropic", "baseUrl": "https://x.example" }))
+                .unwrap(),
+            "anthropic"
+        );
+        // `custom` is bound to its normalized base URL.
+        assert_eq!(
+            account(serde_json::json!({ "id": "custom", "baseUrl": " https://gw.example/v1/ " }))
+                .unwrap(),
+            "custom:https://gw.example/v1"
+        );
+        assert_ne!(
+            account(serde_json::json!({ "id": "custom", "baseUrl": "https://gw.example/v1" })),
+            account(serde_json::json!({ "id": "custom", "baseUrl": "https://other.example/v1" }))
+        );
+        assert!(account(serde_json::json!({ "id": "custom" })).is_err());
+        assert!(
+            account(serde_json::json!({ "id": "custom", "baseUrl": "http://gw.example" })).is_err()
+        );
+        assert!(account(serde_json::json!({ "id": "codex" })).is_err());
     }
 }

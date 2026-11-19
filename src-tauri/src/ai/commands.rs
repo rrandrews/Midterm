@@ -10,7 +10,7 @@ use super::AiManager;
 use super::cli::CliStatus;
 use super::error::{AiError, truncate};
 use super::keys;
-use super::provider::{ProviderConfig, ProviderId};
+use super::provider::ProviderConfig;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,19 +94,24 @@ pub async fn ai_test(
     })
 }
 
+/// Stores the key for `provider`. A `custom` key is bound to its `baseUrl`
+/// (required here); other providers ignore `baseUrl`.
 #[tauri::command]
-pub async fn ai_key_set(provider: ProviderId, key: String) -> Result<(), AiError> {
-    blocking(move || keys::set(provider, &key)).await
+pub async fn ai_key_set(provider: ProviderConfig, key: String) -> Result<(), AiError> {
+    let account = provider.key_account()?;
+    blocking(move || keys::set(&account, &key)).await
 }
 
 #[tauri::command]
-pub async fn ai_key_delete(provider: ProviderId) -> Result<(), AiError> {
-    blocking(move || keys::delete(provider)).await
+pub async fn ai_key_delete(provider: ProviderConfig) -> Result<(), AiError> {
+    let account = provider.key_account()?;
+    blocking(move || keys::delete(&account)).await
 }
 
 #[tauri::command]
-pub async fn ai_key_status(provider: ProviderId) -> Result<bool, AiError> {
-    blocking(move || keys::is_set(provider)).await
+pub async fn ai_key_status(provider: ProviderConfig) -> Result<bool, AiError> {
+    let account = provider.key_account()?;
+    blocking(move || keys::is_set(&account)).await
 }
 
 /// Whether a CLI provider's executable is found, where, and its version.

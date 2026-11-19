@@ -70,6 +70,17 @@ pub fn truncate(text: &str, max: usize) -> String {
     }
 }
 
+/// `text` with every occurrence of `key` replaced by `[redacted]`, in case
+/// a provider or gateway echoed the key back: messages reach the webview.
+/// Keys of any length are redacted (the setter accepts short ones). Call it
+/// before [`truncate`], or a key cut in half would slip through.
+pub fn redact(text: &str, key: Option<&str>) -> String {
+    match key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) => text.replace(key, "[redacted]"),
+        None => text.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +97,16 @@ mod tests {
     fn truncates_on_char_boundaries() {
         assert_eq!(truncate("héllo", 2), "hé…");
         assert_eq!(truncate("  hi  ", 5), "hi");
+    }
+
+    #[test]
+    fn redacts_keys_of_any_length() {
+        assert_eq!(
+            redact("bad key sk-1 given", Some("sk-1")),
+            "bad key [redacted] given"
+        );
+        assert_eq!(redact("key q!", Some(" q ")), "key [redacted]!");
+        assert_eq!(redact("ab", Some("")), "ab");
+        assert_eq!(redact("ab", None), "ab");
     }
 }

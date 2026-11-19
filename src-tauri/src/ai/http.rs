@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::error::{AiError, ErrorKind, truncate};
+use super::error::{AiError, ErrorKind, redact, truncate};
 
 /// Total time allowed for one request, connection included.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -45,16 +45,18 @@ impl Failure {
         }
     }
 
-    pub fn into_error(self) -> AiError {
+    /// The error to report, with `key` (the request's key) redacted.
+    pub fn into_error(self, key: Option<&str>) -> AiError {
         match self {
             Failure::Other(e) => e,
-            Failure::Status { status, body } => status_error(status, &body),
+            Failure::Status { status, body } => status_error(status, &body, key),
         }
     }
 }
 
-/// Sends `request` and returns the JSON body of a 2xx answer.
-pub async fn send(request: reqwest::RequestBuilder) -> Result<Value, Failure> {
+/// Sends `request` and returns the JSON body of a 2xx answer. `key` is the
+/// request's key, redacted from any error text.
+pub async fn send(request: reqwest::RequestBuilder, key: Option<&str>) -> Result<Value, Failure> {
     let response = request
         .send()
         .await
@@ -73,7 +75,7 @@ pub async fn send(request: reqwest::RequestBuilder) -> Result<Value, Failure> {
     serde_json::from_str(&body).map_err(|_| {
         Failure::Other(AiError::other(format!(
             "the provider sent a response that is not JSON: {}",
-            truncate(&body, 200)
+            truncate(&redact(&body, key), 200)
         )))
     })
 }
@@ -95,8 +97,9 @@ pub fn transport_error(e: &reqwest::Error) -> AiError {
 }
 
 /// The error for a non-2xx answer: 401 and 403 are `auth`, the rest `http`.
-pub fn status_error(status: u16, body: &str) -> AiError {
-    let detail = error_message(body);
+/// `key` is redacted from the provider's message before it is shortened.
+pub fn status_error(status: u16, body: &str, key: Option<&str>) -> AiError {
+    let detail = truncate(&redact(&error_detail(body), key), 300);
     let kind = if matches!(status, 401 | 403) {
         ErrorKind::Auth
     } else {
@@ -114,9 +117,10 @@ pub fn status_error(status: u16, body: &str) -> AiError {
 /// and OpenRouter use `{"error": {"message": …}}`; Gemini's compatible
 /// endpoint sometimes wraps that in an array; some servers send
 /// `{"error": "…"}` or `{"message": "…"}`. Falls back to the raw body.
-pub fn error_message(body: &str) -> String {
+/// Not shortened: callers redact the key first, then truncate.
+pub fn error_detail(body: &str) -> String {
     let Ok(json) = serde_json::from_str::<Value>(body) else {
-        return truncate(body, 300);
+        return body.to_string();
     };
     let json = match &json {
         Value::Array(items) => items.first().cloned().unwrap_or(Value::Null),
@@ -127,10 +131,7 @@ pub fn error_message(body: &str) -> String {
         .or_else(|| json.get("error").filter(|e| e.is_string()))
         .or_else(|| json.get("message"))
         .and_then(Value::as_str);
-    match found {
-        Some(message) => truncate(message, 300),
-        None => truncate(body, 300),
-    }
+    found.unwrap_or(body).to_string()
 }
 
 #[cfg(test)]
@@ -140,26 +141,43 @@ mod tests {
     #[test]
     fn extracts_error_messages() {
         assert_eq!(
-            error_message(r#"{"error":{"message":"bad key","type":"x"}}"#),
+            error_detail(r#"{"error":{"message":"bad key","type":"x"}}"#),
             "bad key"
         );
         assert_eq!(
-            error_message(r#"[{"error":{"code":400,"message":"nope"}}]"#),
+            error_detail(r#"[{"error":{"code":400,"message":"nope"}}]"#),
             "nope"
         );
-        assert_eq!(error_message(r#"{"error":"plain"}"#), "plain");
-        assert_eq!(error_message(r#"{"message":"m"}"#), "m");
-        assert_eq!(error_message("gateway down"), "gateway down");
+        assert_eq!(error_detail(r#"{"error":"plain"}"#), "plain");
+        assert_eq!(error_detail(r#"{"message":"m"}"#), "m");
+        assert_eq!(error_detail("gateway down"), "gateway down");
     }
 
     #[test]
     fn maps_statuses() {
-        assert_eq!(status_error(401, "{}").kind, ErrorKind::Auth);
-        assert_eq!(status_error(403, "").kind, ErrorKind::Auth);
-        let e = status_error(429, r#"{"error":{"message":"slow down"}}"#);
+        assert_eq!(status_error(401, "{}", None).kind, ErrorKind::Auth);
+        assert_eq!(status_error(403, "", None).kind, ErrorKind::Auth);
+        let e = status_error(429, r#"{"error":{"message":"slow down"}}"#, None);
         assert_eq!(e.kind, ErrorKind::Http);
         assert_eq!(e.message, "HTTP 429: slow down");
-        assert_eq!(status_error(500, "").message, "HTTP 500");
+        assert_eq!(status_error(500, "", None).message, "HTTP 500");
+    }
+
+    #[test]
+    fn redacts_before_truncating() {
+        // The key straddles the 300-character cut: truncating first would
+        // leave its first half in the message.
+        let key = "sk-0123456789abcdef";
+        let body = format!(
+            r#"{{"error":{{"message":"{}{key} is invalid"}}}}"#,
+            "x".repeat(290)
+        );
+        let e = status_error(401, &body, Some(key));
+        assert!(!e.message.contains("sk-0123"), "{}", e.message);
+        assert!(e.message.contains("[redacted]"), "{}", e.message);
+        // Short keys are redacted too.
+        let e = status_error(401, r#"{"error":"key abc rejected"}"#, Some("abc"));
+        assert_eq!(e.message, "HTTP 401: key [redacted] rejected");
     }
 
     #[test]

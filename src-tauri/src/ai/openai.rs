@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 
 use super::Completion;
 use super::error::{AiError, ErrorKind};
-use super::http::{self, Failure};
+use super::http;
 use super::provider::Flavor;
 
 /// Words in a 400 response that mean the effort parameter was the problem.
@@ -153,14 +153,14 @@ pub async fn complete(
     let url = format!("{base_url}/chat/completions");
     let send = |with_effort: bool| {
         let body = build_body(flavor, req, with_effort);
-        http::send(authorize(client.post(&url), key).json(&body))
+        http::send(authorize(client.post(&url), key).json(&body), key)
     };
     let with_effort = sends_effort(flavor);
     let response = match send(with_effort).await {
         Err(f) if with_effort && f.is_bad_request_about(EFFORT_WORDS) => send(false).await,
         other => other,
     }
-    .map_err(Failure::into_error)?;
+    .map_err(|f| f.into_error(key))?;
     parse_reply(&response)
 }
 
@@ -170,9 +170,9 @@ pub async fn models(
     key: Option<&str>,
 ) -> Result<Vec<String>, AiError> {
     let url = format!("{base_url}/models");
-    let response = http::send(authorize(client.get(&url), key))
+    let response = http::send(authorize(client.get(&url), key), key)
         .await
-        .map_err(Failure::into_error)?;
+        .map_err(|f| f.into_error(key))?;
     Ok(parse_models(&response))
 }
 
