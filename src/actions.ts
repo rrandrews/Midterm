@@ -1,3 +1,5 @@
+import { hasUnsavedChanges, renameOpenModels, revealInPane } from "./editor/registry";
+import { isImagePath } from "./files/kinds";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { countPanes, createPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
 import {
@@ -215,43 +217,68 @@ export function focusNeighbourPane(direction: Direction): void {
   if (best) focusPane(best.id);
 }
 
-const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
-
 /** Pane kinds that can show a file, best first. Images only display; text prefers the editor. */
 function kindsFor(path: string): PaneKind[] {
-  return IMAGE_FILE.test(path) ? ["viewer"] : ["editor", "viewer"];
+  return isImagePath(path) ? ["viewer"] : ["editor", "viewer"];
 }
 
+export type OpenFileOptions = {
+  /** The pane the request comes from; the file opens in its tab. */
+  fromPaneId: string;
+  /** Always open a new pane. */
+  newPane?: boolean;
+  /** 1-based line (and column) to put the cursor on, in an editor. */
+  line?: number;
+  column?: number;
+};
+
 /**
- * Opens a file from `fromPaneId` (an explorer, say) in the same tab: in an
- * editor or viewer pane already there (the last active one if several), or,
- * with `newPane` or when there is none, in a new pane split off the largest
- * pane that is not an explorer.
+ * Opens a file from `fromPaneId` (an explorer, a terminal link…) in the same
+ * tab: in a pane already showing it, else in an editor or viewer pane
+ * already there (the last active one if several), or, with `newPane` or
+ * when there is none, in a new pane split off the largest pane that is not
+ * an explorer.
+ *
+ * An editor with unsaved changes is never given another file: the file
+ * opens in a new editor pane instead, so nothing is lost and nobody is
+ * asked. With a `line`, only editors are considered.
  */
-export function openFile(
-  path: string,
-  { fromPaneId, newPane = false }: { fromPaneId: string; newPane?: boolean },
-): void {
+export function openFile(path: string, { fromPaneId, newPane = false, line, column }: OpenFileOptions): void {
   const tab = findTabOfPane(store(), fromPaneId);
   const dock = tab && getDock(tab);
   if (!tab || !dock) return;
   const layout = dock.getModel();
   const panes = listPanes(layout);
-  const kinds = kindsFor(path);
+  // A line can only be shown in an editor.
+  const kinds: PaneKind[] = line !== undefined && !isImagePath(path) ? ["editor"] : kindsFor(path);
+  const show = (paneId: string) => {
+    if (line !== undefined) revealInPane(paneId, path, line, column);
+    focusPane(paneId);
+  };
 
+  let kind = kinds[0];
   if (!newPane) {
-    for (const kind of kinds) {
-      const candidates = panes.filter((pane) => pane.data.kind === kind);
-      const target = candidates.find((pane) => pane.id === tab.activePaneId) ?? candidates[0];
-      if (target) {
-        dock.updateTab(target.id, { data: { ...target.data, path } });
-        focusPane(target.id);
-        return;
+    for (const candidateKind of kinds) {
+      const showing = panes.find((pane) => pane.data.kind === candidateKind && pane.data.path === path);
+      if (showing) return show(showing.id);
+    }
+    for (const candidateKind of kinds) {
+      const ofKind = panes.filter((pane) => pane.data.kind === candidateKind);
+      if (ofKind.length === 0) continue;
+      const free = ofKind.filter((pane) => !hasUnsavedChanges(pane.id));
+      const target = free.find((pane) => pane.id === tab.activePaneId) ?? free[0];
+      if (!target) {
+        kind = candidateKind;
+        break;
       }
+      dock.updateTab(target.id, { data: { ...target.data, path } });
+      return show(target.id);
     }
   }
 
-  addPaneBeside(fromPaneId, createPane(kinds[0], { path }));
+  const pane = createPane(kind, { path });
+  if (line !== undefined) revealInPane(pane.id, path, line, column);
+  addPaneBeside(fromPaneId, pane);
 }
 
 /**
@@ -288,6 +315,7 @@ export function openTerminalAt(cwd: string, fromPaneId: string): void {
 
 /** Points editor and viewer panes showing `from` (or a file inside it) at `to` after a rename. */
 export function renameOpenFiles(from: string, to: string): void {
+  renameOpenModels(from, to);
   for (const pane of selectAllPanes(store())) {
     const path = pane.data.path;
     if (!path || (path !== from && !path.startsWith(`${from}/`))) continue;

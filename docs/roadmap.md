@@ -18,6 +18,11 @@ Done so far:
   terminal (pinnable), git badges, context menu, opening files into
   editor/viewer panes. Right-click menus across the app. See
   [explorer.md](explorer.md).
+- M4: editor panes (CodeMirror 6, language detection, token theme,
+  breadcrumbs, dirty state, save with conflict check, external change
+  detection, find and go to line) and viewer panes (sanitized Markdown,
+  images, read-only text); unsaved changes prompt on close; clickable
+  `path:line` in terminal output. See [editor.md](editor.md).
 - M5: command palette (⌘K, ⌘P files, ⇧⌘P commands): commands from a
   registry with rebindable shortcuts, tabs and workspaces by name, fuzzy
   file open in the project root, run a shell command in a new pane,
@@ -29,20 +34,6 @@ Done so far:
   programs and shells without integration; per-pane toggle with the
   default in settings; copy command/output and re-run. See
   [terminal.md](terminal.md#blocks-mode).
-
-## M4 — Editor and viewer panes
-
-Goal: the `editor` and `viewer` pane kinds open files.
-
-- [ ] CodeMirror 6 editor: language detection, theme from the design tokens
-- [ ] Editor state lives outside React, keyed by pane id (same rule as terminals)
-- [ ] Read/write files through Rust commands; detect external changes
-- [ ] Dirty state, save (⌘S), prompt on close with unsaved changes
-- [ ] Breadcrumb header (path segments), as in the mockup
-- [ ] Viewer: rendered Markdown, images, and a read-only fallback for other text
-- [ ] Find in file (⌘F), go to line
-- [ ] Clickable `path:line` in terminal output opens the editor there
-
 
 ## M7 — Settings and theming
 
@@ -81,6 +72,17 @@ Explorer:
 - [ ] Git status goes stale in linked worktrees (`.git` is a file, so nothing is watched)
 - [ ] A watched symlinked directory keeps watching its old target if retargeted
 - [ ] Move to Trash acts on the path, so a file swapped in while the dialog is open is the one trashed
+
+Editor and viewer:
+
+- [ ] A "Save" button in the close prompt (it only offers discard or cancel), and save-all
+- [ ] Text in other encodings (Latin-1, UTF-16) opens as "binary"; files over 16 MiB do not open
+- [ ] Save's conflict check and write are two steps; a change by another program landing in between is overwritten
+- [ ] A file opened through a symlink is watched via the link's directory only, so changes to a target elsewhere go unnoticed until the pane is remounted
+- [ ] Atomic saves replace the file, which breaks hard links and drops extended attributes/ACLs
+- [ ] Syntax highlighting of code blocks in rendered Markdown; find in rendered Markdown
+- [ ] Clickable breadcrumb segments (reveal in the explorer); show the file in the tab title or dirty marker on the tab
+- [ ] Terminal links: `a/`/`b/` prefixes in `git diff` output, directories (open in the explorer), paths with spaces
 
 Layout:
 

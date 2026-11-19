@@ -31,7 +31,8 @@ Use the tokens. Do not write raw hex values or pixel font sizes in components.
 | `accent-soft` | accent at 10% | Drop indicator fill |
 | `accent-fg` | `#DDE2FF` | Text on `accent-soft` |
 | `ok` / `warn` / `err` / `info` | `#A5D6A7` / `#F2C27B` / `#E8868A` / `#82B4FF` | Status; `warn` is the tab activity dot |
-| `keyword` / `comment` | `#C3A6FF` / `#7F8592` | Syntax (editor, later) |
+| `keyword` / `comment` | `#C3A6FF` / `#7F8592` | Syntax: keywords, comments |
+| `string` / `function` / `type` / `punctuation` | `#A5D6A7` / `#82B4FF` / `#F2C27B` / `#9096A1` | Syntax: strings, function names, types and tags (and numbers), angle brackets. Mapped from lezer tags in `src/editor/highlight.ts` |
 
 `accent-soft` is derived from `accent` with `color-mix`, so changing the
 accent changes both.
@@ -53,6 +54,9 @@ Fonts are bundled (`@fontsource-variable/*`), never fetched:
 | `text-title` | 18px | Document headings in viewers |
 
 Terminal text is 12.5px JetBrains Mono on 19px rows (`src/terminal/theme.ts`).
+Editor text is the same font at the settings' size on 1.6× lines (20px at
+12.5px), with a 40px right-aligned line-number gutter in `fg-faint`
+(`src/styles/editor.css`). Ligatures are off in code.
 
 ## Pane backgrounds
 

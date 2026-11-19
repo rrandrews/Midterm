@@ -3,6 +3,7 @@
 @import "./terminal.css";
 @import "./explorer.css";
 @import "./blocks.css";
+@import "./editor.css";
 
 /*
  * Design tokens. Values are taken from the reference mockup; see
@@ -46,6 +47,10 @@
   --color-info: #82b4ff;
   --color-keyword: #c3a6ff;
   --color-comment: #7f8592;
+  --color-string: #a5d6a7;
+  --color-function: #82b4ff;
+  --color-type: #f2c27b;
+  --color-punctuation: #9096a1;
 
   /* Type scale (px values straight from the mockup) */
   --text-badge: 9px;

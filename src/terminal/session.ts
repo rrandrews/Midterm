@@ -11,6 +11,7 @@ import { openExternal } from "../ipc/shell";
 import { localHostname } from "../ipc/system";
 import { BlockTracker } from "./blocks";
 import { branchOf } from "./gitBranch";
+import { registerFileLinks } from "./fileLinkProvider";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import type { Settings } from "../settings/schema";
@@ -128,6 +129,8 @@ export class TerminalSession {
         if (event.metaKey || event.ctrlKey) openExternal(uri);
       }),
     );
+
+    registerFileLinks(this.term, paneId, () => this.currentCwd);
 
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));

@@ -4,7 +4,7 @@ Midterm is a Tauri 2 app: a Rust backend (`src-tauri/`) that owns PTYs, and a
 React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
-[explorer.md](explorer.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
+[explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
 [design-tokens.md](design-tokens.md) · [roadmap.md](roadmap.md)
 
 ## Concepts
@@ -17,9 +17,9 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 
 - A **workspace** is a named group of tabs. One is active at a time.
 - A **tab** holds any number of **panes** in a nested split layout.
-- A **pane** has a kind. `terminal` and `explorer` are implemented;
-  `editor` and `viewer` render a placeholder naming their file (see the
-  roadmap).
+- A **pane** has a kind: `terminal`, `explorer`, `editor` (CodeMirror)
+  or `viewer` (rendered Markdown, images, read-only text). See
+  [editor.md](editor.md) for the last two.
 
 ## Source map
 
@@ -36,13 +36,16 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
 | `src/components/panes/` | Pane content by kind. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
-| `src/terminal/` | xterm.js sessions and their registry; blocks mode model, rendering and history ([terminal.md](terminal.md)). |
+| `src/terminal/` | xterm.js sessions and their registry; blocks mode model, rendering and history ([terminal.md](terminal.md)); file links in output. |
 | `src/explorer/` | File explorer models, their registry, pure tree helpers. |
+| `src/editor/` | Editor models (CodeMirror), the registry of editor and viewer models, language detection, highlighting, pure text helpers. |
+| `src/viewer/` | Viewer model (Markdown, images), Markdown rendering, link resolution. |
+| `src/files/` | Shared by editors and viewers: file watching, repository root lookup, file kinds. |
 | `src/ipc/` | Typed wrappers over Tauri commands. The only place that calls `invoke`. |
 | `src/styles/` | Tailwind entry + design tokens, and CSS for the layout and terminal. |
 | `src/dev/` | Development aids (not in production builds). |
 | `src-tauri/src/pty/` | PTY sessions and the commands that drive them. |
-| `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer. |
+| `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer; whole-file reads and atomic writes for editors and viewers. |
 | `src-tauri/src/menu.rs` | Native menu. Has no "Close Window", so ⌘W reaches the app. |
 | `src-tauri/src/traffic_lights.rs` | Centres the macOS traffic lights in the web title bar; re-applied on resize and focus. |
 
@@ -60,6 +63,8 @@ State that is **not** in the store, on purpose:
 
 - **Terminal instances.** They live in `src/terminal/sessions.ts`, keyed by
   pane id, and are reconciled against the store (see [terminal.md](terminal.md)).
+  Explorer models (`src/explorer/explorers.ts`) and editor/viewer models
+  (`src/editor/registry.ts`, including unsaved changes) follow the same rule.
 - **The mounted layout's transient state** (drag in progress, hover). The
   layout component reports finished changes back to the store.
 
@@ -138,7 +143,7 @@ Right-click menus:
 |---|---|
 | `bun run tauri dev` | The real app. |
 | `bun run dev` | Frontend only, in a browser at `localhost:1420`, with a mock PTY that echoes input. Good for layout work. |
-| `bun run dev` + `?mockup` | Same, seeded with the arrangement from the design mockup. |
+| `bun run dev` + `?mockup` | Same, seeded with the arrangement from the design mockup (the editor and viewer show files from the mock file tree). |
 | `bun run test` | Frontend unit tests (vitest). |
 | `bun run typecheck` | `tsc --noEmit`. |
 | `cargo test` (in `src-tauri/`) | Backend tests. |

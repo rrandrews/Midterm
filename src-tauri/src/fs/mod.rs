@@ -1,8 +1,9 @@
-//! File system and git backend for the explorer pane.
+//! File system and git backend for the explorer, editor and viewer panes.
 //!
 //! * [`list`] – directory listings (with ignore rules) and single-path stats.
 //! * [`ops`] – create, rename, move to trash.
 //! * [`find`] – every file under a root, for fuzzy file open.
+//! * [`file`] – whole-file reads and atomic writes for editors and viewers.
 //! * [`git`] – work tree status.
 //! * [`watch`] – debounced, non-recursive directory watchers and their
 //!   registry in Tauri managed state.
@@ -12,6 +13,7 @@
 
 pub mod commands;
 pub mod find;
+pub mod file;
 pub mod git;
 pub mod list;
 pub mod ops;

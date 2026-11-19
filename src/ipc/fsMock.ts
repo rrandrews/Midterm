@@ -1,16 +1,29 @@
-import type { FoundFiles, FsEntry, GitCode, GitStatus, ListOptions, WatchEvent, Watcher } from "./fs";
+import type {
+  FileVersion,
+  FoundFiles,
+  FsEntry,
+  GitCode,
+  GitStatus,
+  ListOptions,
+  TextFile,
+  WatchEvent,
+  Watcher,
+  WriteExpect,
+  WriteResult,
+} from "./fs";
 
 /*
  * Development aid: an in-memory file tree standing in for the backend when
  * the page runs in a plain browser (`bun run dev`). It has a few levels,
  * dotfiles, an ignored directory and some git statuses, so the explorer has
- * something to show. Not used inside Tauri.
+ * something to show, and some file contents for the editor and viewer. Not
+ * used inside Tauri.
  */
 
 export const MOCK_HOME = "/Users/dev";
 const ROOT = `${MOCK_HOME}/dev/tauri-term`;
 
-type Node = { dir: boolean; children?: Map<string, Node> };
+type Node = { dir: boolean; children?: Map<string, Node>; content?: string; mtime?: number };
 
 function tree(spec: Record<string, unknown>): Node {
   const children = new Map<string, Node>();
@@ -41,6 +54,7 @@ const fsRoot = tree({
             store: { "layout.ts": null, "workspaces.ts": null },
             "App.tsx": null,
           },
+          docs: { "logo.svg": null, "data.bin": null },
           "package.json": null,
           "README.md": null,
         },
@@ -64,6 +78,58 @@ function lookup(path: string): Node | undefined {
   let node: Node | undefined = fsRoot;
   for (const part of path.split("/").filter(Boolean)) node = node?.children?.get(part);
   return node;
+}
+
+const CONTENT: Record<string, string> = {
+  "src/components/SplitNode.tsx": `import { Fragment } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import type { LayoutNode } from "../store/layout";
+
+export function SplitNode({ node }: { node: LayoutNode }) {
+  if (node.kind === "leaf") return <Pane id={node.paneId} />;
+
+  return (
+    <PanelGroup direction={node.axis} autoSaveId={node.id}>
+      {node.children.map((child, i) => (
+        <Fragment key={child.id}>
+          {i > 0 && <PanelResizeHandle className="hairline" />}
+          <Panel defaultSize={child.size} minSize={8}>
+            <SplitNode node={child} />
+          </Panel>
+        </Fragment>
+      ))}
+    </PanelGroup>
+  );
+}
+`,
+  "README.md": [
+    "# tauri-term",
+    "",
+    "A compact terminal for people who live in splits. Workspaces hold tabs; tabs hold any tree of panes.",
+    "",
+    "## Pane types",
+    "",
+    "- **terminal**: blocks or classic, per pane",
+    "- **editor** and **viewer**: CodeMirror 6",
+    "- **explorer**: follows the focused pane's cwd",
+    "",
+    "See [the layout code](src/components/SplitNode.tsx) or the [Tauri docs](https://tauri.app).",
+    "",
+    "![logo](docs/logo.svg)",
+    "",
+    "```sh",
+    "pnpm tauri dev",
+    "```",
+    "",
+  ].join("\n"),
+  "package.json": '{\n  "name": "tauri-term",\n  "private": true,\n  "scripts": { "dev": "vite" }\n}\n',
+  "docs/logo.svg":
+    '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24" fill="none" stroke="#8B9CFF" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 10 3 2-3 2M12 15h5"/></svg>\n',
+  "docs/data.bin": "\u0000\u0001binary",
+};
+for (const [relative, content] of Object.entries(CONTENT)) {
+  const node = lookup(`${ROOT}/${relative}`);
+  if (node) node.content = content;
 }
 
 function entry(path: string, node: Node): FsEntry {
@@ -130,6 +196,64 @@ export async function gitStatus(path: string): Promise<GitStatus | null> {
 export async function watch(onEvent: (event: WatchEvent) => void): Promise<Watcher> {
   watchers.add(onEvent);
   return { setDirs: () => {}, stop: () => void watchers.delete(onEvent) };
+}
+
+/*
+ * File contents. A file without any holds a line naming it.
+ */
+
+const START = Date.now();
+
+function fileNode(path: string): Node {
+  const node = lookup(path);
+  if (!node) throw new Error(`No such file: ${path}`);
+  if (node.dir) throw new Error(`Is a directory: ${path}`);
+  return node;
+}
+
+const contentOf = (path: string, node: Node) => node.content ?? `// ${nameOf(path)}\n`;
+const versionOf = (path: string, node: Node): FileVersion => ({
+  mtime: String((node.mtime ?? START) * 1_000_000),
+  size: new TextEncoder().encode(contentOf(path, node)).length,
+});
+
+export async function readTextFile(path: string): Promise<TextFile> {
+  const node = fileNode(path);
+  const text = contentOf(path, node);
+  const version = versionOf(path, node);
+  return text.includes("\u0000") ? { kind: "binary", version } : { kind: "text", text, version };
+}
+
+export async function readFileBytes(path: string): Promise<ArrayBuffer> {
+  return new TextEncoder().encode(contentOf(path, fileNode(path))).buffer as ArrayBuffer;
+}
+
+export async function writeTextFile(
+  path: string,
+  text: string,
+  expect: WriteExpect,
+): Promise<WriteResult> {
+  const existing = lookup(path);
+  const current = existing && !existing.dir ? versionOf(path, existing) : null;
+  const matches =
+    expect.kind === "any" ||
+    (expect.kind === "absent"
+      ? current === null
+      : current?.mtime === expect.version.mtime && current.size === expect.version.size);
+  if (!matches) return { kind: "conflict", current };
+  const parent = lookup(parentOf(path));
+  if (!parent?.children) throw new Error("No such directory");
+  const node: Node = existing && !existing.dir ? existing : { dir: false };
+  node.content = text;
+  node.mtime = Math.max(Date.now(), (existing?.mtime ?? START) + 1);
+  parent.children.set(nameOf(path), node);
+  changed(parentOf(path));
+  return { kind: "written", version: versionOf(path, node) };
+}
+
+export async function fileVersion(path: string): Promise<FileVersion | null> {
+  const node = lookup(path);
+  return node && !node.dir ? versionOf(path, node) : null;
 }
 
 /** Where a mock terminal starts, so the explorer has a repository to follow. */
