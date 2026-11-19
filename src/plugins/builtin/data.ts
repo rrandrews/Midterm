@@ -13,6 +13,7 @@ export function validateTerminalData(raw: Record<string, unknown>): Fields {
   const data: Fields = {};
   if (nonEmpty(raw.cwd)) data.cwd = raw.cwd;
   if (raw.terminalMode === "classic" || raw.terminalMode === "blocks") data.terminalMode = raw.terminalMode;
+  if (raw.aiSuggestions === false) data.aiSuggestions = false;
   return data;
 }
 

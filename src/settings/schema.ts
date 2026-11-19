@@ -22,6 +22,24 @@ export type PluginEntry = {
   skills?: Record<string, boolean>;
 };
 
+/** AI next-command suggestions (see docs/ai.md). Nothing is sent until a provider (and, for APIs, a model) is chosen. */
+export type AiSettings = {
+  /** Suggest next commands in blocks mode. On by default, inert without a provider. */
+  suggestions: boolean;
+  /** Provider id (`openai`, `anthropic`, `claude-code`, …); empty for none. */
+  provider: string;
+  /** Model id; empty means the CLI's default (CLI providers only). */
+  model: string;
+  /** Base URL for the `custom` provider. */
+  baseUrl: string;
+  /** Executable path overrides for CLI providers, by provider id. */
+  cliPaths: Record<string, string>;
+  /** Finished blocks sent as context. */
+  contextBlocks: number;
+};
+
+export const AI_CONTEXT_RANGE = { min: 0, max: 20 } as const;
+
 export type Settings = {
   version: number;
   /** CSS font family for terminals and the editor; the bundled JetBrains Mono when empty. */
@@ -45,6 +63,7 @@ export type Settings = {
   defaultPaneKind: string;
   /** Per-plugin entries, by plugin id. */
   plugins: Record<string, PluginEntry>;
+  ai: AiSettings;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -59,6 +78,7 @@ export const DEFAULT_SETTINGS: Settings = {
   keybindings: {},
   defaultPaneKind: "terminal",
   plugins: {},
+  ai: { suggestions: true, provider: "", model: "", baseUrl: "", cliPaths: {}, contextBlocks: 5 },
 };
 
 export const FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
@@ -123,6 +143,21 @@ export function migrateSettings(raw: unknown): Record<string, unknown> {
   return data;
 }
 
+function validateAi(raw: unknown): AiSettings {
+  const d = DEFAULT_SETTINGS.ai;
+  if (!isRecord(raw)) return { ...d, cliPaths: {} };
+  const cliPaths: Record<string, string> = {};
+  if (isRecord(raw.cliPaths)) for (const [id, path] of Object.entries(raw.cliPaths)) if (nonEmpty(path)) cliPaths[id] = path;
+  return {
+    suggestions: typeof raw.suggestions === "boolean" ? raw.suggestions : d.suggestions,
+    provider: typeof raw.provider === "string" ? raw.provider : d.provider,
+    model: typeof raw.model === "string" ? raw.model.trim() : d.model,
+    baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl.trim() : d.baseUrl,
+    cliPaths,
+    contextBlocks: Math.round(clampNumber(raw.contextBlocks, AI_CONTEXT_RANGE, d.contextBlocks)),
+  };
+}
+
 function validatePluginEntry(raw: unknown): PluginEntry | null {
   if (!isRecord(raw)) return null;
   const entry: PluginEntry = {};
@@ -172,6 +207,7 @@ export function validateSettings(raw: unknown): Settings {
     defaultPaneKind:
       typeof data.defaultPaneKind === "string" && data.defaultPaneKind ? data.defaultPaneKind : d.defaultPaneKind,
     plugins,
+    ai: validateAi(data.ai),
   };
 }
 

@@ -12,7 +12,6 @@ import { ANSI_NAMES, type AnsiPalette, type PaneBackground, type Theme, type The
 export type ValidationResult = { ok: true; theme: Theme } | { ok: false; errors: string[] };
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-/** Pane plugin ids: same shape as a theme id, dots allowed (`acme.notes`). */
 /** A plugin id (`PLUGIN_ID_PATTERN` in src/plugins/types.ts); built-in keys like `terminal-active` fit it too. */
 const PANE_KEY = /^[a-z0-9][a-z0-9-]{0,62}$/;
 

@@ -23,6 +23,7 @@ type SettingsActions = {
   /** Merges `patch` into a plugin's own settings. */
   updatePluginSettings: (pluginId: string, patch: Record<string, unknown>) => void;
   resetSettings: () => void;
+  updateAi: (patch: Partial<Settings["ai"]>) => void;
 };
 
 export const useSettings = create<Settings & SettingsActions>()((set, get) => ({
@@ -44,6 +45,7 @@ export const useSettings = create<Settings & SettingsActions>()((set, get) => ({
     set({ plugins: { ...plugins, [pluginId]: { ...entry, settings: { ...entry.settings, ...patch } } } });
   },
   /** Keeps which plugins are enabled and the skill switches: those are managed in the Plugins section. */
+  updateAi: (patch) => set({ ai: validateSettings({ ...pickSettings(get()), ai: { ...get().ai, ...patch } }).ai }),
   resetSettings: () => {
     const plugins: Record<string, PluginEntry> = {};
     for (const [id, entry] of Object.entries(get().plugins)) {
