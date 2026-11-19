@@ -158,6 +158,20 @@ it makes Tauri fall back to `postMessage`, and chunks then arrive as number
 arrays (still handled by `src/ipc/pty.ts`, but slower). Allow
 `ipc: http://ipc.localhost` in `connect-src`.
 
+## Working directory
+
+A session learns its shell's directory from OSC 7 (`file://host/path`,
+parsed by `src/terminal/osc.ts`). The host in the first report, which comes
+from our own shell integration, is taken as the local host; later reports
+naming another host (a shell inside `ssh`) are ignored.
+
+- Each change is written to the pane's `PaneData.cwd` (`updatePaneData` in
+  `src/actions.ts`: through the mounted layout's handle if the tab is
+  showing, else the store), so it is saved with the layout.
+- A session starts its shell in the pane's saved `cwd`; the backend falls
+  back to the home directory if it no longer exists.
+- New splits and new tabs start in the active pane's `cwd`.
+
 ## Checking the real app without looking at it
 
 `src/dev/selftest.ts` drives the running app (real webview, real shell) and

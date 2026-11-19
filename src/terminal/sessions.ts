@@ -1,4 +1,4 @@
-import { closePane } from "../actions";
+import { closePane, updatePaneData } from "../actions";
 import { findPane } from "../state/layout";
 import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
 import { TerminalSession } from "./session";
@@ -18,6 +18,8 @@ const sessions = new Map<string, TerminalSession>();
 export function acquireSession(paneId: string): TerminalSession {
   let session = sessions.get(paneId);
   if (!session) {
+    const tab = findTabOfPane(useAppStore.getState(), paneId);
+    const savedCwd = tab && findPane(tab.layout, paneId)?.data.cwd;
     session = new TerminalSession(paneId, {
       onExit: (exited) => {
         // Only the pane's current session, and only while it is still a
@@ -32,7 +34,10 @@ export function acquireSession(paneId: string): TerminalSession {
         const tab = findTabOfPane(state, id);
         if (tab) state.markActivity(tab.id);
       },
-    });
+      onCwdChange: (changed, cwd) => {
+        if (sessions.get(changed.paneId) === changed) updatePaneData(changed.paneId, { cwd });
+      },
+    }, savedCwd);
     sessions.set(paneId, session);
   }
   return session;

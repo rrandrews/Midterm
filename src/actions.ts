@@ -1,7 +1,7 @@
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
-import { countPanes, createPane, frameIdOf, listPanes } from "./state/layout";
+import { countPanes, createPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
 import { findTabOfPane, selectActiveTab, selectActiveWorkspace, useAppStore } from "./state/store";
-import type { Layout, PaneKind } from "./state/types";
+import type { Layout, PaneData, PaneKind } from "./state/types";
 
 /*
  * User-level commands, shared by menus and keyboard shortcuts.
@@ -28,8 +28,31 @@ export function focusActivePane(): void {
   focusPane(activePaneId());
 }
 
+/** Working directory for a new terminal opened from `paneId`: that pane's, if known. */
+function cwdFrom(paneId: string | undefined): string | undefined {
+  if (!paneId) return undefined;
+  const tab = findTabOfPane(store(), paneId);
+  const layout = (tab && getDock(tab)?.getModel()) ?? tab?.layout;
+  return layout && listPanes(layout).find((pane) => pane.id === paneId)?.data.cwd;
+}
+
+/**
+ * Merges `patch` into a pane's data, through the mounted layout if its tab
+ * is showing (so it is not remounted), else in the store.
+ */
+export function updatePaneData(paneId: string, patch: Partial<PaneData>): void {
+  const tab = findTabOfPane(store(), paneId);
+  if (!tab) return;
+  const dock = getDock(tab);
+  const pane = dock && listPanes(dock.getModel()).find((candidate) => candidate.id === paneId);
+  if (dock && pane) dock.updateTab(paneId, { data: { ...pane.data, ...patch } });
+  else store().updatePaneData(paneId, patch);
+}
+
+/** Opens a tab with one terminal, in the active pane's directory. */
 export function newTab(): void {
-  store().addTab();
+  const cwd = cwdFrom(activePaneId());
+  store().addTab({ layout: singlePaneLayout(createPane("terminal", { cwd })) });
   focusPane(listPanes(selectActiveTab(store()).layout)[0]?.id);
 }
 
@@ -74,7 +97,7 @@ export function splitPane(region: "right" | "bottom", paneId = activePaneId()): 
   const { dock, layout } = activeLayout();
   const frameId = paneId && frameIdOf(layout, paneId);
   if (!dock || !frameId) return;
-  const pane = createPane("terminal");
+  const pane = createPane("terminal", { cwd: cwdFrom(paneId) });
   if (dock.addTab(pane, { target: { tabsetId: frameId, region } })) focusPane(pane.id);
 }
 

@@ -6,6 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { type Pty, type PtyExit, spawnPty } from "../ipc/pty";
 import { openExternal } from "../ipc/shell";
+import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { TERMINAL_OPTIONS } from "./theme";
 
@@ -14,6 +15,8 @@ export type SessionEvents = {
   onExit: (session: TerminalSession) => void;
   /** Output arrived while the terminal was off screen. Fires once per stretch off screen. */
   onBackgroundOutput: (session: TerminalSession) => void;
+  /** The shell reported a new working directory (OSC 7). */
+  onCwdChange: (session: TerminalSession, cwd: string) => void;
 };
 
 /**
@@ -68,10 +71,22 @@ export class TerminalSession {
   /** Bytes settled before the PTY handle was known. */
   private pendingAck = 0;
 
+  /** Last directory the shell reported; until then, where it was started. */
+  private currentCwd: string | undefined;
+  /**
+   * Host named in the first OSC 7, which comes from our own shell
+   * integration. Reports naming another host (e.g. from inside `ssh`) are
+   * not directories on this machine and are ignored.
+   */
+  private localHost: string | undefined;
+
   constructor(
     readonly paneId: string,
     private readonly events: SessionEvents,
+    /** Directory to start the shell in; the home directory if unset or missing. */
+    initialCwd?: string,
   ) {
+    this.currentCwd = initialCwd;
     this.host.className = "terminal-host";
 
     this.term.loadAddon(this.fit);
@@ -90,6 +105,10 @@ export class TerminalSession {
     this.term.onData((data) => this.send({ binary: false, data }));
     // Reports that are bytes rather than text, e.g. legacy mouse encoding.
     this.term.onBinary((data) => this.send({ binary: true, data }));
+    this.term.parser.registerOscHandler(7, (data) => {
+      this.handleCwdReport(data);
+      return true;
+    });
     this.term.onResize(({ cols, rows }) => {
       if (this.phase === "running") this.pty?.resize(cols, rows);
     });
@@ -97,6 +116,11 @@ export class TerminalSession {
 
   get isAttached(): boolean {
     return this.attached;
+  }
+
+  /** The shell's working directory, as far as we know. */
+  get cwd(): string | undefined {
+    return this.currentCwd;
   }
 
   /** Shows the terminal inside `container`, starting the shell on first use. */
@@ -145,6 +169,7 @@ export class TerminalSession {
     this.phase = "starting";
 
     spawnPty({
+      cwd: this.currentCwd,
       cols: this.term.cols,
       rows: this.term.rows,
       onData: (bytes) => this.receive(bytes),
@@ -211,6 +236,15 @@ export class TerminalSession {
     if (!bytes) return;
     if (this.pty) this.pty.ack(bytes);
     else this.pendingAck += bytes;
+  }
+
+  private handleCwdReport(data: string): void {
+    const reported = parseOsc7(data);
+    if (!reported) return;
+    this.localHost ??= reported.host;
+    if (reported.host !== this.localHost || reported.path === this.currentCwd) return;
+    this.currentCwd = reported.path;
+    this.events.onCwdChange(this, reported.path);
   }
 
   private handleExit({ code, runtimeMs }: PtyExit): void {
