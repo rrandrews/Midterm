@@ -269,26 +269,34 @@ export class EditorModel {
     const path = this.filePath;
     const doc = this.view.state.doc;
     const text = encodeText(doc.toString(), this.format);
-    // A file known to be deleted is simply written again.
-    const expected = this.external === "deleted" ? null : this.version;
+    // A file known to be gone is created again, but not over one that
+    // appeared in the meantime.
+    const expect: fs.WriteExpect =
+      this.external === "deleted" || !this.version
+        ? { kind: "absent" }
+        : { kind: "version", version: this.version };
     this.saving = true;
+    // A reload still reading the file would bring back what is being replaced.
+    this.loadToken++;
     this.emit();
     let saved = false;
     try {
-      let result = await fs.writeTextFile(path, text, expected);
+      let result = await fs.writeTextFile(path, text, expect);
       if (result.kind === "conflict") {
         const ok = await confirm({
           title: `“${baseName(path)}” changed on disk`,
-          message: result.current
-            ? "Another program changed it after it was opened here. Save anyway, replacing those changes?"
-            : "Another program deleted it after it was opened here. Save it again?",
+          message: !result.current
+            ? "Another program deleted it after it was opened here. Save it again?"
+            : expect.kind === "absent"
+              ? "Another program created it again after it was deleted. Save anyway, replacing that file?"
+              : "Another program changed it after it was opened here. Save anyway, replacing those changes?",
           action: result.current ? "Overwrite" : "Save",
         });
         if (!ok) {
           this.external = result.current ? "changed" : "deleted";
           return false;
         }
-        result = await fs.writeTextFile(path, text, null);
+        result = await fs.writeTextFile(path, text, { kind: "any" });
       }
       if (result.kind === "written" && !this.disposed) {
         this.version = result.version;
@@ -361,9 +369,10 @@ export class EditorModel {
    * (smallest change, so the cursor and scroll position stay), else it is
    * replaced along with its undo history.
    */
-  private async load(keepView: boolean): Promise<void> {
+  private async load(keepView: boolean, { automatic = false } = {}): Promise<void> {
     const token = ++this.loadToken;
     const path = this.filePath;
+    const before = this.view.state.doc;
     let file: fs.TextFile;
     try {
       file = await fs.readTextFile(path);
@@ -385,18 +394,27 @@ export class EditorModel {
     }
     if (token !== this.loadToken || this.disposed) return;
 
-    this.version = file.version;
-    this.size = file.version.size;
     if (file.kind !== "text") {
+      this.version = file.version;
+      this.size = file.version.size;
       this.status = file.kind;
       this.error = null;
       this.emit();
       return;
     }
 
+    const view = this.view;
+    if (automatic && this.status === "ready" && !view.state.doc.eq(before)) {
+      // Typed into while the file was being read: keep the edits and say
+      // the file changed instead of replacing them.
+      this.external = "changed";
+      this.emit();
+      return;
+    }
+    this.version = file.version;
+    this.size = file.version.size;
     const { text, format } = decodeText(file.text);
     this.format = format;
-    const view = this.view;
     if (keepView && this.status === "ready") {
       const change = minimalChange(view.state.doc.toString(), text.replace(/\r\n?/g, "\n"));
       if (change) view.dispatch({ changes: change });
@@ -441,7 +459,7 @@ export class EditorModel {
       return;
     }
     if (!this.dirty) {
-      void this.load(true);
+      void this.load(true, { automatic: true });
       return;
     }
     if (this.external !== "changed") {

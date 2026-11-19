@@ -23,6 +23,8 @@ export type ViewerSnapshot = {
   imageUrl: string | null;
   size: number | null;
   error: string | null;
+  /** Bumped on each (re)load: embedded images are resolved again. */
+  revision: number;
 };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -41,6 +43,7 @@ export class ViewerModel {
   private readonly embedded = new Map<string, Promise<string | null>>();
 
   private loadToken = 0;
+  private revision = 0;
   private unwatch: () => void;
   private attachCount = 0;
   private disposed = false;
@@ -85,6 +88,7 @@ export class ViewerModel {
       imageUrl: this.imageBlobUrl,
       size: this.version?.size ?? null,
       error: this.error,
+      revision: this.revision,
     };
   }
 
@@ -172,6 +176,7 @@ export class ViewerModel {
     }
     // Embedded images may have changed too.
     this.forgetEmbedded();
+    this.revision++;
     this.html = renderMarkdown(file.text);
     this.status = "ready";
   }

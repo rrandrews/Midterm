@@ -231,13 +231,14 @@ function DocumentView({ paneId, model }: { paneId: string; model: ViewerModel })
     return () => {
       cancelled = true;
     };
-  }, [model, snap.html]);
+  }, [model, snap.html, snap.revision]);
 
   const onClick = (event: MouseEvent) => {
     const anchor = (event.target as Element).closest("a");
     if (!anchor) return;
     event.preventDefault();
-    const target = resolveLink(anchor.getAttribute("href") ?? "", parentPath(model.path));
+    const href = anchor.getAttribute("href") ?? anchor.dataset.fileHref ?? "";
+    const target = resolveLink(href, parentPath(model.path));
     if (!target) return;
     if (target.type === "external") openExternal(target.url);
     else if (target.type === "anchor") {

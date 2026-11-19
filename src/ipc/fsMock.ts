@@ -7,6 +7,7 @@ import type {
   TextFile,
   WatchEvent,
   Watcher,
+  WriteExpect,
   WriteResult,
 } from "./fs";
 
@@ -211,7 +212,7 @@ function fileNode(path: string): Node {
 
 const contentOf = (path: string, node: Node) => node.content ?? `// ${nameOf(path)}\n`;
 const versionOf = (path: string, node: Node): FileVersion => ({
-  mtime: node.mtime ?? START,
+  mtime: String((node.mtime ?? START) * 1_000_000),
   size: new TextEncoder().encode(contentOf(path, node)).length,
 });
 
@@ -229,18 +230,21 @@ export async function readFileBytes(path: string): Promise<ArrayBuffer> {
 export async function writeTextFile(
   path: string,
   text: string,
-  expected: FileVersion | null,
+  expect: WriteExpect,
 ): Promise<WriteResult> {
   const existing = lookup(path);
   const current = existing && !existing.dir ? versionOf(path, existing) : null;
-  if (expected && (current?.mtime !== expected.mtime || current.size !== expected.size)) {
-    return { kind: "conflict", current };
-  }
+  const matches =
+    expect.kind === "any" ||
+    (expect.kind === "absent"
+      ? current === null
+      : current?.mtime === expect.version.mtime && current.size === expect.version.size);
+  if (!matches) return { kind: "conflict", current };
   const parent = lookup(parentOf(path));
   if (!parent?.children) throw new Error("No such directory");
   const node: Node = existing && !existing.dir ? existing : { dir: false };
   node.content = text;
-  node.mtime = Math.max(Date.now(), (current?.mtime ?? 0) + 1);
+  node.mtime = Math.max(Date.now(), (existing?.mtime ?? START) + 1);
   parent.children.set(nameOf(path), node);
   changed(parentOf(path));
   return { kind: "written", version: versionOf(path, node) };

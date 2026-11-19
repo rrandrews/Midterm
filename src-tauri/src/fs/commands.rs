@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use tauri::ipc::{Channel, Response};
 use tauri::{State, Window};
 
-use super::file::{self, FileVersion, TextFile, WriteResult};
+use super::file::{self, FileVersion, TextFile, WriteExpect, WriteResult};
 use super::git::{self, GitStatus};
 use super::list::{self, FsEntry};
 use super::ops;
@@ -77,15 +77,15 @@ pub async fn fs_read_bytes(path: String) -> Result<Response, String> {
         .map(Response::new)
 }
 
-/// Writes `text` atomically, unless the file is no longer `expected`; see
-/// [`file::write_text`].
+/// Writes `text` atomically, unless what is on disk does not match
+/// `expect`; see [`file::write_text`].
 #[tauri::command]
 pub async fn fs_write_text(
     path: String,
     text: String,
-    expected: Option<FileVersion>,
+    expect: WriteExpect,
 ) -> Result<WriteResult, String> {
-    blocking(move || file::write_text(&PathBuf::from(path), &text, expected)).await
+    blocking(move || file::write_text(&PathBuf::from(path), &text, &expect)).await
 }
 
 /// The file's modification time and size, or `null` if no file is there.

@@ -88,8 +88,11 @@ export function trash(paths: string[]): Promise<void> {
   return invoke("fs_trash", { paths });
 }
 
-/** What change detection compares: modification time (ms since the epoch) and size. */
-export type FileVersion = { mtime: number; size: number };
+/**
+ * What change detection compares: modification time (nanoseconds since the
+ * epoch, as a decimal string so it survives JSON exactly) and size.
+ */
+export type FileVersion = { mtime: string; size: number };
 
 export function sameVersion(a: FileVersion | null, b: FileVersion | null): boolean {
   return a === b || (a !== null && b !== null && a.mtime === b.mtime && a.size === b.size);
@@ -101,9 +104,12 @@ export type TextFile =
   | { kind: "binary"; version: FileVersion }
   | { kind: "tooLarge"; version: FileVersion };
 
+/** What a write expects on disk: the file at a version, no file, or anything. */
+export type WriteExpect = { kind: "version"; version: FileVersion } | { kind: "absent" } | { kind: "any" };
+
 /**
- * The outcome of a write: written, or refused because the file is no longer
- * the expected version (`current` is `null` if it is gone).
+ * The outcome of a write: written, or refused because what is on disk does
+ * not match the expectation (`current` is `null` if there is no file).
  */
 export type WriteResult =
   | { kind: "written"; version: FileVersion }
@@ -122,12 +128,12 @@ export function readFileBytes(path: string): Promise<ArrayBuffer> {
 }
 
 /**
- * Writes text to a file atomically, creating it if missing. With `expected`,
- * the file must still be that version, or nothing is written.
+ * Writes text to a file atomically, creating it if missing, if what is on
+ * disk matches `expect`; otherwise nothing is written.
  */
-export function writeTextFile(path: string, text: string, expected: FileVersion | null): Promise<WriteResult> {
-  if (!isTauri()) return mock.writeTextFile(path, text, expected);
-  return invoke<WriteResult>("fs_write_text", { path, text, expected });
+export function writeTextFile(path: string, text: string, expect: WriteExpect): Promise<WriteResult> {
+  if (!isTauri()) return mock.writeTextFile(path, text, expect);
+  return invoke<WriteResult>("fs_write_text", { path, text, expect });
 }
 
 /** A file's version, or `null` if no file is there. */

@@ -241,7 +241,7 @@ export type OpenFileOptions = {
  *
  * An editor with unsaved changes is never given another file: the file
  * opens in a new editor pane instead, so nothing is lost and nobody is
- * asked.
+ * asked. With a `line`, only editors are considered.
  */
 export function openFile(path: string, { fromPaneId, newPane = false, line, column }: OpenFileOptions): void {
   const tab = findTabOfPane(store(), fromPaneId);
@@ -249,7 +249,8 @@ export function openFile(path: string, { fromPaneId, newPane = false, line, colu
   if (!tab || !dock) return;
   const layout = dock.getModel();
   const panes = listPanes(layout);
-  const kinds = kindsFor(path);
+  // A line can only be shown in an editor.
+  const kinds: PaneKind[] = line !== undefined && !isImagePath(path) ? ["editor"] : kindsFor(path);
   const show = (paneId: string) => {
     if (line !== undefined) revealInPane(paneId, path, line, column);
     focusPane(paneId);

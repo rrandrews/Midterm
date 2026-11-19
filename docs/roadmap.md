@@ -89,7 +89,8 @@ Editor and viewer:
 
 - [ ] A "Save" button in the close prompt (it only offers discard or cancel), and save-all
 - [ ] Text in other encodings (Latin-1, UTF-16) opens as "binary"; files over 16 MiB do not open
-- [ ] Save's conflict check and write are two steps; a change landing in between is overwritten
+- [ ] Save's conflict check and write are two steps; a change by another program landing in between is overwritten
+- [ ] A file opened through a symlink is watched via the link's directory only, so changes to a target elsewhere go unnoticed until the pane is remounted
 - [ ] Atomic saves replace the file, which breaks hard links and drops extended attributes/ACLs
 - [ ] Syntax highlighting of code blocks in rendered Markdown; find in rendered Markdown
 - [ ] Clickable breadcrumb segments (reveal in the explorer); show the file in the tab title or dirty marker on the tab

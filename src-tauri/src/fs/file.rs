@@ -12,6 +12,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
@@ -25,10 +26,11 @@ pub const BYTES_LIMIT: u64 = 64 * 1024 * 1024;
 const BINARY_SNIFF: usize = 8000;
 
 /// What change detection compares, as `FileVersion` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileVersion {
-    /// Modification time, milliseconds since the Unix epoch (fractional).
-    pub mtime: f64,
+    /// Modification time in nanoseconds since the Unix epoch, as a decimal
+    /// string: exact through JSON, where a number would lose precision.
+    pub mtime: String,
     pub size: u64,
 }
 
@@ -38,13 +40,17 @@ impl FileVersion {
             .modified()
             .ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+            .map_or(0, |d| d.as_nanos());
         Self {
-            mtime,
+            mtime: mtime.to_string(),
             size: meta.len(),
         }
     }
 }
+
+/// Saves are serialized, so two saves of one file (open in two panes)
+/// cannot both pass the version check before either replaces the file.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Result of [`read_text`], as `TextFile` in `src/ipc/fs.ts`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -124,10 +130,14 @@ enum Limited {
 }
 
 fn read_limited(path: &Path, limit: u64) -> io::Result<Limited> {
-    let mut file = File::open(path)?;
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    let mut file = open_nonblocking(path)?;
+    // Checked again on the handle: the path may have changed since.
     let meta = file.metadata()?;
-    if meta.is_dir() {
-        return Err(io::Error::other("is a directory"));
+    if !meta.is_file() {
+        return Err(io::Error::other("not a regular file"));
     }
     let version = FileVersion::of(&meta);
     if meta.len() > limit {
@@ -143,29 +153,57 @@ fn read_limited(path: &Path, limit: u64) -> io::Result<Limited> {
     Ok(Limited::Read(bytes, version))
 }
 
-/// Writes `text` to `path`.
-///
-/// With `expected`, the file must still be that version (it must exist);
-/// otherwise nothing is written and the current version is returned as a
-/// conflict. Without it, the file is written whatever is there, and created
-/// if missing (its directory must exist).
+/// Opens a file for reading without blocking on a FIFO or device (the
+/// caller checks that it is a regular file).
+fn open_nonblocking(path: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+/// What a save expects to find on disk, as `WriteExpect` in `src/ipc/fs.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WriteExpect {
+    /// The file, still at this version.
+    Version { version: FileVersion },
+    /// No file: it is being created (or recreated after it was deleted).
+    Absent,
+    /// Anything: overwrite or create.
+    Any,
+}
+
+/// Writes `text` to `path` if what is there matches `expect`; otherwise
+/// nothing is written and the current version is returned as a conflict.
+/// Missing files are created (their directory must exist).
 ///
 /// The write is atomic where possible: a temp file in the same directory is
-/// written, synced, given the old file's permissions (new files get 0644 on Unix)
-/// and renamed over the file, so a crash never leaves a half-written file.
-/// A symlink is written through (its target is replaced, the link stays).
-/// If the directory is not writable, the file is overwritten in place.
-/// Replacing the file breaks hard links and drops extended attributes.
-pub fn write_text(
-    path: &Path,
-    text: &str,
-    expected: Option<FileVersion>,
-) -> Result<WriteResult, String> {
+/// written, synced, given the old file's permissions (a new file gets 0666
+/// less the umask) and renamed over the file, so a crash never leaves a
+/// half-written file. A symlink is written through (its target is replaced,
+/// or created if missing; the link stays). If the directory is not
+/// writable, the file is overwritten in place. Replacing the file breaks
+/// hard links and drops extended attributes.
+///
+/// Saves are serialized with each other, but a change by another program
+/// between the check and the rename is overwritten.
+pub fn write_text(path: &Path, text: &str, expect: &WriteExpect) -> Result<WriteResult, String> {
     let fail = |e: io::Error| format!("cannot save {}: {e}", path.display());
+    let _guard = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let current = version(path)?;
-    if let Some(expected) = expected
-        && current != Some(expected)
-    {
+    let matches = match expect {
+        WriteExpect::Version { version } => current.as_ref() == Some(version),
+        WriteExpect::Absent => current.is_none(),
+        WriteExpect::Any => true,
+    };
+    if !matches {
         return Ok(WriteResult::Conflict { current });
     }
 
@@ -176,15 +214,19 @@ pub fn write_text(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
 
-    match tempfile::Builder::new()
-        .prefix(".midterm-save-")
-        .suffix(".tmp")
-        .tempfile_in(dir)
-    {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".midterm-save-").suffix(".tmp");
+    #[cfg(unix)]
+    if permissions.is_none() {
+        // Created with this mode, so the umask applies, as for any new file.
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    match builder.tempfile_in(dir) {
         Ok(mut tmp) => {
             tmp.write_all(text.as_bytes()).map_err(fail)?;
             tmp.as_file().sync_all().map_err(fail)?;
-            if let Some(permissions) = permissions.or_else(default_permissions) {
+            if let Some(permissions) = permissions {
                 fs::set_permissions(tmp.path(), permissions).map_err(fail)?;
             }
             tmp.persist(&target).map_err(|e| fail(e.error))?;
@@ -200,25 +242,28 @@ pub fn write_text(
     Ok(WriteResult::Written { version })
 }
 
-/// `path` with symlinks resolved if it exists, else `path` itself.
+/// The file `path` names: symlinks followed, even to a target that does not
+/// exist (so saving through a dangling link creates its target).
 fn resolve_symlinks(path: &Path) -> io::Result<PathBuf> {
     match fs::canonicalize(path) {
-        Ok(resolved) => Ok(resolved),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(path.to_path_buf()),
-        Err(e) => Err(e),
+        Ok(resolved) => return Ok(resolved),
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        Err(_) => {}
     }
-}
-
-/// Permissions for a new file, if the temp file's own (0600 on Unix) will not do.
-#[cfg(unix)]
-fn default_permissions() -> Option<fs::Permissions> {
-    use std::os::unix::fs::PermissionsExt;
-    Some(fs::Permissions::from_mode(0o644))
-}
-
-#[cfg(not(unix))]
-fn default_permissions() -> Option<fs::Permissions> {
-    None
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let target = fs::read_link(&current)?;
+                current = match current.parent() {
+                    Some(parent) if target.is_relative() => parent.join(target),
+                    _ => target,
+                };
+            }
+            _ => return Ok(current),
+        }
+    }
+    Err(io::Error::other("too many levels of symbolic links"))
 }
 
 #[cfg(test)]
@@ -242,8 +287,8 @@ mod tests {
             panic!("not text");
         };
         assert_eq!(text, "héllo\n");
-        assert_eq!(Some(v), version(&path).unwrap());
         assert_eq!(v.size, 7);
+        assert_eq!(Some(v), version(&path).unwrap());
     }
 
     #[test]
@@ -288,10 +333,11 @@ mod tests {
     fn writes_new_and_existing_files_and_leaves_no_temp_files() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("new.txt");
-        let v1 = written(write_text(&path, "one", None).unwrap());
+        let v1 = written(write_text(&path, "one", &WriteExpect::Absent).unwrap());
         assert_eq!(read_to_string(&path).unwrap(), "one");
-        assert_eq!(Some(v1), version(&path).unwrap());
-        let v2 = written(write_text(&path, "two!", Some(v1)).unwrap());
+        assert_eq!(Some(v1.clone()), version(&path).unwrap());
+        let expect = WriteExpect::Version { version: v1 };
+        let v2 = written(write_text(&path, "two!", &expect).unwrap());
         assert_eq!(read_to_string(&path).unwrap(), "two!");
         assert_eq!(v2.size, 4);
         let names: Vec<_> = fs::read_dir(tmp.path())
@@ -308,10 +354,21 @@ mod tests {
         write(&path, "mine").unwrap();
         let v = version(&path).unwrap().unwrap();
         let stale = FileVersion {
-            mtime: v.mtime - 5000.0,
+            mtime: "1".into(),
             ..v
         };
-        let result = write_text(&path, "lost", Some(stale)).unwrap();
+        let expect = WriteExpect::Version { version: stale };
+        let result = write_text(&path, "lost", &expect).unwrap();
+        assert_eq!(
+            result,
+            WriteResult::Conflict {
+                current: version(&path).unwrap()
+            }
+        );
+        assert_eq!(read_to_string(&path).unwrap(), "mine");
+
+        // Creating refuses to replace a file that appeared meanwhile.
+        let result = write_text(&path, "lost", &WriteExpect::Absent).unwrap();
         assert_eq!(
             result,
             WriteResult::Conflict {
@@ -322,9 +379,22 @@ mod tests {
 
         let v = version(&path).unwrap().unwrap();
         fs::remove_file(&path).unwrap();
-        let result = write_text(&path, "lost", Some(v)).unwrap();
+        let expect = WriteExpect::Version { version: v };
+        let result = write_text(&path, "lost", &expect).unwrap();
         assert_eq!(result, WriteResult::Conflict { current: None });
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_a_fifo_fails_instead_of_blocking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(read_text(&fifo, TEXT_LIMIT).is_err());
+        assert!(read_bytes(&fifo, BYTES_LIMIT).is_err());
     }
 
     #[cfg(unix)]
@@ -338,7 +408,7 @@ mod tests {
         let link = tmp.path().join("link.sh");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        written(write_text(&link, "#!/bin/sh\necho hi\n", None).unwrap());
+        written(write_text(&link, "#!/bin/sh\necho hi\n", &WriteExpect::Any).unwrap());
         assert!(
             fs::symlink_metadata(&link)
                 .unwrap()
@@ -349,11 +419,27 @@ mod tests {
         let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);
 
-        let fresh = tmp.path().join("fresh.txt");
-        written(write_text(&fresh, "x", None).unwrap());
-        assert_eq!(
-            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
-            0o644
+        // A dangling link: saving creates its target and keeps the link.
+        fs::remove_file(&target).unwrap();
+        written(write_text(&link, "new", &WriteExpect::Absent).unwrap());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
+        assert_eq!(read_to_string(&target).unwrap(), "new");
+
+        // New files get 0666 less the umask, not the temp file's 0600.
+        let fresh = tmp.path().join("fresh.txt");
+        written(write_text(&fresh, "x", &WriteExpect::Absent).unwrap());
+        let mode = fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+        // SAFETY: umask only swaps the process mask; it is set straight back.
+        let umask = unsafe {
+            let old = libc::umask(0o022);
+            libc::umask(old);
+            old
+        } as u32;
+        assert_eq!(mode, 0o666 & !umask);
     }
 }

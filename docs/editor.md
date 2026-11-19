@@ -11,28 +11,32 @@ Pure functions, unit-tested with temp dirs; `commands.rs` has the thin
 
 | Command | Arguments (JS names) | Result |
 |---|---|---|
-| `fs_read_text` | `path` | `TextFile`: `{ kind: "text", text, version }`, or `{ kind: "binary" \| "tooLarge", version }`. Rejects if the file cannot be read (missing, a directory…). |
+| `fs_read_text` | `path` | `TextFile`: `{ kind: "text", text, version }`, or `{ kind: "binary" \| "tooLarge", version }`. Rejects if it is not a readable regular file (missing, a directory, a FIFO…). |
 | `fs_read_bytes` | `path` | The raw bytes as an `ArrayBuffer` (`tauri::ipc::Response`, not JSON). Rejects above 64 MiB. |
-| `fs_write_text` | `path`, `text`, `expected` | `WriteResult`: `{ kind: "written", version }` or `{ kind: "conflict", current }` (nothing written). |
+| `fs_write_text` | `path`, `text`, `expect` | `WriteResult`: `{ kind: "written", version }` or `{ kind: "conflict", current }` (nothing written). `expect` is `{ kind: "version", version }`, `{ kind: "absent" }` or `{ kind: "any" }`. |
 | `fs_file_version` | `path` | `FileVersion` or `null` if no file is there (missing, or a directory). |
 
-- `FileVersion` is `{ mtime, size }`; `mtime` is fractional milliseconds
-  since the epoch. Change detection compares both (`sameVersion` in
-  `src/ipc/fs.ts`).
+- `FileVersion` is `{ mtime, size }`; `mtime` is nanoseconds since the
+  epoch as a decimal string (a JSON number would not round-trip exactly).
+  Change detection compares both (`sameVersion` in `src/ipc/fs.ts`).
 - Text: files over 16 MiB are `tooLarge`; a NUL byte in the first 8000
   bytes (git's heuristic) or invalid UTF-8 means `binary`. So Latin-1 and
   UTF-16 files are not opened as text.
-- Writing: with `expected`, the file must still be that version (and
-  exist), else it is a conflict. With `expected: null` it is written
-  regardless and created if missing (the directory must exist). The write
-  goes to a temp file in the same directory (`.midterm-save-*.tmp`), is
-  synced, gets the old file's permissions (new files 0644), and is renamed
-  over the file. Symlinks are written through (the target is replaced, the
-  link kept). If the directory is not writable, the file is overwritten in
+- Reading opens the file non-blocking and checks the handle is a regular
+  file, so a FIFO or device never hangs a worker.
+- Writing: `version` requires the file at that version; `absent` requires
+  no file (used to recreate a deleted file without clobbering one that
+  reappeared); `any` writes regardless. Missing files are created (the
+  directory must exist). The write goes to a temp file in the same
+  directory (`.midterm-save-*.tmp`), is synced, gets the old file's
+  permissions (a new file: 0666 less the umask), and is renamed over the
+  file. Symlinks are written through, also to a missing target (the link
+  is kept). If the directory is not writable, the file is overwritten in
   place. Replacing the file breaks hard links and drops extended attributes
   and ACLs.
-- The check and the write are not one atomic step: a change landing in
-  between is overwritten.
+- Saves are serialized by a process-wide lock, so two panes saving one
+  file cannot both pass the check. A change by another program between
+  the check and the rename is still overwritten.
 
 `src/ipc/fs.ts` wraps these (`readTextFile`, `readFileBytes`,
 `writeTextFile`, `fileVersion`); `src/ipc/fsMock.ts` implements them over
@@ -94,16 +98,18 @@ quitting asks.
   (reports during a save are skipped, since the save itself causes one).
   - Clean buffer: reloaded silently, as the smallest single change
     (`minimalChange`), so the cursor and scroll position stay. It goes
-    into the undo history.
+    into the undo history. If the user types while the file is being
+    read, the edits are kept and the "changed on disk" notice shown
+    instead. A save cancels any reload in flight.
   - Dirty buffer: a notice under the breadcrumb, "Changed on disk",
     with **Reload** (replace the buffer, undoable) and **Keep mine**
     (adopt the disk version as the base, so the next save overwrites
     without asking).
   - Deleted: the buffer is kept and a notice says saving creates the file
     again.
-- Saving (⌘S) sends the base version as `expected`. A conflict asks
-  ("changed on disk… Save anyway?") and, if confirmed, writes with
-  `expected: null`. Errors show in the notice row.
+- Saving (⌘S) expects the base version (or `absent` for a file known to
+  be deleted). A conflict asks ("changed on disk… Save anyway?") and, if
+  confirmed, writes with `any`. Errors show in the notice row.
 - A file that is missing, binary, too large or unreadable shows a message
   instead of the editor, and is tried again when the watcher reports a
   change.
@@ -131,7 +137,8 @@ command.
 3. Else (or with `newPane`) a new pane is split off.
 
 `line`/`column` are handed to `revealInPane`, which moves the cursor there
-once the file is loaded and on screen. Renames update models in place
+once the file is loaded and on screen. With a line only editors are
+considered (a rendered Markdown viewer cannot show one). Renames update models in place
 (`renameOpenModels`, from `renameOpenFiles`), keeping their buffers.
 
 ### Closing
@@ -154,8 +161,10 @@ relative to the file's repository (nearest ancestor with `.git`), else from
   with DOMPurify (`<style>`, forms and inline `style` dropped). Styles from
   the mockup: 18px h1, 12.5px h2 in `fg-soft`, body `fg-muted` at line
   height 1.6.
-- Image sources are moved to `data-src` during sanitizing so nothing is
-  fetched by the webview. The view resolves them against the document's
+- Nothing in the rendered HTML loads by itself: media, embeds, inline SVG
+  and the like are dropped, and every resource attribute (`src`,
+  `srcset`, `poster`, non-link `href`…) is removed, except that an image's
+  source is kept in `data-src`. The view resolves them against the document's
   directory and reads local files through `fs_read_bytes` into blob URLs
   (cached per document, revoked on reload and dispose). `data:image/…`
   URLs are kept; remote images are not loaded (the CSP planned for M7
@@ -163,7 +172,9 @@ relative to the file's repository (nearest ancestor with `.git`), else from
 - Links: http(s) open in the browser (`openExternal`); `#heading` scrolls
   to the heading with that GitHub-style slug; other Markdown files open in
   the same viewer; any other file goes through `openFile` (⌘-click: new
-  pane), with `#L12` as a line.
+  pane), with `#L12` as a line. `file:` links (which DOMPurify would
+  strip) are kept in `data-file-href`.
+- Embedded images are resolved again on every reload of the document.
 - **Images** are centred on a faint checkerboard; the file name (and
   pixel size) is shown top right in 10.5px mono, moving aside for the pane
   controls.
