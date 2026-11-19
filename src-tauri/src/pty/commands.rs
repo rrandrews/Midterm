@@ -15,7 +15,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{State, Window};
 
 use super::manager::PtyManager;
-use super::session::{PtyEvent, Sinks};
+use super::session::{Foreground, PtyEvent, Sinks};
 use super::shell::shell_command;
 
 /// Starts the user's login shell in a new PTY and returns the session id.
@@ -86,6 +86,17 @@ pub fn pty_resize(
 pub fn pty_ack(manager: State<'_, PtyManager>, id: u32, bytes: usize) -> Result<(), String> {
     manager.ack(id, bytes);
     Ok(())
+}
+
+/// The process in the foreground of the session's terminal, as
+/// `{ pid, name, isShell }`. `null` for an unknown or exited session, or
+/// when it cannot be determined.
+#[tauri::command]
+pub fn pty_foreground(
+    manager: State<'_, PtyManager>,
+    id: u32,
+) -> Result<Option<Foreground>, String> {
+    Ok(manager.foreground(id))
 }
 
 /// Kills the session's process and forgets the session. Idempotent.

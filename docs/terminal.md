@@ -83,6 +83,7 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 | `session.rs` | One child on a PTY and its threads. No Tauri types, so it is unit-tested directly (`tests.rs`). |
 | `manager.rs` | `PtyManager`: id → session registry in Tauri managed state. |
 | `shell.rs` | Which program to run, its environment and working directory. |
+| `process.rs` | Executable name of a pid, for the foreground process (Unix). |
 | `integration.rs` | Shell integration: writes the scripts in `src-tauri/shell-integration/` to disk and makes the shell load them (Unix). |
 | `commands.rs` | The `pty_*` commands: thin adapters from channels to a session's sinks. |
 
@@ -96,6 +97,7 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 | `pty_resize` | `id`, `cols`, `rows` | Errors on an unknown id. |
 | `pty_ack` | `id`, `bytes` | Flow-control acknowledgement. Unknown ids are ignored. |
 | `pty_kill` | `id` | SIGHUP, then SIGKILL after 250ms. Idempotent. An exit event still follows. |
+| `pty_foreground` | `id` | `{ pid, name, isShell }` or `null`. See below. |
 
 - `onData` receives an `ArrayBuffer` of raw bytes (sent as
   `InvokeResponseBody::Raw`; a `Channel<Vec<u8>>` would arrive as a JSON
@@ -107,6 +109,19 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
   main thread. That is what keeps keystrokes in order. Keep them that way.
 
 `src/ipc/pty.ts` is the only caller.
+
+### Foreground process
+
+`pty_foreground` (`Pty.foreground()` in `src/ipc/pty.ts`) returns the
+terminal's foreground process, e.g. `{ "pid": 4242, "name": "vim",
+"isShell": false }`, for tab titles and for asking before closing a pane
+with something running. It is the leader of the terminal's foreground
+process group (`tcgetpgrp` on the master, via portable-pty's
+`process_group_leader`). `name` is the executable name (macOS `proc_name`,
+Linux `/proc/<pid>/comm`, so `zsh` rather than `-zsh`; empty if unreadable).
+`isShell` is true when that process is the session's own child, i.e. the
+shell is at its prompt. `null` for unknown or exited sessions and on
+Windows. Lookup code is in `process.rs`. The mock PTY reports a shell.
 
 ### Shell and environment
 

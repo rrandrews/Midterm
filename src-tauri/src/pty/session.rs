@@ -97,6 +97,19 @@ pub enum PtyEvent {
     },
 }
 
+/// The process in the foreground of a session's terminal.
+///
+/// Serialises as `{ "pid": 123, "name": "vim", "isShell": false }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Foreground {
+    pub pid: u32,
+    /// Executable name, e.g. `zsh` or `vim`; empty if it could not be read.
+    pub name: String,
+    /// The process is the session's own child (normally the shell).
+    pub is_shell: bool,
+}
+
 /// Flow-control thresholds, in bytes of unacknowledged output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlowLimits {
@@ -330,6 +343,31 @@ impl Session {
     /// True once the exit event has been emitted (or is being emitted).
     pub fn is_finished(&self) -> bool {
         lock(&self.shared.state).finished
+    }
+
+    /// The terminal's foreground process: the leader of its foreground
+    /// process group. That is the shell itself while it waits at a prompt,
+    /// and the job it runs otherwise. `None` once the child has exited, or
+    /// if it cannot be determined (always on Windows).
+    pub fn foreground(&self) -> Option<Foreground> {
+        #[cfg(unix)]
+        {
+            if lock(&self.shared.state).child_exited {
+                return None;
+            }
+            let pgid = lock(&self.shared.io)
+                .as_ref()?
+                .master
+                .process_group_leader()?;
+            let pid = u32::try_from(pgid).ok().filter(|&pid| pid > 0)?;
+            Some(Foreground {
+                pid,
+                name: super::process::name(pid).unwrap_or_default(),
+                is_shell: self.shared.pid == Some(pid),
+            })
+        }
+        #[cfg(not(unix))]
+        None
     }
 
     /// True once every thread belonging to this session has terminated.

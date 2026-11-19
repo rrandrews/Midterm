@@ -8,8 +8,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use portable_pty::CommandBuilder;
 
 use super::super::integration;
+use super::super::manager::PtyManager;
+use super::super::session::{Foreground, Session};
 use super::super::shell::base_command;
-use super::Harness;
+use super::{Harness, wait_until};
 
 /// A fresh, empty directory under the temp dir, with symlinks resolved so
 /// that it matches what the shell reports as `$PWD`.
@@ -300,4 +302,55 @@ fn fish_reports_cwd_and_restores_xdg_data_dirs() {
         text.contains("mark=config xdg=/a:/b left= si=1"),
         "output: {text:?}"
     );
+}
+
+/// Waits until the session's foreground process satisfies `pred`.
+fn wait_for_foreground(session: &Session, what: &str, pred: impl Fn(&Foreground) -> bool) {
+    wait_until(what, || session.foreground().is_some_and(|fg| pred(&fg)));
+}
+
+#[test]
+fn foreground_is_the_shell_at_the_prompt_and_the_job_otherwise() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("foreground");
+    // Keeps zsh-newuser-install from starting on some distributions.
+    sandbox.write(".zshrc", "");
+    let mut h = Harness::spawn(sandbox.command(&zsh, &sandbox.home));
+    h.session.write(b"echo ready\n".to_vec()).unwrap();
+    h.wait_for_output("ready");
+    wait_for_foreground(&h.session, "the shell in the foreground", |fg| {
+        fg.is_shell && fg.name == "zsh"
+    });
+
+    h.session.write(b"sleep 30\n".to_vec()).unwrap();
+    wait_for_foreground(&h.session, "sleep in the foreground", |fg| {
+        !fg.is_shell && fg.name == "sleep"
+    });
+
+    // ^C ends the job and gives the terminal back to the shell.
+    h.session.write(b"\x03".to_vec()).unwrap();
+    wait_for_foreground(&h.session, "the shell back in the foreground", |fg| {
+        fg.is_shell
+    });
+
+    h.session.write(b"exit 0\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    assert_eq!(h.session.foreground(), None);
+}
+
+#[test]
+fn foreground_json_shape_and_unknown_ids() {
+    let fg = Foreground {
+        pid: 42,
+        name: "vim".into(),
+        is_shell: false,
+    };
+    assert_eq!(
+        serde_json::to_string(&fg).unwrap(),
+        r#"{"pid":42,"name":"vim","isShell":false}"#
+    );
+    assert_eq!(PtyManager::default().foreground(42), None);
 }
