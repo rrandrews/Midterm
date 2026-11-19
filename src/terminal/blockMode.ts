@@ -6,7 +6,7 @@ import { getSettings } from "../settings/settings";
 import { findPane } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
 import type { PaneData } from "../state/types";
-import { logicalLines, rowsText } from "./blockRender";
+import { rowsText } from "./blockRender";
 import { type Block, outputRows } from "./blocks";
 import { recordCommand } from "./history";
 import type { TerminalSession } from "./session";
@@ -47,13 +47,7 @@ export function hasIntegration(paneId: string): boolean | undefined {
 /** A block's output as plain text. */
 export function blockOutput(session: TerminalSession, block: Block): string {
   const rows = outputRows(block, session.blocks.buffer);
-  return rows ? rowsText(session.blocks.buffer, rows.from, rows.to) : "";
-}
-
-/** Number of logical lines of a block's output. */
-export function blockLineCount(session: TerminalSession, block: Block): number {
-  const rows = outputRows(block, session.blocks.buffer);
-  return rows ? logicalLines(session.blocks.buffer, rows.from, rows.to).length : 0;
+  return rows ? rowsText(session.blocks.buffer, rows.from, rows.to, session.cols, rows.lastCells) : "";
 }
 
 /** Whether the shell is waiting at a prompt, so a command can be sent. */
@@ -65,8 +59,7 @@ export function canRun(session: TerminalSession): boolean {
 /** Runs a command line from the blocks view (input editor or re-run). */
 export function runFromBlocks(session: TerminalSession, command: string): void {
   if (!command.trim() || !canRun(session)) return;
-  recordCommand(command);
-  session.runCommand(command);
+  if (session.runCommand(command)) recordCommand(command);
 }
 
 export const copyBlockCommand = (block: Block) => void copyText(block.command);

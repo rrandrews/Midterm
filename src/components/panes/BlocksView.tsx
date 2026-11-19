@@ -142,7 +142,7 @@ const FinishedBlock = memo(function FinishedBlock({
     const logical = logicalLines(buffer, rows.from, rows.to);
     const shown = logical.slice(-limit);
     const from = shown[0]?.[0] ?? rows.to;
-    const rendered = renderRows(buffer, from, rows.to, { theme: session.theme, cols: session.cols });
+    const rendered = renderRows(buffer, from, rows.to, { theme: session.theme, cols: session.cols, lastCells: rows.lastCells });
     // Blank lines at the end (a trailing newline before the prompt) are not output.
     while (rendered.length && rendered[rendered.length - 1].every((run) => !run.text.trim() && !run.bg)) rendered.pop();
     return { lines: rendered, hidden: logical.length - shown.length };

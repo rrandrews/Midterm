@@ -72,9 +72,20 @@ export type Block = {
   start: IMarker;
   /** The beginning of the output was trimmed from the scrollback or erased. */
   truncated: boolean;
-  /** Row the D mark was printed on; unset while running. */
+  /**
+   * Sent from the input editor and no C seen yet: `start` is the row the
+   * command line was typed on. Shells cannot mark every command (bash
+   * prints no C for a line that is only a subshell), so the block exists
+   * from the moment it is sent.
+   */
+  provisional: boolean;
+  /** Start of the logical line the D mark was printed on; unset while running. */
   end: IMarker | undefined;
-  /** Column of the D mark: its row is part of the output only if this is > 0. */
+  /**
+   * Where on that logical line D was printed, in cells. The line is part of
+   * the output only up to there (bash prints its prompt right after output
+   * that has no final newline). Counted in cells so it survives reflow.
+   */
   endCol: number;
   readonly startedAt: number;
   endedAt: number | undefined;
@@ -134,8 +145,6 @@ export class BlockTracker {
 
   /** Where the user's input starts on the current prompt (B). */
   private inputStart: { marker: IMarker; col: number } | undefined;
-  /** The command line the input editor is about to send, for the next C. */
-  private pendingCommand: string | undefined;
   /** Commands run in this terminal, oldest first. */
   private readonly commandList: string[] = [];
 
@@ -153,7 +162,7 @@ export class BlockTracker {
       }),
       // `ESC [ 3 J` erases the scrollback (`clear` sends it): the blocks go too.
       term.parser.registerCsiHandler({ final: "J" }, (params) => {
-        if (params[0] === 3) this.clear();
+        if (params[0] === 3 && term.buffer.active.type === "normal") this.clear();
         return false; // xterm still does the erasing
       }),
       term.buffer.onBufferChange((buffer) => {
@@ -199,9 +208,22 @@ export class BlockTracker {
     return this.term.buffer.normal;
   }
 
-  /** Remembers the command line about to be sent, so the block shows it as typed. */
-  noteCommand(command: string): void {
-    this.pendingCommand = command;
+  /**
+   * Starts a block for a command line the input editor is sending. Returns
+   * false (and the caller must not send it) unless the shell is at a prompt;
+   * from now until the next prompt it is not, so a second Enter cannot type
+   * into the running command.
+   */
+  submit(command: string): boolean {
+    if (this.phase !== "prompt" || this.term.buffer.active.type !== "normal") return false;
+    const start = this.term.registerMarker(0);
+    if (!start) return false;
+    this.inputStart?.marker.dispose();
+    this.inputStart = undefined;
+    this.phase = "running";
+    this.addBlock(command, start, true);
+    this.changed();
+    return true;
   }
 
   /** Forgets every block so far (⌃L, Clear, `clear`). A running command's block goes when it ends. */
@@ -250,10 +272,19 @@ export class BlockTracker {
         this.phase = "prompt";
         break;
       }
-      case "C":
-        // A second C for the same command (fish 4 prints its own marks too) is ignored.
-        if (this.phase === "prompt") this.startCommand();
+      case "C": {
+        const running = this.runningBlock();
+        if (running?.provisional) {
+          // The command sent from the editor: its output starts here.
+          const start = this.term.registerMarker(0);
+          if (start) this.setStart(running, start);
+          running.provisional = false;
+        } else if (this.phase === "prompt") {
+          this.startCommand();
+        }
+        // Otherwise a second C for the same command (fish 4 prints its own marks too).
         break;
+      }
       case "D":
         this.finishRunning(mark.exitCode);
         this.phase = "prompt";
@@ -262,15 +293,17 @@ export class BlockTracker {
     this.changed();
   }
 
+  /** A command typed into the terminal itself started (C at a prompt). */
   private startCommand(): void {
-    this.finishRunning(undefined);
     const start = this.term.registerMarker(0);
-    const command = (this.pendingCommand ?? this.commandFromPrompt()).trim();
-    this.pendingCommand = undefined;
+    const command = this.commandFromPrompt().trim();
     this.inputStart?.marker.dispose();
     this.inputStart = undefined;
     this.phase = "running";
-    if (!start) return;
+    if (start) this.addBlock(command, start, false);
+  }
+
+  private addBlock(command: string, start: IMarker, provisional: boolean): void {
     const cwd = this.options.cwd();
     const block: Block = {
       id: this.nextId++,
@@ -279,6 +312,7 @@ export class BlockTracker {
       branch: undefined,
       start,
       truncated: false,
+      provisional,
       end: undefined,
       endCol: 0,
       startedAt: this.now(),
@@ -288,7 +322,7 @@ export class BlockTracker {
     };
     start.onDispose(() => this.schedulePrune());
     this.blocks.push(block);
-    if (command) {
+    if (command.trim()) {
       const index = this.commandList.lastIndexOf(command);
       if (index !== -1) this.commandList.splice(index, 1);
       this.commandList.push(command);
@@ -307,19 +341,63 @@ export class BlockTracker {
     }
   }
 
+  private setStart(block: Block, start: IMarker): void {
+    if (block.end !== block.start) block.start.dispose();
+    block.start = start;
+    start.onDispose(() => this.schedulePrune());
+  }
+
+  /** A marker on buffer row `line` (relative to the cursor, which is where xterm places them). */
+  private markerAt(line: number): IMarker | undefined {
+    const buffer = this.term.buffer.normal;
+    return this.term.registerMarker(line - (buffer.baseY + buffer.cursorY));
+  }
+
   /** Ends the running block, if any. `exitCode` is unset when the command's end was not reported. */
   private finishRunning(exitCode: number | undefined): void {
     const block = this.runningBlock();
     if (!block) return;
-    block.end = this.term.registerMarker(0) ?? block.start;
+    // Output that trimmed the start and ended in the same write.
+    if (block.start.isDisposed) this.reanchor(block);
+    const buffer = this.term.buffer.normal;
+    const cursorRow = buffer.baseY + buffer.cursorY;
+    if (block.provisional) {
+      // No C came: the output starts after the command line as echoed.
+      let row = block.start.line;
+      while (row >= 0 && buffer.getLine(row + 1)?.isWrapped) row++;
+      const start = row >= 0 && row + 1 <= cursorRow ? this.markerAt(row + 1) : undefined;
+      if (start) this.setStart(block, start);
+      block.provisional = false;
+    }
+    // Anchored at the start of D's logical line, which reflow never merges away.
+    let lineStart = cursorRow;
+    while (lineStart > Math.max(0, block.start.line) && buffer.getLine(lineStart)?.isWrapped) lineStart--;
+    block.end = this.markerAt(lineStart) ?? block.start;
     block.end.onDispose(() => this.schedulePrune());
-    block.endCol = this.term.buffer.normal.cursorX;
+    block.endCol = (cursorRow - lineStart) * this.term.cols + buffer.cursorX;
     block.endedAt = this.now();
     block.exitCode = exitCode;
     if (block.cleared) {
       disposeBlock(block);
       this.blocks = this.blocks.filter((other) => other !== block);
     }
+  }
+
+  /**
+   * Re-anchors a block whose start marker was disposed: at the top of the
+   * buffer if it is full (the start was trimmed), else at the top of the
+   * screen (it was erased).
+   */
+  private reanchor(block: Block): boolean {
+    const buffer = this.term.buffer.normal;
+    const full = buffer.length >= this.term.rows + (this.term.options.scrollback ?? 0);
+    const marker = this.markerAt(full ? 0 : buffer.baseY);
+    if (!marker) return false;
+    block.start = marker;
+    block.truncated = true;
+    block.provisional = false;
+    marker.onDispose(() => this.schedulePrune());
+    return true;
   }
 
   /**
@@ -354,25 +432,12 @@ export class BlockTracker {
 
   /**
    * Markers are disposed when their row leaves the scrollback or is erased
-   * (`ESC [ 2 J`). A finished block that lost either end is dropped. The
-   * running block is re-anchored: at the top of the buffer if it is full
-   * (the start was trimmed), else at the top of the screen (it was erased).
+   * (`ESC [ 2 J`). A finished block that lost either end is dropped; the
+   * running block is re-anchored.
    */
   private prune(): void {
     const running = this.runningBlock();
-    let reanchored = false;
-    if (running?.start.isDisposed) {
-      const buffer = this.term.buffer.normal;
-      const full = buffer.length >= this.term.rows + (this.term.options.scrollback ?? 0);
-      const target = full ? 0 : buffer.baseY;
-      const marker = this.term.registerMarker(target - (buffer.baseY + buffer.cursorY));
-      if (marker) {
-        running.start = marker;
-        running.truncated = true;
-        reanchored = true;
-        marker.onDispose(() => this.schedulePrune());
-      }
-    }
+    const reanchored = running?.start.isDisposed === true && this.reanchor(running);
     const kept = this.blocks.filter((block) => {
       const gone = block.end !== undefined && (block.start.isDisposed || block.end.isDisposed);
       if (gone) disposeBlock(block);
@@ -403,22 +468,33 @@ function disposeBlock(block: Block): void {
   block.end?.dispose();
 }
 
-/** The rows a block's output covers, `[from, to)`, in its buffer; `null` when they are gone. */
-export function outputRows(block: Block, buffer: IBuffer): { from: number; to: number } | null {
-  const from = block.start.line;
+/**
+ * The rows a block's output covers, `[from, to)`, in its buffer; `null` when
+ * they are gone. `lastCells`, if set, is how much of the last logical line
+ * belongs to it.
+ */
+export function outputRows(
+  block: Block,
+  buffer: IBuffer,
+): { from: number; to: number; lastCells?: number } | null {
+  let from = block.start.line;
   if (from < 0) return null;
-  let to: number;
   if (block.end) {
-    if (block.end.line < 0) return null;
-    to = block.end.line + (block.endCol > 0 ? 1 : 0);
-  } else {
-    // Running: up to the cursor's row, plus anything printed below it.
-    to = buffer.baseY + buffer.cursorY + 1;
-    for (let row = buffer.length - 1; row >= to; row--) {
-      if (buffer.getLine(row)?.translateToString(true)) {
-        to = row + 1;
-        break;
-      }
+    const end = block.end.line;
+    if (end < 0) return null;
+    if (block.endCol === 0) return { from, to: Math.max(from, end) };
+    let to = end + 1;
+    while (buffer.getLine(to)?.isWrapped) to++;
+    return { from, to: Math.max(from, to), lastCells: block.endCol };
+  }
+  // Sent from the editor, no C yet: skip the command line itself.
+  if (block.provisional) from += 1;
+  // Running: up to the cursor's row, plus anything printed below it.
+  let to = buffer.baseY + buffer.cursorY + 1;
+  for (let row = buffer.length - 1; row >= to; row--) {
+    if (buffer.getLine(row)?.translateToString(true)) {
+      to = row + 1;
+      break;
     }
   }
   return { from, to: Math.max(from, to) };

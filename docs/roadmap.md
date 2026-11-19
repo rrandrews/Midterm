@@ -78,7 +78,7 @@ Terminals and shells:
 - [ ] Busy check misses programs started with `exec` (same pid as the shell)
 - [ ] Blocks mode: no tab completion or ⌃R search in the input editor (switch to classic); a line already typed into the shell's own prompt in classic mode is not cleared before the editor sends one; RPROMPT text can end up in a command read back from the prompt (typed in classic mode); output printed before the first prompt (and between a command's end and the next prompt) is only visible in classic mode; a full buffer that is erased (`ESC [ 2 J`) re-anchors the running block at the top of the scrollback; the cursor is drawn even when a program hides it; block cursor in the editor is the browser caret, not a block
 - [ ] Blocks mode: per-block virtualisation (blocks use `content-visibility` and cap their DOM at 300 lines plus "Show earlier lines"), `git status` per prompt is computed in full just to get the branch, no "ahead" count in the status line
-- [ ] OSC 133 follow-ups: bash marks a command line that is only a subshell (`(exit 3)`) with no C/D (DEBUG trap; PS0 on bash 4.4+ untested); a DEBUG trap installed after startup (bash-preexec) replaces ours; fish 4 may print its own 133 marks (duplicates are tolerated); a `fish_prompt` defined after the first prompt loses B
+- [ ] OSC 133 follow-ups: bash marks a command line that is only a subshell (`(exit 3)`) with no C/D (DEBUG trap; PS0 on bash 4.4+ untested); a DEBUG trap installed after startup (bash-preexec) replaces ours; fish 4 may print its own 133 marks (the frontend tolerates duplicates, but `fish_emits_prompt_marks` expects exactly ours and is untested on fish 4: use fish's native marks where available); a `fish_prompt` defined after the first prompt loses B
 
 Explorer:
 

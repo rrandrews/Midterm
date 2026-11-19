@@ -36,7 +36,7 @@ function setup(options: { cols?: number; rows?: number; scrollback?: number } = 
   const output = (index: number) => {
     const block = tracker.snapshot().blocks[index];
     const rows = outputRows(block, tracker.buffer);
-    return rows ? rowsText(tracker.buffer, rows.from, rows.to) : null;
+    return rows ? rowsText(tracker.buffer, rows.from, rows.to, term.cols, rows.lastCells) : null;
   };
   return {
     term,
@@ -56,7 +56,8 @@ describe("BlockTracker", () => {
     await t.write(`welcome\r\n${PROMPT}`);
     expect(t.tracker.snapshot()).toMatchObject({ integration: "present", phase: "prompt", blocks: [] });
 
-    t.tracker.noteCommand("ls");
+    expect(t.tracker.submit("ls")).toBe(true);
+    expect(t.tracker.submit("again")).toBe(false);
     await t.write(`ls\r\n${C}`);
     expect(t.tracker.snapshot().phase).toBe("running");
     await t.write("a.txt\r\nb.txt\r\n");
@@ -122,6 +123,52 @@ describe("BlockTracker", () => {
     const [block] = t.tracker.snapshot().blocks;
     expect(block.truncated).toBe(true);
     expect(t.output(0)).toBe("new");
+  });
+
+  it("keeps a command sent from the editor that the shell never marked", async () => {
+    // bash prints no C (and so no D) for a line that is only a subshell.
+    const t = setup();
+    await t.write(PROMPT);
+    expect(t.tracker.submit("(echo sub) ")).toBe(true);
+    expect(t.tracker.snapshot().phase).toBe("running");
+    await t.write("(echo sub) \r\nsub\r\n");
+    expect(t.output(0)).toBe("sub");
+    await t.write(PROMPT);
+    const [block] = t.tracker.snapshot().blocks;
+    // Kept exactly as sent (a trailing escaped space matters).
+    expect(block.command).toBe("(echo sub) ");
+    expect(block.exitCode).toBeUndefined();
+    expect(t.output(0)).toBe("sub");
+    expect(t.tracker.snapshot().phase).toBe("prompt");
+  });
+
+  it("stops the output where D was printed when the prompt follows on the same row", async () => {
+    const t = setup();
+    await t.write(`${PROMPT}printf x\r\n${C}x${D(0)}${PROMPT}`);
+    expect(t.output(0)).toBe("x");
+    const buffer = t.tracker.buffer;
+    const rows = outputRows(t.tracker.snapshot().blocks[0], buffer);
+    expect(rows && renderRows(buffer, rows.from, rows.to, { theme: {}, cols: 40, lastCells: rows.lastCells })).toEqual([[{ text: "x" }]]);
+  });
+
+  it("keeps blocks across reflow", async () => {
+    const t = setup({ cols: 10 });
+    await t.write(`${PROMPT}x\r\n${C}${"y".repeat(25)}${D(0)}\r\n${PROMPT}`);
+    t.term.resize(40, 10);
+    await t.write("");
+    await Promise.resolve();
+    expect(t.tracker.snapshot().blocks).toHaveLength(1);
+    expect(t.output(0)).toBe("y".repeat(25));
+    t.term.resize(8, 10);
+    await t.write("");
+    await Promise.resolve();
+    expect(t.output(0)).toBe("y".repeat(25));
+  });
+
+  it("does not drop blocks when a program clears the alternate screen's scrollback", async () => {
+    const t = setup();
+    await t.write(`${PROMPT}ls\r\n${C}a\r\n${D(0)}${PROMPT}vim\r\n${C}\x1b[?1049h\x1b[3J\x1b[?1049l${D(0)}${PROMPT}`);
+    expect(t.tracker.snapshot().blocks.map((b) => b.command)).toEqual(["ls", "vim"]);
   });
 
   it("tracks the alternate screen", async () => {

@@ -210,6 +210,10 @@ same command.
   runs, with `$?` and `$_` as it would have seen them. The trap returns 0,
   so `extdebug` does not skip commands. (PS0 would be simpler on bash
   4.4+, but bash 3.2 has no PS0 and the trap works everywhere.)
+- zsh prints its `PROMPT_SP` marker (an inverse `%` after output without
+  a final newline) before precmd, so it appears at the end of such a
+  block, as it does in the classic terminal. Output from a user's own
+  `precmd` function also lands before D.
 - **fish**: `__midterm_prompt` (`fish_prompt` event) prints OSC 7 and A
   and, once, wraps the user's `fish_prompt` (`functions -c`) to print B
   after it; `fish_preexec` prints C, `fish_postexec` prints D.
@@ -352,18 +356,28 @@ full-screen program can take over at once.
 
 `session.blocks` (a `BlockTracker`) registers an OSC 133 handler on the
 terminal's parser. On C it places an xterm marker (`registerMarker`) on
-the cursor's row: the block's first output row. On D it places another:
-its end (that row counts only if D was printed after some text on it, i.e.
-output without a final newline). Markers follow their rows through
-scrollback trimming and reflow. When a finished block loses a marker (its
+the cursor's row: the block's first output row. On D it places another at
+the start of D's logical line, and records how many cells into that line D
+was printed: output without a final newline ends there, even if the next
+prompt follows on the same row (bash). Markers follow their rows through
+scrollback trimming and reflow (a marker on a soft-wrapped row would be
+disposed when widening merges it, hence the logical line start). When a finished block loses a marker (its
 rows left the scrollback, or were erased) it is dropped. The running
 block is re-anchored instead, at the top of the screen (erased) or of the
 buffer (trimmed), and flagged `truncated`. `ESC [ 3 J` (what `clear`
 sends), ⌃L in the editor and the Clear menu item drop all blocks; a
 running `clear` is dropped when it ends.
 
-Each block has its command (what the editor sent, else read back from the
-buffer between B and C), the cwd at C (from OSC 7), the branch of that cwd
+A command sent from the input editor gets its block at once
+(`tracker.submit`, before anything is written to the shell), anchored on the
+prompt row, and the phase becomes `running`, so a second Enter or Run again
+cannot type into it. C moves the start to the real output. If the next
+prompt comes without a C (bash marks nothing for a line that is only a
+subshell, or a DEBUG trap replaced ours) the block still ends there, with
+its output starting after the echoed command line and no exit status.
+
+Each block has its command (exactly what the editor sent, else read back
+from the buffer between B and C), the cwd at C (from OSC 7), the branch of that cwd
 (looked up at C), the exit status from D and the duration from C to D,
 measured in the frontend.
 
@@ -407,8 +421,10 @@ so).
   ⌃L clears the blocks. App shortcuts still run first (capture phase).
   Paste from the menu goes into the editor.
 - Running a command sends it to the shell as if typed
-  (`session.runCommand`): a multi-line one as a bracketed paste when the
-  shell enabled it, so it is one command line.
+  (`session.runCommand`). A multi-line one has to arrive as one command
+  line: as a bracketed paste when the shell enabled it, else with each
+  newline quoted as ⌃V ⌃J, which readline (bash 3.2) and zle insert
+  literally.
 - While a command runs, the hidden terminal has the keyboard, so
   interactive prompts, ⌃C and typeahead work as in classic mode. Clicking
   the blocks gives the keyboard back to whichever target is current.

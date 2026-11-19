@@ -34,18 +34,25 @@ export function logicalLines(buffer: IBuffer, from: number, to: number): [number
   return lines;
 }
 
-/** Plain text of rows `[from, to)`: wrapped rows joined, trailing blanks and blank last lines dropped. */
-export function rowsText(buffer: IBuffer, from: number, to: number): string {
+/**
+ * Plain text of rows `[from, to)`: wrapped rows joined, trailing blanks and
+ * blank last lines dropped. `lastCells` cuts the last logical line short.
+ */
+export function rowsText(buffer: IBuffer, from: number, to: number, cols: number, lastCells?: number): string {
   const out: string[] = [];
-  for (const [start, end] of logicalLines(buffer, from, to)) {
+  const lines = logicalLines(buffer, from, to);
+  lines.forEach(([start, end], index) => {
+    const limit = index === lines.length - 1 ? lastCells : undefined;
     let text = "";
     for (let row = start; row < end; row++) {
       const line = buffer.getLine(row);
+      const endCol = limit === undefined ? undefined : limit - (row - start) * cols;
+      if (endCol !== undefined && endCol <= 0) break;
       // Only the last row of a wrapped line can end in real blanks.
-      if (line) text += line.translateToString(row === end - 1);
+      if (line) text += line.translateToString(row === end - 1, 0, endCol === undefined ? undefined : Math.min(endCol, cols));
     }
     out.push(text.trimEnd());
-  }
+  });
   while (out.length && !out[out.length - 1]) out.pop();
   return out.join("\n");
 }
@@ -117,6 +124,8 @@ export type RenderOptions = {
   cols: number;
   /** Buffer row and column of a cursor to draw, if any. */
   cursor?: { row: number; col: number };
+  /** Cells of the last logical line to draw (the rest belongs to someone else). */
+  lastCells?: number;
 };
 
 /** Styled runs for each logical line in rows `[from, to)`. */
@@ -124,7 +133,9 @@ export function renderRows(buffer: IBuffer, from: number, to: number, options: R
   const colors = palette(options.theme);
   const cell = buffer.getNullCell();
   const lines: Line[] = [];
-  for (const [start, end] of logicalLines(buffer, from, to)) {
+  const logical = logicalLines(buffer, from, to);
+  for (const [index, [start, end]] of logical.entries()) {
+    const limit = index === logical.length - 1 ? options.lastCells : undefined;
     const runs: Line = [];
     let text = "";
     let style: Style = {};
@@ -147,6 +158,7 @@ export function renderRows(buffer: IBuffer, from: number, to: number, options: R
         }
         if (cursorCol >= last) last = cursorCol + 1;
       }
+      if (limit !== undefined) last = Math.min(last, limit - (row - start) * options.cols);
       for (let x = 0; x < last; x++) {
         const c = line.getCell(x, cell);
         if (!c) {

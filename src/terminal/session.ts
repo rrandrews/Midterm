@@ -215,18 +215,21 @@ export class TerminalSession {
   }
 
   /**
-   * Runs a command line as if typed at the prompt and Enter pressed. A
-   * multi-line one goes as a bracketed paste when the shell supports it,
-   * so it runs as one command line rather than line by line.
+   * Runs a command line as if typed at the prompt and Enter pressed, if
+   * the shell is at a prompt (returns whether it was sent). A multi-line
+   * one must reach the shell as one command line: as a bracketed paste
+   * when the shell enabled it, else with each newline quoted (⌃V ⌃J, which
+   * readline and zle insert literally).
    */
-  runCommand(command: string): void {
-    this.blocks.noteCommand(command);
-    const typed = command.replace(/\r?\n/g, "\r");
+  runCommand(command: string): boolean {
+    if (!this.blocks.submit(command)) return false;
+    const lines = command.split(/\r?\n/);
     const data =
-      typed.includes("\r") && this.term.modes.bracketedPasteMode
-        ? `\x1b[200~${command}\x1b[201~\r`
-        : `${typed}\r`;
+      lines.length > 1 && this.term.modes.bracketedPasteMode
+        ? `\x1b[200~${lines.join("\n")}\x1b[201~\r`
+        : `${lines.join("\x16\n")}\r`;
     this.send({ binary: false, data });
+    return true;
   }
 
   /** The terminal's colors (blocks are drawn in the same palette). */

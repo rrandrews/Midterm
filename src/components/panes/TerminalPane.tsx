@@ -25,6 +25,8 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [session, setSession] = useState<TerminalSession | null>(null);
+  // Set before the focuser is registered, which may call it at once.
+  const sessionRef = useRef<TerminalSession | null>(null);
   const defaultMode = useSettings((settings) => settings.terminalMode);
   const snapshot = useSyncExternalStore(
     session?.blocks.subscribe ?? noSubscribe,
@@ -39,7 +41,7 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
   const focusTarget = useRef(() => {});
   focusTarget.current = () => {
     if (editorActive && inputRef.current) inputRef.current.focus();
-    else session?.focus();
+    else sessionRef.current?.focus();
   };
   /** Whether the keyboard is in this pane (kept while the focused element is hidden). */
   const hasFocus = useRef(false);
@@ -49,6 +51,7 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
     if (!container) return;
     const acquired = acquireSession(paneId);
     acquired.attach(container);
+    sessionRef.current = acquired;
     setSession(acquired);
     const unregister = registerPaneFocuser(paneId, () => focusTarget.current());
     return () => {
