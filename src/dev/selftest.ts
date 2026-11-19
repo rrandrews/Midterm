@@ -1,9 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { closePane, splitPane } from "../actions";
+import { closePaneNow, splitPane } from "../actions";
 import { type Pty, spawnPty } from "../ipc/pty";
 import { getDock } from "../layout/dock";
 import { frameIdOf, listPanes } from "../state/layout";
-import { selectActiveTab, useAppStore } from "../state/store";
+import { closePane } from "../closing";
+import { isConfirming } from "../components/ui/ConfirmDialog";
+import { findPane } from "../state/layout";
+import { findTabOfPane, selectActiveTab, useAppStore } from "../state/store";
 import { peekSession, sessionCount } from "../terminal/sessions";
 
 /*
@@ -214,13 +217,53 @@ async function uiChecks(checks: Check[]): Promise<void> {
   await sleep(100);
   checks.push({ name: "focus leaves a separator after a pointer release", ok: focusedPane() === second });
 
-  if (second) closePane(second);
+  if (second) closePaneNow(second);
   await sleep(500);
   checks.push({
     name: "closing a pane ends its session",
     ok: listPanes(tab().layout).length === 1 && sessionCount() === sessionsBefore - 1 && focusedPane() === first,
     detail: { panes: listPanes(tab().layout).length, sessions: sessionCount() },
   });
+}
+
+/** Shell integration (OSC 7), automatic tab titles, and asking before closing a busy pane. */
+async function integrationChecks(checks: Check[]): Promise<void> {
+  const paneId = listPanes(selectActiveTab(useAppStore.getState()).layout)[0]?.id;
+  const session = paneId && peekSession(paneId);
+  if (!paneId || !session) {
+    checks.push({ name: "integration: a terminal to test in", ok: false });
+    return;
+  }
+  const tabOf = () => findTabOfPane(useAppStore.getState(), paneId);
+  const savedCwd = () => {
+    const tab = tabOf();
+    return tab && findPane(tab.layout, paneId)?.data.cwd;
+  };
+
+  const reported = await waitFor(() => session.cwd !== undefined && savedCwd() !== undefined, 8000);
+  checks.push({ name: "integration: shell reports its cwd (OSC 7)", ok: reported, detail: session.cwd });
+
+  session.input("cd /tmp\r");
+  const moved = await waitFor(() => session.cwd === "/tmp" && savedCwd() === "/tmp", 3000);
+  checks.push({ name: "integration: cd updates the pane's cwd", ok: moved, detail: [session.cwd, savedCwd()] });
+
+  const titled = await waitFor(() => tabOf()?.title === "tmp", 2000);
+  checks.push({ name: "titles: idle shell names the directory", ok: titled, detail: tabOf()?.title });
+
+  session.input("sleep 20\r");
+  const busy = await waitFor(() => tabOf()?.title === "sleep", 3000);
+  checks.push({ name: "titles: running program names the tab", ok: busy, detail: tabOf()?.title });
+
+  const closing = closePane(paneId);
+  const asked = await waitFor(isConfirming, 2000);
+  checks.push({ name: "closing: asks before closing a busy pane", ok: asked });
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await closing;
+  checks.push({ name: "closing: cancelling keeps the pane", ok: !isConfirming() && tabOf() !== undefined });
+
+  session.input("\x03");
+  const idle = await waitFor(() => tabOf()?.title === "tmp", 3000);
+  checks.push({ name: "titles: back to the directory after the program ends", ok: idle, detail: tabOf()?.title });
 }
 
 export async function runSelfTest(port: string): Promise<void> {
@@ -234,6 +277,7 @@ export async function runSelfTest(port: string): Promise<void> {
   let error: string | undefined;
   try {
     await sleep(1500);
+    await integrationChecks(checks);
     await uiChecks(checks);
     await ptyChecks(checks);
   } catch (caught) {

@@ -1,6 +1,7 @@
+import { closeTab } from "../../closing";
 import { Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { closeTab, newTab, newWorkspace, splitPane } from "../../actions";
+import { newTab, newWorkspace, splitPane } from "../../actions";
 import { watchFullscreen } from "../../ipc/window";
 import { refocusPane } from "../../layout/dock";
 import { DotsIcon } from "../ui/icons";

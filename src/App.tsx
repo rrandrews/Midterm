@@ -2,6 +2,10 @@ import { useEffect } from "react";
 import { dropPaneOnTab, focusActivePane } from "./actions";
 import { PaneLayout } from "./components/layout/PaneLayout";
 import { TitleBar } from "./components/titlebar/TitleBar";
+import { ConfirmHost } from "./components/ui/ConfirmDialog";
+import { installCloseGuards } from "./ipc/window";
+import { mayCloseEverything } from "./closing";
+import { flushSavedState } from "./state/persistence";
 import { installFocusKeeper } from "./layout/dock";
 import { installPaneDropTargets } from "./layout/paneDrag";
 import { installShortcuts } from "./shortcuts";
@@ -14,9 +18,16 @@ export default function App() {
     const uninstallShortcuts = installShortcuts();
     const uninstallFocusKeeper = installFocusKeeper();
     const uninstallDropTargets = installPaneDropTargets(dropPaneOnTab);
+    const uninstallCloseGuards = installCloseGuards(async (what) => {
+      const ok = await mayCloseEverything(what);
+      // Nothing may be lost to the save debounce.
+      if (ok) await flushSavedState();
+      return ok;
+    });
     focusActivePane();
     return () => {
       uninstallDropTargets();
+      uninstallCloseGuards();
       uninstallShortcuts();
       uninstallFocusKeeper();
     };
@@ -29,6 +40,7 @@ export default function App() {
         {/* Only the active tab's layout is mounted; see PaneLayout for the key. */}
         <PaneLayout key={`${tab.id}:${tab.layoutRev}`} tab={tab} />
       </main>
+      <ConfirmHost />
     </div>
   );
 }

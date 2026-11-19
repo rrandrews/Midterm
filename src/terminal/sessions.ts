@@ -1,7 +1,10 @@
-import { closePane, updatePaneData } from "../actions";
-import { findPane } from "../state/layout";
+import { homeDir } from "@tauri-apps/api/path";
+import { isTauri } from "@tauri-apps/api/core";
+import { closePaneNow, updatePaneData } from "../actions";
+import { findPane, listPanes } from "../state/layout";
 import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
 import { TerminalSession } from "./session";
+import { terminalTitle } from "./titles";
 
 /*
  * Registry of live terminal sessions, keyed by pane id.
@@ -27,7 +30,7 @@ export function acquireSession(paneId: string): TerminalSession {
         if (sessions.get(exited.paneId) !== exited) return;
         const tab = findTabOfPane(useAppStore.getState(), exited.paneId);
         const pane = tab && findPane(tab.layout, exited.paneId);
-        if (pane?.data.kind === "terminal") closePane(exited.paneId);
+        if (pane?.data.kind === "terminal") closePaneNow(exited.paneId);
       },
       onBackgroundOutput: ({ paneId: id }) => {
         const state = useAppStore.getState();
@@ -35,7 +38,12 @@ export function acquireSession(paneId: string): TerminalSession {
         if (tab) state.markActivity(tab.id);
       },
       onCwdChange: (changed, cwd) => {
-        if (sessions.get(changed.paneId) === changed) updatePaneData(changed.paneId, { cwd });
+        if (sessions.get(changed.paneId) !== changed) return;
+        updatePaneData(changed.paneId, { cwd });
+        scheduleTitles();
+      },
+      onForegroundChange: (changed) => {
+        if (sessions.get(changed.paneId) === changed) scheduleTitles();
       },
     }, savedCwd);
     sessions.set(paneId, session);
@@ -73,7 +81,54 @@ function scheduleReconcile(): void {
   reconcileTimer = setTimeout(reconcile, 0);
 }
 
-useAppStore.subscribe(scheduleReconcile);
+/*
+ * Automatic tab titles: each tab is named after its active pane's terminal
+ * (see `terminalTitle`), unless the user named it. Recomputed when a
+ * terminal's program or directory changes, and on any store change (the
+ * active pane may have moved); `setAutoTitle` ignores unchanged titles.
+ */
+
+let home: string | undefined;
+if (isTauri()) {
+  homeDir().then(
+    (dir) => {
+      home = dir;
+      scheduleTitles();
+    },
+    (error) => console.warn("Could not read the home directory:", error),
+  );
+}
+
+function updateTitles(): void {
+  const state = useAppStore.getState();
+  for (const workspace of state.workspaces) {
+    for (const tab of workspace.tabs) {
+      if (tab.titleLocked) continue;
+      const pane =
+        (tab.activePaneId && findPane(tab.layout, tab.activePaneId)) || listPanes(tab.layout)[0];
+      if (!pane || pane.data.kind !== "terminal") continue;
+      const session = sessions.get(pane.id);
+      const title = terminalTitle(session?.foregroundProgram ?? null, session?.cwd ?? pane.data.cwd, home);
+      if (title) state.setAutoTitle(tab.id, title);
+    }
+  }
+}
+
+let titlesQueued = false;
+
+function scheduleTitles(): void {
+  if (titlesQueued) return;
+  titlesQueued = true;
+  queueMicrotask(() => {
+    titlesQueued = false;
+    updateTitles();
+  });
+}
+
+useAppStore.subscribe(() => {
+  scheduleReconcile();
+  scheduleTitles();
+});
 
 /** Number of live sessions (for tests and diagnostics). */
 export function sessionCount(): number {

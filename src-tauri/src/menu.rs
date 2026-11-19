@@ -5,11 +5,23 @@
 //! closes the focused pane (see `src/shortcuts.ts`). The Edit menu matters on
 //! macOS: without it ⌘C / ⌘V / ⌘A do not reach the webview.
 
-use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID};
 use tauri::{AppHandle, Runtime};
+
+/// Id of our own Quit item. The predefined one quits at once; ours asks the
+/// webview first, which checks for running programs (`src/closing.ts`) and
+/// then calls `app_quit`.
+pub const QUIT_ID: &str = "midterm-quit";
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let package = app.package_info();
+    let quit = MenuItem::with_id(
+        app,
+        QUIT_ID,
+        format!("Quit {}", package.name),
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?;
     let about = AboutMetadata {
         name: Some(package.name.clone()),
         version: Some(package.version.to_string()),
@@ -60,7 +72,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 &PredefinedMenuItem::hide(app, None)?,
                 &PredefinedMenuItem::hide_others(app, None)?,
                 &PredefinedMenuItem::separator(app)?,
-                &PredefinedMenuItem::quit(app, None)?,
+                &quit,
             ],
         )?;
         let view = Submenu::with_items(
@@ -75,7 +87,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     #[cfg(not(target_os = "macos"))]
     {
         let file =
-            Submenu::with_items(app, "File", true, &[&PredefinedMenuItem::quit(app, None)?])?;
+            Submenu::with_items(app, "File", true, &[&quit])?;
         let help = Submenu::with_items(
             app,
             "Help",

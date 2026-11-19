@@ -1,3 +1,4 @@
+import { closeTab } from "../../closing";
 import {
   DndContext,
   type DragEndEvent,
@@ -11,7 +12,7 @@ import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dn
 import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { closeTab, newTab, selectTab } from "../../actions";
+import { newTab, selectTab } from "../../actions";
 import { refocusPane } from "../../layout/dock";
 import { countPanes } from "../../state/layout";
 import { selectActiveWorkspace, useAppStore } from "../../state/store";

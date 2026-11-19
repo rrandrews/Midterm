@@ -235,12 +235,39 @@ naming another host (a shell inside `ssh`) are ignored.
   back to the home directory if it no longer exists.
 - New splits and new tabs start in the active pane's `cwd`.
 
+## Tab titles
+
+A tab the user has not named (`Tab.titleLocked`) is titled after its active
+pane's terminal by `terminalTitle` (`src/terminal/titles.ts`): the
+foreground program, or, while the shell waits, the last part of its
+directory (`~` for home). Sessions look the foreground up (`pty_foreground`)
+250 ms after output, since starting or ending a program always produces
+some; there is no polling while a terminal is quiet. Renaming a tab to an
+empty name hands its title back to the panes.
+
+## Asking before closing
+
+`src/closing.ts` wraps closing a pane, tab or workspace: it looks up the
+foreground of every terminal that would end and, if any is running a
+program, asks with `confirm()` (`src/components/ui/ConfirmDialog.tsx`).
+Menus and shortcuts use these; a shell that exits by itself closes its pane
+through `closePaneNow` without asking.
+
+Closing the window asks the same way (`installCloseGuards` in
+`src/ipc/window.ts`). ⌘Q is our own menu item (`menu::QUIT_ID`): the backend
+emits `quit-requested`, and the webview asks, flushes the saved state and
+calls `app_quit`.
+
+Known gap: a program started with `exec` keeps the shell's pid, so it is
+reported as the shell (`isShell: true`).
+
 ## Checking the real app without looking at it
 
 `src/dev/selftest.ts` drives the running app (real webview, real shell) and
 posts a JSON report to a local listener: raw-byte delivery, running commands,
 environment, resize, an 8 MB flood, exit codes, kill, terminal scaling, a
-terminal surviving a re-dock, and focus after layout changes.
+terminal surviving a re-dock, focus after layout changes, and shell
+integration (OSC 7), automatic tab titles and the close confirmation.
 
 ```sh
 # 1. a listener that accepts one POST on PORT and saves the body

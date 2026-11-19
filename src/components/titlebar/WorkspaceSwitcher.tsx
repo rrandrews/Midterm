@@ -1,6 +1,7 @@
+import { removeWorkspace } from "../../closing";
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
-import { newWorkspace, removeWorkspace, selectWorkspace } from "../../actions";
+import { newWorkspace, selectWorkspace } from "../../actions";
 import { refocusPane } from "../../layout/dock";
 import { selectActiveWorkspace, useAppStore } from "../../state/store";
 import { InlineEdit } from "../ui/InlineEdit";

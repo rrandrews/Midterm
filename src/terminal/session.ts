@@ -4,7 +4,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { type Pty, type PtyExit, spawnPty } from "../ipc/pty";
+import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
 import { openExternal } from "../ipc/shell";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
@@ -17,7 +17,16 @@ export type SessionEvents = {
   onBackgroundOutput: (session: TerminalSession) => void;
   /** The shell reported a new working directory (OSC 7). */
   onCwdChange: (session: TerminalSession, cwd: string) => void;
+  /** A different program came to the foreground (or the shell got it back). */
+  onForegroundChange: (session: TerminalSession) => void;
 };
+
+/**
+ * How soon after output the foreground program is looked up again. Starting
+ * or leaving a program (even a silent one: Enter echoes a newline) produces
+ * output, so there is no need to poll while the terminal is quiet.
+ */
+const FOREGROUND_CHECK_MS = 250;
 
 /**
  * A shell that ran for less than this probably failed to start. Its pane
@@ -80,6 +89,9 @@ export class TerminalSession {
    */
   private localHost: string | undefined;
 
+  private lastForeground: PtyForeground | null = null;
+  private foregroundTimer: ReturnType<typeof setTimeout> | undefined;
+
   constructor(
     readonly paneId: string,
     private readonly events: SessionEvents,
@@ -118,6 +130,19 @@ export class TerminalSession {
     return this.attached;
   }
 
+  /** The terminal's foreground program as last looked up; `null` before the shell runs. */
+  get foregroundProgram(): PtyForeground | null {
+    return this.lastForeground;
+  }
+
+  /** Looks up the foreground program now. `null` if there is no running shell. */
+  async foreground(): Promise<PtyForeground | null> {
+    if (this.phase !== "running" || !this.pty) return null;
+    const current = await this.pty.foreground();
+    this.noteForeground(current);
+    return current;
+  }
+
   /** The shell's working directory, as far as we know. */
   get cwd(): string | undefined {
     return this.currentCwd;
@@ -151,10 +176,16 @@ export class TerminalSession {
     this.term.focus();
   }
 
+  /** Sends text to the shell as if typed (used by the self-test). */
+  input(data: string): void {
+    this.send({ binary: false, data });
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.phase = "ended";
+    clearTimeout(this.foregroundTimer);
     this.queuedInput = [];
     this.detach();
     // xterm drops its queued writes on dispose, so their callbacks never run.
@@ -226,6 +257,7 @@ export class TerminalSession {
       this.unsettled -= bytes.length;
       this.settle(bytes.length);
     });
+    this.scheduleForegroundCheck();
     if (!this.attached && !this.notifiedBackgroundOutput) {
       this.notifiedBackgroundOutput = true;
       this.events.onBackgroundOutput(this);
@@ -236,6 +268,23 @@ export class TerminalSession {
     if (!bytes) return;
     if (this.pty) this.pty.ack(bytes);
     else this.pendingAck += bytes;
+  }
+
+  private scheduleForegroundCheck(): void {
+    if (this.foregroundTimer !== undefined) return;
+    this.foregroundTimer = setTimeout(() => {
+      this.foregroundTimer = undefined;
+      void this.foreground();
+    }, FOREGROUND_CHECK_MS);
+  }
+
+  private noteForeground(current: PtyForeground | null): void {
+    if (this.disposed) return;
+    const last = this.lastForeground;
+    this.lastForeground = current;
+    if (last?.pid !== current?.pid || last?.name !== current?.name) {
+      this.events.onForegroundChange(this);
+    }
   }
 
   private handleCwdReport(data: string): void {
@@ -250,6 +299,8 @@ export class TerminalSession {
   private handleExit({ code, runtimeMs }: PtyExit): void {
     if (this.disposed) return;
     this.phase = "ended";
+    clearTimeout(this.foregroundTimer);
+    this.noteForeground(null);
     this.queuedInput = [];
     if (runtimeMs < QUICK_EXIT_MS) {
       this.report(`Shell exited immediately${code === null ? "" : ` (code ${code})`}.`);

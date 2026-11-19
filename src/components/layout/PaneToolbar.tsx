@@ -1,6 +1,7 @@
+import { closePane } from "../../closing";
 import { useState } from "react";
 import { TabsetDragHandle, useParentTabsetState } from "react-resizable-panels";
-import { closePane, movePaneToNewTab, setPaneKind, splitPane, toggleMaximizePane } from "../../actions";
+import { movePaneToNewTab, setPaneKind, splitPane, toggleMaximizePane } from "../../actions";
 import { notePaneFocused, refocusPane } from "../../layout/dock";
 import { useAppStore } from "../../state/store";
 import { PANE_LABELS } from "../../state/layout";

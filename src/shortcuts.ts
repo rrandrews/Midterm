@@ -1,6 +1,5 @@
+import { closePane, closeTab } from "./closing";
 import {
-  closePane,
-  closeTab,
   cycleTab,
   focusNeighbourPane,
   newTab,
@@ -8,6 +7,7 @@ import {
   splitPane,
   toggleMaximizePane,
 } from "./actions";
+import { isConfirming } from "./components/ui/ConfirmDialog";
 import { editingElsewhere } from "./layout/dock";
 
 /*
@@ -58,7 +58,7 @@ export function isAppShortcut(event: KeyboardEvent): boolean {
 export function installShortcuts(): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
     // A rename field owns the keyboard while it is open.
-    if (editingElsewhere()) return;
+    if (editingElsewhere() || isConfirming()) return;
     const shortcut = match(event);
     if (!shortcut) return;
     event.preventDefault();

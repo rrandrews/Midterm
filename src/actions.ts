@@ -72,7 +72,8 @@ export function cycleTab(delta: 1 | -1): void {
   selectTab(tabs[(index + delta + tabs.length) % tabs.length].id);
 }
 
-export function closeTab(tabId: string = selectActiveTab(store()).id): void {
+/** Closes a tab without asking (see `src/closing.ts`). */
+export function closeTabNow(tabId: string = selectActiveTab(store()).id): void {
   store().closeTab(tabId);
   focusActivePane();
 }
@@ -87,7 +88,8 @@ export function selectWorkspace(workspaceId: string): void {
   focusActivePane();
 }
 
-export function removeWorkspace(workspaceId: string): void {
+/** Closes a workspace without asking (see `src/closing.ts`). */
+export function removeWorkspaceNow(workspaceId: string): void {
   store().removeWorkspace(workspaceId);
   focusActivePane();
 }
@@ -101,8 +103,12 @@ export function splitPane(region: "right" | "bottom", paneId = activePaneId()): 
   if (dock.addTab(pane, { target: { tabsetId: frameId, region } })) focusPane(pane.id);
 }
 
-/** Closes a pane; closing a tab's only pane closes the tab. */
-export function closePane(paneId = activePaneId()): void {
+/**
+ * Closes a pane without asking; closing a tab's only pane closes the tab.
+ * User commands go through `closePane` in `src/closing.ts`, which asks first
+ * if a program is running.
+ */
+export function closePaneNow(paneId = activePaneId()): void {
   if (!paneId) return;
   const tab = findTabOfPane(store(), paneId);
   if (!tab) return;

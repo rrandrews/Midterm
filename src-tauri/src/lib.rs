@@ -3,9 +3,15 @@ mod pty;
 mod traffic_lights;
 
 use tauri::webview::PageLoadEvent;
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 
 use pty::PtyManager;
+
+/// Quits the app; called by the webview once quitting has been confirmed.
+#[tauri::command]
+fn app_quit(app: AppHandle) {
+    app.exit(0);
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,7 +52,16 @@ pub fn run() {
                     .kill_owned_by(webview.window().label());
             }
         })
+        .on_menu_event(|app, event| {
+            if event.id() == menu::QUIT_ID {
+                // The webview decides (it may ask first) and calls `app_quit`.
+                if app.emit("quit-requested", ()).is_err() {
+                    app.exit(0);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            app_quit,
             pty::commands::pty_spawn,
             pty::commands::pty_write,
             pty::commands::pty_write_bytes,
