@@ -1,5 +1,5 @@
 import { luminance, normalizeHex, opaque } from "../color";
-import { type AnsiName, type AnsiPalette, type Theme, type ThemeKind, type TokenName } from "../types";
+import type { AnsiName, AnsiPalette, PaneBackground, Theme, ThemeKind, TokenName } from "../types";
 import { parseTheme, slugify } from "../validate";
 
 /*
@@ -62,6 +62,7 @@ export interface ThemeParts {
   selection?: string;
   ansi: Partial<AnsiPalette>;
   overrides?: Partial<Record<TokenName, string | undefined>>;
+  panes?: Record<string, Partial<PaneBackground>>;
   author?: string;
   source?: string;
   license?: string;
@@ -103,6 +104,7 @@ export function buildTheme(parts: ThemeParts): Theme {
     cursor: parts.cursor && normalizeHex(parts.cursor) ? opaque(parts.cursor) : undefined,
     selection: parts.selection && normalizeHex(parts.selection) ? normalizeHex(parts.selection) : undefined,
     overrides,
+    panes: parts.panes,
     author: parts.author || undefined,
     source: parts.source || undefined,
     license: parts.license || undefined,

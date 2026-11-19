@@ -180,6 +180,13 @@ describe("pane backgrounds", () => {
     expect(cssVariables(resolved)["--pane-acme.notes"]).toMatch(/^linear-gradient\(180deg, #101010 0%/);
   });
 
+  it("treats plugin ids like constructor as plain keys", () => {
+    const plain = resolveTheme(midtermDark);
+    expect(paneBackground(plain, "constructor")).toBe(plain.panes.default);
+    const own = resolveTheme({ ...midtermDark, panes: { constructor: { from: "#101010" } } });
+    expect(paneBackground(own, "constructor").from).toBe("#101010");
+  });
+
   it("writes a solid pane as a plain color", () => {
     const resolved = resolveTheme({ ...midtermDark, panes: { editor: { from: "#222222", to: "#222222" } } });
     expect(cssVariables(resolved)["--pane-editor"]).toBe("#222222");

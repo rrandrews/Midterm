@@ -96,6 +96,18 @@ describe("VS Code themes", () => {
     expect(light.accent).toBe("#0451a5");
   });
 
+  it("puts a separate terminal background on the terminal panes", () => {
+    const theme = importVSCodeTheme(
+      '{ "colors": { "editor.background": "#101010", "editor.foreground": "#eeeeee", "terminal.background": "#ffffff", "terminal.foreground": "#111111" } }',
+    );
+    const resolved = resolveTheme(theme);
+    expect(resolved.tokens.app).toBe("#101010");
+    expect(resolved.tokens["terminal-fg"]).toBe("#111111");
+    expect(resolved.tokens["terminal-solid"]).toBe("#ffffff");
+    expect(resolved.panes.terminal).toMatchObject({ from: "#ffffff", to: "#ffffff" });
+    expect(resolved.panes["terminal-active"]).toMatchObject({ from: "#ffffff", to: "#ffffff" });
+  });
+
   it("throws clear errors", () => {
     expect(() => importVSCodeTheme("{ \"colors\": ")).toThrow(/Not a VS Code theme/);
     expect(() => importVSCodeTheme("[]")).toThrow(/expected an object/);
@@ -161,6 +173,9 @@ describe("format detection", () => {
     expect(detectThemeFormat("x.json", exportTheme(midtermDark))).toBe("midterm");
     expect(detectThemeFormat("x.json", fixture("night-owl-color-theme.json"))).toBe("vscode");
     expect(detectThemeFormat("x.txt", "scheme: x")).toBe("base16");
+    // Nested keys do not count: a markerless Midterm theme with metadata stays Midterm.
+    const { midtermTheme: _, ...markerless } = JSON.parse(exportTheme(midtermDark));
+    expect(detectThemeFormat("x.json", JSON.stringify({ ...markerless, metadata: { colors: {} } }))).toBe("midterm");
   });
 
   it("imports by detected format", () => {

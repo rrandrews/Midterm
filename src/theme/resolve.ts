@@ -49,6 +49,9 @@ const MIN_COLOR_CONTRAST = 3;
 /** `#rrggbb` + an alpha byte (0–255). */
 const alphaByte = (hex: string, byte: number) => withAlpha(hex, byte / 255);
 
+/** Own keys only: a plugin id such as `constructor` must not hit `Object.prototype`. */
+const hasOwn = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);
+
 export function resolveTheme(theme: Theme): ResolvedTheme {
   const dark = theme.kind === "dark";
   const overrides = theme.overrides ?? {};
@@ -128,7 +131,7 @@ export function resolveTheme(theme: Theme): ResolvedTheme {
   };
   for (const key of BUILTIN_PANES) panes[key] = { ...derivePane(key), ...theme.panes?.[key] };
   for (const [key, pane] of Object.entries(theme.panes ?? {})) {
-    if (!(key in panes)) panes[key] = { ...panes.default, ...pane };
+    if (!hasOwn(panes, key)) panes[key] = { ...panes.default, ...pane };
   }
 
   set("terminal-solid", () => panes.terminal.to);
@@ -174,7 +177,7 @@ function xtermTheme(t: Record<TokenName, string>): ITheme {
 
 /** The pane background for a pane plugin id, falling back to the theme's default. */
 export function paneBackground(resolved: ResolvedTheme, pluginId: string): PaneBackground {
-  return resolved.panes[pluginId] ?? resolved.panes.default;
+  return hasOwn(resolved.panes, pluginId) ? resolved.panes[pluginId] : resolved.panes.default;
 }
 
 /** A pane background as a CSS `background` value. */

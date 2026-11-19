@@ -174,8 +174,10 @@ colors come from VS Code's default terminal palette for the theme's kind
 inferred from the background's luminance (`kindOf`, dark below 0.18).
 
 `detectThemeFormat(fileName, text)` goes by extension (`.itermcolors`,
-`.yaml`/`.yml`), then content (XML plist, `"midtermTheme"`, `"colors"` /
-`"tokenColors"`, `scheme:`/`system:`/`base00:`), defaulting to Midterm JSON.
+`.yaml`/`.yml`), then content: an XML plist is iTerm2; JSON (comments
+allowed) is Midterm when it has a top-level `midtermTheme` or `ansi`, VS Code
+when it has a top-level `colors` or `tokenColors`; `scheme:`/`system:`/
+`base00:` lines are Base16; anything else is tried as Midterm JSON.
 
 ### iTerm2 `.itermcolors` (`importItermColors`)
 
@@ -216,6 +218,7 @@ inferred. First match wins in each list:
 | override `fg-faint` | `editorLineNumber.foreground` |
 | override `err` / `warn` / `info` | `editorError.foreground` (`errorForeground`) / `editorWarning.foreground` / `editorInfo.foreground` |
 | override `terminal-fg` | `terminal.foreground` |
+| panes `terminal`, `terminal-active` (solid) and override `terminal-solid` | `terminal.background`, when opaque and different from the editor's, so `terminal.foreground` stays readable |
 
 Overrides take opaque colors only (translucent workbench colors are drawn
 over other surfaces in VS Code). Syntax overrides come from `tokenColors`:

@@ -1,3 +1,4 @@
+import { parse as parseJsonc } from "jsonc-parser";
 import type { Theme } from "../types";
 import { importBase16 } from "./base16";
 import { baseName } from "./common";
@@ -20,8 +21,14 @@ export function detectThemeFormat(fileName: string, text: string): ThemeFormat {
   if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "base16";
   const head = text.trimStart();
   if (head.startsWith("<?xml") || head.startsWith("<plist") || head.startsWith("<!DOCTYPE plist")) return "iterm";
-  if (/"midtermTheme"\s*:/.test(text)) return "midterm";
-  if (/"(?:colors|tokenColors)"\s*:/.test(text)) return "vscode";
+  if (head.startsWith("{") || head.startsWith("//") || head.startsWith("/*")) {
+    // JSON (VS Code themes may have comments): decide by top-level keys, not nested ones.
+    const data: unknown = parseJsonc(text, [], { allowTrailingComma: true });
+    const keys = data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data) : [];
+    if (keys.includes("midtermTheme") || keys.includes("ansi")) return "midterm";
+    if (keys.includes("colors") || keys.includes("tokenColors")) return "vscode";
+    return "midterm";
+  }
   if (/^\s*(?:scheme|system|base00)\s*:/m.test(text)) return "base16";
   return "midterm";
 }

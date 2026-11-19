@@ -92,6 +92,12 @@ export function importVSCodeTheme(text: string, options: ImportOptions = {}): Th
     .map((k) => pick([k]))
     .find((hex) => hex && hex.length === 7 && contrastRatio(hex, background) >= 3);
 
+  // A terminal background of its own goes to the terminal panes (and the solid background),
+  // so terminal.foreground stays readable on it.
+  const terminalBg = pick(["terminal.background"]);
+  const terminalPane = terminalBg && terminalBg.length === 7 && terminalBg !== background ? terminalBg : undefined;
+  if (terminalPane) overrides["terminal-solid"] = terminalPane;
+
   return buildTheme({
     name: typeof theme.name === "string" && theme.name.trim() ? theme.name.trim() : (options.name ?? "Imported VS Code Theme"),
     kind: kindFromType(theme.type),
@@ -102,6 +108,9 @@ export function importVSCodeTheme(text: string, options: ImportOptions = {}): Th
     selection: pick(BASE_KEYS.selection),
     ansi,
     overrides,
+    panes: terminalPane
+      ? { terminal: { from: terminalPane, to: terminalPane }, "terminal-active": { from: terminalPane, to: terminalPane } }
+      : undefined,
   });
 }
 
