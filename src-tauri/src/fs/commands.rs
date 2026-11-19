@@ -15,9 +15,10 @@
 
 use std::path::PathBuf;
 
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, Response};
 use tauri::{State, Window};
 
+use super::file::{self, FileVersion, TextFile, WriteResult};
 use super::git::{self, GitStatus};
 use super::list::{self, FsEntry};
 use super::ops;
@@ -60,6 +61,37 @@ pub async fn fs_rename(from: String, to: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn fs_trash(paths: Vec<String>) -> Result<(), String> {
     blocking(move || ops::trash(&paths)).await
+}
+
+/// The file's text, or why it cannot be shown as text; see [`file::read_text`].
+#[tauri::command]
+pub async fn fs_read_text(path: String) -> Result<TextFile, String> {
+    blocking(move || file::read_text(&PathBuf::from(path), file::TEXT_LIMIT)).await
+}
+
+/// The file's raw bytes (sent as an `ArrayBuffer`, not JSON).
+#[tauri::command]
+pub async fn fs_read_bytes(path: String) -> Result<Response, String> {
+    blocking(move || file::read_bytes(&PathBuf::from(path), file::BYTES_LIMIT))
+        .await
+        .map(Response::new)
+}
+
+/// Writes `text` atomically, unless the file is no longer `expected`; see
+/// [`file::write_text`].
+#[tauri::command]
+pub async fn fs_write_text(
+    path: String,
+    text: String,
+    expected: Option<FileVersion>,
+) -> Result<WriteResult, String> {
+    blocking(move || file::write_text(&PathBuf::from(path), &text, expected)).await
+}
+
+/// The file's modification time and size, or `null` if no file is there.
+#[tauri::command]
+pub async fn fs_file_version(path: String) -> Result<Option<FileVersion>, String> {
+    blocking(move || file::version(&PathBuf::from(path))).await
 }
 
 /// Status of the work tree containing `path`, or `null` outside one.

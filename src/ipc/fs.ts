@@ -2,7 +2,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import * as mock from "./fsMock";
 
 /*
- * Typed wrapper around the Rust file-system and git commands
+ * Typed wrapper around the Rust file, file-system and git commands
  * (src-tauri/src/fs). All paths are absolute. Outside Tauri (`bun run dev`
  * in a browser) the calls go to a small in-memory tree (`fsMock.ts`) so the
  * explorer can be worked on there.
@@ -86,6 +86,54 @@ export function rename(from: string, to: string): Promise<void> {
 export function trash(paths: string[]): Promise<void> {
   if (!isTauri()) return mock.trash(paths);
   return invoke("fs_trash", { paths });
+}
+
+/** What change detection compares: modification time (ms since the epoch) and size. */
+export type FileVersion = { mtime: number; size: number };
+
+export function sameVersion(a: FileVersion | null, b: FileVersion | null): boolean {
+  return a === b || (a !== null && b !== null && a.mtime === b.mtime && a.size === b.size);
+}
+
+/** A file read as text, or why it cannot be (binary, or over the backend's 16 MiB limit). */
+export type TextFile =
+  | { kind: "text"; text: string; version: FileVersion }
+  | { kind: "binary"; version: FileVersion }
+  | { kind: "tooLarge"; version: FileVersion };
+
+/**
+ * The outcome of a write: written, or refused because the file is no longer
+ * the expected version (`current` is `null` if it is gone).
+ */
+export type WriteResult =
+  | { kind: "written"; version: FileVersion }
+  | { kind: "conflict"; current: FileVersion | null };
+
+/** Reads a file as UTF-8 text. Rejects if it cannot be read. */
+export function readTextFile(path: string): Promise<TextFile> {
+  if (!isTauri()) return mock.readTextFile(path);
+  return invoke<TextFile>("fs_read_text", { path });
+}
+
+/** A file's raw bytes (up to 64 MiB). */
+export function readFileBytes(path: string): Promise<ArrayBuffer> {
+  if (!isTauri()) return mock.readFileBytes(path);
+  return invoke<ArrayBuffer>("fs_read_bytes", { path });
+}
+
+/**
+ * Writes text to a file atomically, creating it if missing. With `expected`,
+ * the file must still be that version, or nothing is written.
+ */
+export function writeTextFile(path: string, text: string, expected: FileVersion | null): Promise<WriteResult> {
+  if (!isTauri()) return mock.writeTextFile(path, text, expected);
+  return invoke<WriteResult>("fs_write_text", { path, text, expected });
+}
+
+/** A file's version, or `null` if no file is there. */
+export function fileVersion(path: string): Promise<FileVersion | null> {
+  if (!isTauri()) return mock.fileVersion(path);
+  return invoke<FileVersion | null>("fs_file_version", { path });
 }
 
 /** Git status of the work tree containing `path`, or `null` if it is not in one. */
