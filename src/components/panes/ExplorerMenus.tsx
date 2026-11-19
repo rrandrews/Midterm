@@ -94,7 +94,7 @@ export function ExplorerMenuItems({ model }: { model: ExplorerModel }) {
         onSelect={() => {
           model.setPinned(!snap.pinned);
           // Unpinned: jump to the focused terminal's directory now.
-          if (snap.pinned) refollow();
+          if (snap.pinned) refollow(model.paneId);
         }}
       >
         Pin folder

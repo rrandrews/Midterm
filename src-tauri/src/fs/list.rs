@@ -55,7 +55,12 @@ pub fn list_dir(dir: &Path, show_hidden: bool) -> Result<Vec<FsEntry>, String> {
         // rather than failing the whole listing.
         let Ok(item) = item else { continue };
         let file_name = item.file_name();
-        let name = file_name.to_string_lossy().into_owned();
+        // A name that is not UTF-8 (possible on Linux, not on APFS) could
+        // only be sent to the webview lossily, and the lossy path might name
+        // a different file in later operations (rename, trash). Left out.
+        let Some(name) = file_name.to_str().map(str::to_owned) else {
+            continue;
+        };
         let hidden = name.starts_with('.');
         let ignored = file_name == ".git" || !kept.contains(&file_name);
         if !show_hidden && (hidden || ignored) {

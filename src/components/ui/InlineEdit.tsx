@@ -60,6 +60,8 @@ export function InlineEdit({
         }
       }}
       onClick={(event) => event.stopPropagation()}
+      // The field's own menu (cut, copy, paste), not the menu of what it sits in.
+      onContextMenu={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
     />
   );

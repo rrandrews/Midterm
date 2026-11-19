@@ -15,7 +15,8 @@ import { selectActiveTab, useAppStore } from "./state/store";
  * The webview's own context menu (Reload, Inspect Element…) means nothing
  * in the app, so it only appears in text fields, where it has Cut, Copy and
  * Paste. Areas with menus of their own have already handled the event. In
- * dev builds ⌥-right-click still opens it, for Inspect Element.
+ * dev builds ⌥-right-click where the app has no menu still opens it, for
+ * Inspect Element.
  */
 function suppressNativeContextMenu(): () => void {
   const onContextMenu = (event: MouseEvent) => {

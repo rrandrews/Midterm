@@ -118,7 +118,7 @@ Right-click menus:
 | Empty title bar | new tab, new workspace | `TitleBar.tsx` |
 
 - A terminal whose program reads the mouse (vim, htop) gets right clicks
-  instead; ⇧-right-click opens the menu anyway.
+  instead; ⌥-right-click opens the menu anyway.
 - The webview's own menu (Reload, Inspect Element) is suppressed everywhere
   except text fields (`suppressNativeContextMenu` in `App.tsx`). In dev
   builds ⌥-right-click still shows it.

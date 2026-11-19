@@ -25,19 +25,58 @@ pub fn create(path: &Path, dir: bool) -> Result<(), String> {
 /// that `readme` → `README` works on a case-insensitive file system, where
 /// the destination "exists" because it is the source.
 ///
-/// The existence check and the rename are separate steps, so something
-/// created at `to` in between is replaced. An atomic no-replace rename
-/// (`renamex_np(RENAME_EXCL)`, `renameat2(RENAME_NOREPLACE)`) is
-/// platform-specific and not worth it for user-driven renames.
+/// On macOS and Linux the rename itself refuses to replace anything
+/// (`renamex_np(RENAME_EXCL)`, `renameat2(RENAME_NOREPLACE)`), so a file
+/// created at `to` by another program after the check is never clobbered.
+/// Elsewhere, or on a file system without that support, there is a small
+/// window between the check and a plain rename.
 pub fn rename(from: &Path, to: &Path) -> Result<(), String> {
     let fail = |e: io::Error| format!("cannot rename {} to {}: {e}", from.display(), to.display());
+    let exists = || format!("{} already exists", to.display());
     match fs::symlink_metadata(to) {
-        Ok(_) if is_case_only_rename(from, to) => {}
-        Ok(_) => return Err(format!("{} already exists", to.display())),
+        Ok(_) if is_case_only_rename(from, to) => return fs::rename(from, to).map_err(fail),
+        Ok(_) => return Err(exists()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(fail(e)),
     }
-    fs::rename(from, to).map_err(fail)
+    match rename_no_replace(from, to) {
+        Some(Ok(())) => Ok(()),
+        Some(Err(e)) if e.kind() == io::ErrorKind::AlreadyExists => Err(exists()),
+        Some(Err(e)) => Err(fail(e)),
+        None => fs::rename(from, to).map_err(fail),
+    }
+}
+
+/// An atomic rename that fails with `AlreadyExists` instead of replacing;
+/// `None` where the platform or file system cannot do that.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn rename_no_replace(from: &Path, to: &Path) -> Option<io::Result<()>> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let from = CString::new(from.as_os_str().as_bytes()).ok()?;
+    let to = CString::new(to.as_os_str().as_bytes()).ok()?;
+    // SAFETY: both arguments are valid NUL-terminated paths for the call.
+    #[cfg(target_os = "macos")]
+    let rc = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    // SAFETY: as above; AT_FDCWD makes the paths relative to the cwd (they are absolute).
+    #[cfg(target_os = "linux")]
+    let rc = unsafe {
+        libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE)
+    };
+    if rc == 0 {
+        return Some(Ok(()));
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        // The file system (or an old kernel) does not support it.
+        Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS) => None,
+        _ => Some(Err(error)),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn rename_no_replace(_from: &Path, _to: &Path) -> Option<io::Result<()>> {
+    None
 }
 
 /// `from` and `to` differ only in case and are the same directory entry.
@@ -92,6 +131,20 @@ pub fn trash(paths: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn no_replace_rename_refuses_an_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        // The step `rename` relies on once its own check has passed.
+        let result = super::rename_no_replace(&a, &b).expect("supported on this file system");
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b");
+    }
+
     use super::*;
     use std::fs::{File, create_dir, read_to_string, write};
 

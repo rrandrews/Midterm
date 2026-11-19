@@ -291,6 +291,9 @@ export class ExplorerModel {
     }
     if (this.selected && isWithin(this.selected, from)) this.selected = to + this.selected.slice(from.length);
     this.save();
+    // Renamed open directories are new paths: load and watch them.
+    for (const path of this.expanded) if (isWithin(path, to)) void this.load(path);
+    this.updateWatchedDirs();
     await this.load(parentPath(from));
     return { from, to };
   }
@@ -390,7 +393,9 @@ export class ExplorerModel {
     const present = new Set(entries.filter((entry) => entry.kind === "dir").map((entry) => entry.path));
     let changed = false;
     for (const path of [...this.expanded]) {
-      const child = path.startsWith(`${dir}/`) ? joinPath(dir, path.slice(dir.length + 1).split("/")[0]) : null;
+      const prefix = dir === "/" ? "/" : `${dir}/`;
+      const child =
+        path !== dir && path.startsWith(prefix) ? joinPath(dir, path.slice(prefix.length).split("/")[0]) : null;
       if (child && !present.has(child)) {
         this.expanded.delete(path);
         this.listings.delete(path);
@@ -448,6 +453,9 @@ export class ExplorerModel {
         }
         this.watcher = watcher;
         this.updateWatchedDirs();
+        // Changes between the first listing and the watch starting would
+        // otherwise go unseen.
+        this.reloadAll();
       },
       (error: unknown) => {
         this.watcherPending = false;

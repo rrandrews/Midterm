@@ -37,10 +37,11 @@ export const PaneContent = memo(function PaneContent({ pane }: { pane: PaneNode 
           onPointerDownCapture={activate}
           onContextMenu={(event) => {
             // A program that reads the mouse (vim, htop…) gets the right
-            // click; ⇧ forces the menu. Preventing the default here also
-            // stops the menu from opening.
+            // click; ⌥ forces the menu (xterm keeps ⌥-clicks from the
+            // program, as `macOptionClickForcesSelection` is on; ⇧ would
+            // not). Preventing the default also stops the menu opening.
             const session = kind === "terminal" ? peekSession(pane.id) : undefined;
-            if (session?.wantsMouse && !event.shiftKey) event.preventDefault();
+            if (session?.wantsMouse && !event.altKey) event.preventDefault();
           }}
         >
           {kind === "terminal" ? (

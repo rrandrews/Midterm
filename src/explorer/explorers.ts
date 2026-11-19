@@ -42,6 +42,10 @@ export function acquireExplorer(paneId: string): ExplorerModel {
     );
     model = created;
     models.set(paneId, model);
+    // A restored root stays until a terminal in the tab is focused: which
+    // one had focus last is not saved, and guessing would replace it.
+    if (!data?.root) waitingForFocus.delete(paneId);
+    else waitingForFocus.add(paneId);
     if (tab) followTerminal(model, tab);
   }
   return model;
@@ -66,6 +70,7 @@ function reconcile(): void {
   for (const [paneId, model] of models) {
     if (live.has(paneId) || model.isAttached) continue;
     models.delete(paneId);
+    waitingForFocus.delete(paneId);
     model.dispose();
   }
 }
@@ -83,6 +88,8 @@ function scheduleReconcile(): void {
  */
 
 const lastTerminal = new Map<string, string>();
+/** Explorers with a restored root, which follow only once a terminal is focused. */
+const waitingForFocus = new Set<string>();
 
 function terminalCwd(tab: Tab, paneId: string): string | undefined {
   const pane = findPane(tab.layout, paneId);
@@ -93,9 +100,10 @@ function terminalCwd(tab: Tab, paneId: string): string | undefined {
 function followTerminal(model: ExplorerModel, tab: Tab): void {
   if (model.isPinned) return;
   const remembered = lastTerminal.get(tab.id);
-  const terminal =
-    (remembered && findPane(tab.layout, remembered) ? remembered : undefined) ??
-    listPanes(tab.layout).find((pane) => pane.data.kind === "terminal")?.id;
+  const known = remembered && findPane(tab.layout, remembered) ? remembered : undefined;
+  if (known) waitingForFocus.delete(model.paneId);
+  else if (waitingForFocus.has(model.paneId)) return;
+  const terminal = known ?? listPanes(tab.layout).find((pane) => pane.data.kind === "terminal")?.id;
   const cwd = terminal && terminalCwd(tab, terminal);
   if (cwd) model.setRoot(cwd);
 }
@@ -128,8 +136,9 @@ function scheduleFollowing(): void {
   });
 }
 
-/** Re-applies following now, e.g. after an explorer is unpinned. */
-export function refollow(): void {
+/** Follows a terminal again right away, e.g. after the explorer is unpinned. */
+export function refollow(paneId: string): void {
+  waitingForFocus.delete(paneId);
   scheduleFollowing();
 }
 
