@@ -4,11 +4,9 @@ import {
   Workspace as Dock,
   Separator,
   type TabsetNode,
-  type WorkspaceChangedMeta,
   type WorkspaceClassNames,
 } from "react-resizable-panels";
-import { focusActivePane } from "../../actions";
-import { type DockHandle, registerDock } from "../../layout/dock";
+import { type DockHandle, registerDock, restoreFocusAfterLayoutChange } from "../../layout/dock";
 import { PANE_LABELS, countPanes } from "../../state/layout";
 import { useAppStore } from "../../state/store";
 import type { Layout, PaneData, PaneNode, Tab } from "../../state/types";
@@ -67,15 +65,14 @@ export function PaneLayout({ tab }: { tab: Tab }) {
   );
 
   const onModelChanged = useCallback(
-    (layout: Layout, meta: WorkspaceChangedMeta) => {
+    (layout: Layout) => {
       const { setTabLayout, closeTab } = useAppStore.getState();
       if (countPanes(layout) === 0) {
         closeTab(tabId);
         return;
       }
       setTabLayout(tabId, layout);
-      // WebKit re-inserts a moved pane's DOM, which drops keyboard focus.
-      if (meta.reason === "move") focusActivePane();
+      restoreFocusAfterLayoutChange();
     },
     [tabId],
   );

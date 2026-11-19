@@ -72,6 +72,22 @@ export function refocusPane(): void {
 }
 
 /**
+ * Returns focus to the wanted pane if a layout change left nothing focused.
+ *
+ * WebKit has no `Element.moveBefore`, so when the layout restructures (a
+ * pane is moved or closed) the panes that shift are re-inserted into the
+ * document and whichever had focus loses it. That can happen after the
+ * change is reported, hence the check on the next frame as well as now.
+ */
+export function restoreFocusAfterLayoutChange(): void {
+  const restore = () => {
+    if (!document.activeElement || document.activeElement === document.body) refocusPane();
+  };
+  restore();
+  requestAnimationFrame(restore);
+}
+
+/**
  * Keeps the keyboard in a pane: when a press on app chrome (the title bar, a
  * separator, a cancelled pane drag) leaves nothing focused, focus returns to
  * the wanted pane. Returns a function that stops.
