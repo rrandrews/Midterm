@@ -1,5 +1,6 @@
 mod fs;
 mod menu;
+mod plugins;
 mod pty;
 mod quit_guard;
 mod traffic_lights;
@@ -51,6 +52,7 @@ pub fn run() {
         .manage(PtyManager::default())
         .manage(WatchManager::default())
         .menu(menu::build)
+        .register_asynchronous_uri_scheme_protocol(plugins::protocol::SCHEME, plugins::protocol::handle)
         .setup(|app| {
             quit_guard::install(app.handle());
             for window in app.webview_windows().values() {
@@ -118,6 +120,10 @@ pub fn run() {
             fs::commands::fs_watch_start,
             fs::commands::fs_watch_set,
             fs::commands::fs_watch_stop,
+            plugins::commands::plugins_dir,
+            plugins::commands::plugins_list,
+            plugins::commands::plugins_import,
+            plugins::commands::plugins_remove,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
