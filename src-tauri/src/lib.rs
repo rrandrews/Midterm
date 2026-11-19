@@ -1,3 +1,4 @@
+mod fs;
 mod menu;
 mod pty;
 mod quit_guard;
@@ -6,6 +7,7 @@ mod traffic_lights;
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 
+use fs::WatchManager;
 use pty::PtyManager;
 
 /// Quits the app; called by the webview once quitting has been confirmed.
@@ -46,6 +48,7 @@ pub fn run() {
         // when the window is created.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PtyManager::default())
+        .manage(WatchManager::default())
         .menu(menu::build)
         .setup(|app| {
             quit_guard::install(app.handle());
@@ -68,13 +71,14 @@ pub fn run() {
         })
         // A page that (re)loads has lost the channels its terminals were
         // streaming to, so their shells can never be reached again: end them
-        // rather than leave them stalled until the window closes. This is a
-        // no-op for a window's first load.
+        // rather than leave them stalled until the window closes. Its file
+        // watchers are just as orphaned. This is a no-op for a window's
+        // first load.
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Started {
-                webview
-                    .state::<PtyManager>()
-                    .kill_owned_by(webview.window().label());
+                let label = webview.window().label().to_string();
+                webview.state::<PtyManager>().kill_owned_by(&label);
+                webview.state::<WatchManager>().stop_owned_by(&label);
             }
         })
         .on_menu_event(|app, event| {
@@ -95,19 +99,34 @@ pub fn run() {
             pty::commands::pty_ack,
             pty::commands::pty_kill,
             pty::commands::pty_foreground,
+            fs::commands::fs_list_dir,
+            fs::commands::fs_stat,
+            fs::commands::fs_create,
+            fs::commands::fs_rename,
+            fs::commands::fs_trash,
+            fs::commands::git_status,
+            fs::commands::fs_watch_start,
+            fs::commands::fs_watch_set,
+            fs::commands::fs_watch_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
     app.run(|app, event| match event {
-        // A closed window takes its terminals with it.
+        // A closed window takes its terminals and watchers with it.
         RunEvent::WindowEvent {
             label,
             event: WindowEvent::Destroyed,
             ..
-        } => app.state::<PtyManager>().kill_owned_by(&label),
+        } => {
+            app.state::<PtyManager>().kill_owned_by(&label);
+            app.state::<WatchManager>().stop_owned_by(&label);
+        }
         // Last chance to make sure no shell outlives the app.
-        RunEvent::Exit => app.state::<PtyManager>().kill_all(),
+        RunEvent::Exit => {
+            app.state::<PtyManager>().kill_all();
+            app.state::<WatchManager>().stop_all();
+        }
         _ => {}
     });
 }
