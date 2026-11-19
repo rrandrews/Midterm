@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { registerPaneActions } from "../../commands/registry";
 import { registerPaneFocuser } from "../../layout/dock";
 import { useSettings } from "../../settings/settings";
 import type { BlocksSnapshot } from "../../terminal/blocks";
@@ -6,6 +7,7 @@ import type { TerminalSession } from "../../terminal/session";
 import { acquireSession, releaseSession } from "../../terminal/sessions";
 import type { PaneData } from "../../state/types";
 import { BlocksView } from "./BlocksView";
+import { TerminalFindBar } from "./TerminalFindBar";
 
 const NO_BLOCKS: BlocksSnapshot = { integration: "pending", phase: "running", altScreen: false, blocks: [] };
 const noSubscribe = () => () => {};
@@ -33,8 +35,15 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
     session?.blocks.snapshot ?? (() => NO_BLOCKS),
   );
 
+  // Find (⌘F) searches the terminal's scrollback; blocks mode shows it classic meanwhile.
+  const [finding, setFinding] = useState<number | null>(null);
+  const findStep = useRef<((backwards: boolean) => void) | null>(null);
+
   const showBlocks =
-    (mode ?? defaultMode) === "blocks" && snapshot.integration !== "absent" && !snapshot.altScreen;
+    finding === null &&
+    (mode ?? defaultMode) === "blocks" &&
+    snapshot.integration !== "absent" &&
+    !snapshot.altScreen;
   const editorActive = showBlocks && snapshot.integration === "present" && snapshot.phase === "prompt";
 
   // The keyboard goes to the input editor at a prompt in blocks mode, else to the terminal.
@@ -54,8 +63,14 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
     sessionRef.current = acquired;
     setSession(acquired);
     const unregister = registerPaneFocuser(paneId, () => focusTarget.current());
+    const unregisterActions = registerPaneActions(paneId, {
+      find: () => setFinding((token) => (token ?? 0) + 1),
+      findNext: () => (findStep.current ? findStep.current(false) : setFinding(1)),
+      findPrevious: () => (findStep.current ? findStep.current(true) : setFinding(1)),
+    });
     return () => {
       unregister();
+      unregisterActions();
       releaseSession(acquired);
     };
   }, [paneId]);
@@ -80,6 +95,18 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: PaneData
       }}
     >
       <div ref={ref} className={`terminal-pane${showBlocks ? " is-covered" : ""}`} />
+      {session && finding !== null && (
+        <TerminalFindBar
+          session={session}
+          focusToken={finding}
+          stepRef={findStep}
+          onClose={() => {
+            findStep.current = null;
+            setFinding(null);
+            requestAnimationFrame(() => focusTarget.current());
+          }}
+        />
+      )}
       {session && showBlocks && (
         <BlocksView
           session={session}

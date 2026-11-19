@@ -1,5 +1,6 @@
 import { closePaneNow, updatePaneData } from "../actions";
 import { homeDirectory } from "../ipc/system";
+import { useSettings } from "../settings/settings";
 import { findPane, listPanes } from "../state/layout";
 import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
 import { TerminalSession } from "./session";
@@ -127,6 +128,12 @@ function scheduleTitles(): void {
     updateTitles();
   });
 }
+
+// Settings apply to every live terminal at once.
+useSettings.subscribe((settings, previous) => {
+  if (settings === previous) return;
+  for (const session of sessions.values()) session.applySettings(settings);
+});
 
 useAppStore.subscribe(() => {
   scheduleReconcile();

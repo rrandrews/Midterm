@@ -38,13 +38,15 @@ async function start(): Promise<void> {
   ]);
   if (import.meta.env.DEV) {
     // Dev-only handles for poking at the app from the console or a test driver.
-    const [actions, dock, store, sessions] = await Promise.all([
+    const [actions, dock, store, sessions, settings, commands] = await Promise.all([
       import("./actions"),
       import("./layout/dock"),
       import("./state/store"),
       import("./terminal/sessions"),
+      import("./settings/settings"),
+      import("./commands/registry"),
     ]);
-    Object.assign(window, { __midterm: { actions, dock, store, sessions } });
+    Object.assign(window, { __midterm: { actions, dock, store, sessions, settings, commands } });
     if (params.has("mockup")) (await import("./dev/seed")).seedMockupLayout();
     const selfTestPort = params.get("selftest");
     if (selfTestPort) void import("./dev/selftest").then((m) => m.runSelfTest(selfTestPort));

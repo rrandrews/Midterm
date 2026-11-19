@@ -24,3 +24,21 @@
   -webkit-user-select: text;
   cursor: text;
 }
+
+/* `terminalBackground: "solid"`: a flat background instead of the pane gradient. */
+.pane-terminal:has(.terminal-host.is-solid) {
+  background: var(--terminal-solid);
+}
+
+/* Visual bell. */
+.terminal-host.is-ringing {
+  animation: terminal-bell 300ms ease-out;
+}
+@keyframes terminal-bell {
+  from {
+    box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  to {
+    box-shadow: inset 0 0 0 9999px transparent;
+  }
+}

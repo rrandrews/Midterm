@@ -46,13 +46,13 @@ Goal: the `editor` and `viewer` pane kinds open files.
 
 ## M7 — Settings and theming
 
-- [ ] Settings file and UI: font family and size, cursor style, scrollback, default shell and args
-- [ ] Accent color picker (the mockup offers `#8B9CFF`, `#5EEAD4`, `#F5A524`, `#F472B6`)
-- [ ] Rebindable keyboard shortcuts
-- [ ] Native menu bar generated from the command registry
+- [x] Settings file and UI: font family and size, cursor style, scrollback, default shell and args
+- [x] Accent color picker (the mockup offers `#8B9CFF`, `#5EEAD4`, `#F5A524`, `#F472B6`)
+- [x] Rebindable keyboard shortcuts
+- [x] Native menu bar generated from the command registry
 - [ ] Content Security Policy (currently `null` in `tauri.conf.json`)
-- [ ] Terminal: search in scrollback, copy-on-select option, bell handling
-- [ ] Decide whether the transparent terminal background is worth its rendering cost; offer a solid option
+- [x] Terminal: search in scrollback, copy-on-select option, bell handling
+- [x] Decide whether the transparent terminal background is worth its rendering cost; offer a solid option
 
 ## M8 — Cross-platform and packaging
 

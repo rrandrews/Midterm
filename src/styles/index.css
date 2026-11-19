@@ -68,6 +68,8 @@
   --pane-terminal-active: linear-gradient(180deg, #15161c 0%, #111216 100%);
   --pane-viewer: linear-gradient(170deg, #131419 0%, #0e0f12 100%);
   --tab-active: linear-gradient(180deg, #15161b, #121318);
+  /* Solid terminal background (setting); keep in sync with SOLID_BACKGROUND in src/terminal/theme.ts. */
+  --terminal-solid: #0e0f12;
 
   --titlebar-height: 38px;
   color-scheme: dark;

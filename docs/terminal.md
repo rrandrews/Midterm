@@ -52,12 +52,41 @@ before the PTY handle is known are acknowledged as soon as it is.
 - WebGL renderer, enabled on attach and released on detach, because browsers
   cap the number of live WebGL contexts. If the context is lost xterm falls
   back to its DOM renderer.
-- Options and colors are in `theme.ts`. The background is transparent so the
-  pane gradient shows through (`allowTransparency`).
+- Options and colors are in `theme.ts`. `terminalOptions(settings)` gives
+  the ones that follow the settings (font family and size, cursor style and
+  blink, scrollback, the accent as cursor and selection color, the
+  background); `sessions.ts` applies changes to every live terminal
+  (`TerminalSession.applySettings`), refitting after font changes and
+  recreating the WebGL renderer when transparency changes.
+- Background: transparent by default, so the pane gradient shows through
+  (`allowTransparency`). Decision (M7): kept as the default, because it is
+  what the design calls for and with the WebGL renderer the cost is small
+  (the glyph atlas cannot use subpixel antialiasing over a transparent
+  background, and blending costs a little per frame). The `solid` setting
+  paints `SOLID_BACKGROUND` (`--terminal-solid`) in both xterm and the pane,
+  for the crispest text and the cheapest frames.
 - Fonts are preloaded in `main.tsx` before any terminal opens, because xterm
   measures its cell size from the font when it opens.
 - `FitAddon` refits on a `ResizeObserver`, at most once per frame, and only
   while the host has a size.
+
+### Find, bell, copy on select
+
+- ⌘F opens a find bar over the terminal (`TerminalFindBar.tsx`, the
+  terminal's `find` pane action) that searches the scrollback with
+  `@xterm/addon-search`: matches are highlighted in the accent, ↩ / ⌘G
+  next, ⇧↩ / ⇧⌘G previous, Escape closes. In blocks mode the pane shows
+  the classic terminal while the bar is open.
+- Bell (BEL): per the `bell` setting, a short accent flash of the pane
+  (`.is-ringing`), a soft generated tone (Web Audio, at most one per
+  100 ms), or nothing.
+- `copyOnSelect`: a selection is copied 150 ms after it stops changing.
+
+### Shell from the settings
+
+`shell` / `shellArgs` are passed to `pty_spawn`; see
+[commands.md](commands.md#settings-dialog). Changing them affects new
+terminals only.
 
 ### Input
 

@@ -144,5 +144,5 @@ Right-click menus:
 | `cargo test` (in `src-tauri/`) | Backend tests. |
 | `?selftest=PORT` | Self-test of the real app; see [terminal.md](terminal.md). |
 
-In dev builds `window.__midterm` exposes `actions`, `dock`, `store` and
-`sessions` for poking at the app from the console or a test driver.
+In dev builds `window.__midterm` exposes `actions`, `dock`, `store`,
+`sessions`, `settings` and `commands` for poking at the app from the console or a test driver.

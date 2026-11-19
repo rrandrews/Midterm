@@ -1,4 +1,5 @@
 import type { ITerminalOptions, ITheme } from "@xterm/xterm";
+import { type Settings, monoFontStack } from "../settings/schema";
 
 /* xterm appearance. Colors mirror the tokens in src/styles/index.css. */
 
@@ -47,3 +48,37 @@ export const TERMINAL_OPTIONS: ITerminalOptions = {
   // Needed for the unicode11 width tables.
   allowProposedApi: true,
 };
+
+/**
+ * Background for `terminalBackground: "solid"`: the darker end of the
+ * terminal pane gradient (`--pane-terminal` in src/styles/index.css).
+ */
+export const SOLID_BACKGROUND = "#0e0f12";
+
+/** `#rrggbb` with an alpha byte appended. */
+const withAlpha = (hex: string, alpha: string) => `${hex.slice(0, 7)}${alpha}`;
+
+/** The colors for the given settings: the accent drives the cursor and selection. */
+export function terminalTheme(settings: Pick<Settings, "accent" | "terminalBackground">): ITheme {
+  const accent = settings.accent.toLowerCase();
+  return {
+    ...TERMINAL_THEME,
+    background: settings.terminalBackground === "solid" ? SOLID_BACKGROUND : TERMINAL_THEME.background,
+    cursor: accent,
+    selectionBackground: withAlpha(accent, "40"),
+    selectionInactiveBackground: withAlpha(accent, "26"),
+  };
+}
+
+/** The xterm options that follow the settings. Everything else stays as in `TERMINAL_OPTIONS`. */
+export function terminalOptions(settings: Settings): ITerminalOptions {
+  return {
+    theme: terminalTheme(settings),
+    allowTransparency: settings.terminalBackground === "transparent",
+    fontFamily: monoFontStack(settings.fontFamily),
+    fontSize: settings.fontSize,
+    cursorStyle: settings.cursorStyle,
+    cursorBlink: settings.cursorBlink,
+    scrollback: settings.scrollback,
+  };
+}

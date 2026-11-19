@@ -34,9 +34,10 @@
 
 .block {
   padding: 10px 16px 10px 18px;
-  font-family: var(--font-mono);
-  font-size: var(--text-ui);
-  line-height: 19px;
+  font-family: var(--terminal-font, var(--font-mono));
+  font-size: var(--terminal-font-size, var(--text-ui));
+  /* 19px rows at the default 12.5px, as in the mockup. */
+  line-height: 1.52;
   color: var(--color-fg-soft);
   /* Off-screen blocks skip layout and paint. */
   content-visibility: auto;
@@ -143,9 +144,10 @@
   margin: 0;
   padding: 0;
   border: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-input);
-  line-height: 19px;
+  font-family: var(--terminal-font, var(--font-mono));
+  /* The mockup's input is 0.5px larger than the output. */
+  font-size: calc(var(--terminal-font-size, 12.5px) + 0.5px);
+  line-height: 1.46;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

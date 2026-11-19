@@ -1,17 +1,21 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { type ITheme, Terminal } from "@xterm/xterm";
+import { type ITerminalOptions, type ITheme, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
+import { copyText } from "../ipc/clipboard";
 import { openExternal } from "../ipc/shell";
 import { localHostname } from "../ipc/system";
 import { BlockTracker } from "./blocks";
 import { branchOf } from "./gitBranch";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
-import { TERMINAL_OPTIONS } from "./theme";
+import type { Settings } from "../settings/schema";
+import { getSettings } from "../settings/settings";
+import { TERMINAL_OPTIONS, terminalOptions } from "./theme";
 
 export type SessionEvents = {
   /** The shell exited after running for a while (see `QUICK_EXIT_MS`). */
@@ -62,7 +66,10 @@ type Input = { binary: boolean; data: string };
  */
 export class TerminalSession {
   private readonly host = document.createElement("div");
-  private readonly term = new Terminal(TERMINAL_OPTIONS);
+  private readonly term = new Terminal({ ...TERMINAL_OPTIONS, ...terminalOptions(getSettings()) });
+  private readonly search = new SearchAddon();
+  private copyTimer: ReturnType<typeof setTimeout> | undefined;
+  private bellTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly fit = new FitAddon();
   private readonly resizeObserver = new ResizeObserver(() => this.scheduleFit());
   /** Commands and their output, from the shell's OSC 133 marks (blocks mode). */
@@ -111,6 +118,8 @@ export class TerminalSession {
     this.host.className = "terminal-host";
 
     this.term.loadAddon(this.fit);
+    this.term.loadAddon(this.search);
+    this.host.classList.toggle("is-solid", getSettings().terminalBackground === "solid");
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11";
     this.term.loadAddon(
@@ -131,9 +140,89 @@ export class TerminalSession {
       return true;
     });
     this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
+    this.term.onBell(() => this.ring());
+    this.term.onSelectionChange(() => {
+      if (!getSettings().copyOnSelect) return;
+      // Once the selection settles (it changes on every mouse move while dragging).
+      clearTimeout(this.copyTimer);
+      this.copyTimer = setTimeout(() => {
+        const text = this.term.getSelection();
+        if (text) void copyText(text);
+      }, 150);
+    });
     this.term.onResize(({ cols, rows }) => {
       if (this.phase === "running") this.pty?.resize(cols, rows);
     });
+  }
+
+  /** Applies changed settings to the live terminal (fonts, cursor, colors, scrollback). */
+  applySettings(settings: Settings): void {
+    if (this.disposed) return;
+    const next = terminalOptions(settings);
+    const current = this.term.options;
+    const transparencyChanged = next.allowTransparency !== current.allowTransparency;
+    const metricsChanged = next.fontFamily !== current.fontFamily || next.fontSize !== current.fontSize;
+    for (const [key, value] of Object.entries(next) as [keyof ITerminalOptions, unknown][]) {
+      if (key === "theme" || current[key] !== value) (this.term.options as Record<string, unknown>)[key] = value;
+    }
+    this.host.classList.toggle("is-solid", settings.terminalBackground === "solid");
+    // The WebGL renderer picks up transparency when it is created.
+    if (transparencyChanged && this.webgl) {
+      this.disableWebgl();
+      this.enableWebgl();
+    }
+    if (metricsChanged) this.scheduleFit();
+  }
+
+  /*
+   * Search in the scrollback (the find bar in TerminalPane). Matches are
+   * highlighted with decorations; results come through `onSearchResults`.
+   */
+
+  /** Finds the next (or previous) match of `query`; `incremental` keeps the current match if it still fits. */
+  find(query: string, { backwards = false, incremental = false } = {}): boolean {
+    if (!query) {
+      this.search.clearDecorations();
+      return false;
+    }
+    const accent = getSettings().accent;
+    const options = {
+      incremental,
+      decorations: {
+        matchBackground: `${accent}40`,
+        matchOverviewRuler: accent,
+        activeMatchBackground: `${accent}99`,
+        activeMatchColorOverviewRuler: accent,
+      },
+    };
+    return backwards ? this.search.findPrevious(query, options) : this.search.findNext(query, options);
+  }
+
+  /** Removes search highlights. */
+  clearSearch(): void {
+    this.search.clearDecorations();
+    this.term.clearSelection();
+  }
+
+  /** Reports `{ resultIndex, resultCount }` after each search (index -1 when none is active). */
+  onSearchResults(listener: (results: { resultIndex: number; resultCount: number }) => void): () => void {
+    const subscription = this.search.onDidChangeResults(listener);
+    return () => subscription.dispose();
+  }
+
+  /** The bell: a flash of the pane or a short tone, per the settings. */
+  private ring(): void {
+    const { bell } = getSettings();
+    if (bell === "visual") {
+      clearTimeout(this.bellTimer);
+      this.host.classList.remove("is-ringing");
+      // Restart the animation even when bells come quickly.
+      void this.host.offsetWidth;
+      this.host.classList.add("is-ringing");
+      this.bellTimer = setTimeout(() => this.host.classList.remove("is-ringing"), 300);
+    } else if (bell === "sound") {
+      playBell();
+    }
   }
 
   get isAttached(): boolean {
@@ -251,6 +340,8 @@ export class TerminalSession {
     this.disposed = true;
     this.phase = "ended";
     clearTimeout(this.foregroundTimer);
+    clearTimeout(this.copyTimer);
+    clearTimeout(this.bellTimer);
     this.queuedInput = [];
     this.detach();
     // xterm drops its queued writes on dispose, so their callbacks never run.
@@ -265,8 +356,11 @@ export class TerminalSession {
     if (this.phase !== "idle") return;
     this.phase = "starting";
 
+    const { shell, shellArgs } = getSettings();
     spawnPty({
       cwd: this.currentCwd,
+      shell: shell || undefined,
+      shellArgs,
       cols: this.term.cols,
       rows: this.term.rows,
       onData: (bytes) => this.receive(bytes),
@@ -431,5 +525,28 @@ export class TerminalSession {
     } catch (error) {
       console.warn("Disposing WebGL terminal renderer failed:", error);
     }
+  }
+}
+
+let audio: AudioContext | null = null;
+let lastBell = 0;
+
+/** A short, soft tone. At most one per 100 ms, so a flood of BELs is not a buzz. */
+function playBell(): void {
+  const now = performance.now();
+  if (now - lastBell < 100) return;
+  lastBell = now;
+  try {
+    audio ??= new AudioContext();
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.08, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.12);
+    oscillator.connect(gain).connect(audio.destination);
+    oscillator.start();
+    oscillator.stop(audio.currentTime + 0.12);
+  } catch (error) {
+    console.warn("Bell sound failed:", error);
   }
 }
