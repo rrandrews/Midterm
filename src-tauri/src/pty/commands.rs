@@ -58,6 +58,17 @@ pub fn pty_write(manager: State<'_, PtyManager>, id: u32, data: String) -> Resul
     manager.write(id, data.into_bytes())
 }
 
+/// Sends raw bytes to the session's terminal. For input that is not valid
+/// UTF-8, such as legacy mouse reports, which [`pty_write`] would mangle.
+#[tauri::command]
+pub fn pty_write_bytes(
+    manager: State<'_, PtyManager>,
+    id: u32,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    manager.write(id, data)
+}
+
 /// Resizes the session's terminal.
 #[tauri::command]
 pub fn pty_resize(

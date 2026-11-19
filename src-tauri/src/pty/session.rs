@@ -82,13 +82,19 @@ const OPEN_PTY_ATTEMPTS: u32 = 6;
 
 /// Lifecycle notification sent to the UI.
 ///
-/// Serialises as `{ "event": "exit", "data": { "code": 0 } }`.
+/// Serialises as `{ "event": "exit", "data": { "code": 0, "runtimeMs": 12 } }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum PtyEvent {
     /// The child process has exited and all of its output has been
     /// delivered. `code` is `None` when it was terminated by a signal.
-    Exit { code: Option<u32> },
+    /// `runtime_ms` is how long the child ran, measured here rather than by
+    /// the receiver: delivery of this event can lag the exit itself.
+    Exit {
+        code: Option<u32>,
+        #[serde(rename = "runtimeMs")]
+        runtime_ms: u64,
+    },
 }
 
 /// Flow-control thresholds, in bytes of unacknowledged output.
@@ -179,6 +185,8 @@ struct Shared {
     #[cfg_attr(not(unix), allow(dead_code))]
     pid: Option<u32>,
     limits: FlowLimits,
+    /// When the child was started.
+    started: Instant,
 }
 
 /// Locks a mutex, ignoring poisoning: everything guarded here is plain flags,
@@ -238,6 +246,7 @@ impl Session {
             pid: child.process_id(),
             child: Mutex::new(Some(child)),
             limits,
+            started: Instant::now(),
         });
 
         match start_threads(&shared, reader, writer, input_rx) {
@@ -502,6 +511,7 @@ fn waiter_loop(shared: &Shared) {
         Ok(status) if status.signal().is_none() => Some(status.exit_code()),
         _ => None,
     };
+    let runtime_ms = u64::try_from(shared.started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     // On Unix this does not disturb the reader: it owns a duplicate of the
     // master descriptor, so buffered output stays readable. On Windows the
@@ -522,7 +532,7 @@ fn waiter_loop(shared: &Shared) {
     lock(&shared.state).finished = true;
     if let Some(mut sinks) = sinks {
         // No locks are held here: the sink is free to drop the `Session`.
-        (sinks.on_event)(PtyEvent::Exit { code });
+        (sinks.on_event)(PtyEvent::Exit { code, runtime_ms });
     }
 }
 

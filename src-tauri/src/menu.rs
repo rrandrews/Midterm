@@ -5,7 +5,7 @@
 //! closes the focused pane (see `src/shortcuts.ts`). The Edit menu matters on
 //! macOS: without it ⌘C / ⌘V / ⌘A do not reach the webview.
 
-use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu};
+use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID};
 use tauri::{AppHandle, Runtime};
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -32,8 +32,12 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    let window = Submenu::with_items(
+    // The well-known id is what makes Tauri register this submenu with AppKit
+    // as the Window menu, which then lists the app's windows (the way back to
+    // a minimized one).
+    let window = Submenu::with_id_and_items(
         app,
+        WINDOW_SUBMENU_ID,
         "Window",
         true,
         &[

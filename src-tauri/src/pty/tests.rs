@@ -110,7 +110,7 @@ impl Harness {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.next(left) {
                 Some(Msg::Data(_)) => {}
-                Some(Msg::Event(PtyEvent::Exit { code })) => return code,
+                Some(Msg::Event(PtyEvent::Exit { code, .. })) => return code,
                 None => panic!("timed out waiting for exit; output: {:?}", self.text()),
             }
         }
@@ -251,7 +251,7 @@ fn dropping_the_session_kills_the_child() {
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
-            Ok(Msg::Event(PtyEvent::Exit { code })) => break assert_eq!(code, None),
+            Ok(Msg::Event(PtyEvent::Exit { code, .. })) => break assert_eq!(code, None),
             Ok(Msg::Data(_)) => {}
             Err(e) => panic!("no exit event after drop: {e:?}"),
         }
@@ -337,7 +337,7 @@ fn slow_consumer_still_gets_everything_before_exit() {
     let code = loop {
         match h.next(QUIET) {
             Some(Msg::Data(_)) => {}
-            Some(Msg::Event(PtyEvent::Exit { code })) => break code,
+            Some(Msg::Event(PtyEvent::Exit { code, .. })) => break code,
             // Stalled: acknowledge what has arrived, as a slow UI would.
             None => {
                 h.session.ack(h.output.len() - acked);
@@ -434,9 +434,21 @@ fn waiting_for_termination_does_not_reap() {
 
 #[test]
 fn event_json_shape() {
-    let exit = |code| serde_json::to_string(&PtyEvent::Exit { code }).expect("serialize");
-    assert_eq!(exit(Some(0)), r#"{"event":"exit","data":{"code":0}}"#);
-    assert_eq!(exit(None), r#"{"event":"exit","data":{"code":null}}"#);
+    let exit = |code| {
+        let event = PtyEvent::Exit {
+            code,
+            runtime_ms: 12,
+        };
+        serde_json::to_string(&event).expect("serialize")
+    };
+    assert_eq!(
+        exit(Some(0)),
+        r#"{"event":"exit","data":{"code":0,"runtimeMs":12}}"#
+    );
+    assert_eq!(
+        exit(None),
+        r#"{"event":"exit","data":{"code":null,"runtimeMs":12}}"#
+    );
 }
 
 /// Drives sessions through a [`PtyManager`], acking like a frontend would.
@@ -471,7 +483,7 @@ impl ManagedSession {
         loop {
             match self.rx.recv_timeout(TIMEOUT) {
                 Ok(Msg::Data(bytes)) => manager.ack(self.id, bytes.len()),
-                Ok(Msg::Event(PtyEvent::Exit { code })) => return code,
+                Ok(Msg::Event(PtyEvent::Exit { code, .. })) => return code,
                 Err(e) => panic!("no exit event: {e:?}"),
             }
         }
