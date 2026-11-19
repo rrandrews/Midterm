@@ -80,11 +80,20 @@ input is a separate editor at the bottom.
 
 ## Later / unscheduled
 
+Terminals and shells:
+
 - [ ] Shell integration follow-ups: run the fish script and test on a machine with fish; bash 5.1+ and Linux paths are untested; Debian reads `/etc/bash.bashrc` twice (once itself, once via `/etc/profile`); an `/etc/zshenv` that sets `ZDOTDIR` skips integration; a `.zshrc` that assigns `precmd_functions=(…)` drops our hook
-- [ ] Busy check misses programs started with `exec` (same pid as the shell)
-- [ ] Explorer: multi-select, drag and drop (move files, drop a path into a terminal), remember scroll position across remounts
-- [ ] Explorer gaps: git status goes stale in linked worktrees (`.git` is a file, so nothing is watched); a watched symlinked directory keeps watching its old target if retargeted; Move to Trash acts on the path, so a file swapped in while the dialog is open is the one trashed
 - [ ] Shells inherit the launching terminal's environment in dev (e.g. another terminal's `ZDOTDIR`, which swaps in its history file and integration)
+- [ ] Busy check misses programs started with `exec` (same pid as the shell)
+
+Explorer:
+
+- [ ] Multi-select, drag and drop (move files, drop a path into a terminal), remember scroll position across remounts
+- [ ] Git status goes stale in linked worktrees (`.git` is a file, so nothing is watched)
+- [ ] A watched symlinked directory keeps watching its old target if retargeted
+- [ ] Move to Trash acts on the path, so a file swapped in while the dialog is open is the one trashed
+
+Layout:
 
 - [ ] Stack several panes in one frame as tabs (currently rejected; see [layout.md](layout.md))
 - [ ] Floating panes and pop-out windows (supported by the layout library)
