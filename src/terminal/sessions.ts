@@ -3,6 +3,7 @@ import { homeDirectory } from "../ipc/system";
 import { createPaneState } from "../plugins/paneState";
 import { refreshTabTitles } from "../plugins/tabTitles";
 import { useSettings } from "../settings/settings";
+import { subscribeThemeApplied } from "../theme/state";
 import { findPane } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
 import type { PaneNode } from "../state/types";
@@ -81,14 +82,17 @@ export function terminalTabTitle(pane: PaneNode): string | undefined {
   return terminalTitle(session?.foregroundProgram ?? null, cwd, homeDirectory()) || undefined;
 }
 
-// Settings apply to every live terminal at once.
-let lastConfig = terminalConfig();
-useSettings.subscribe(() => {
+// Settings and the theme apply to every live terminal at once.
+let lastConfig = JSON.stringify(terminalConfig());
+function applyConfig(): void {
   const config = terminalConfig();
-  if (JSON.stringify(config) === JSON.stringify(lastConfig)) return;
-  lastConfig = config;
+  const json = JSON.stringify(config);
+  if (json === lastConfig) return;
+  lastConfig = json;
   for (const [, session] of sessions.entries()) session.applySettings(config);
-});
+}
+useSettings.subscribe(applyConfig);
+subscribeThemeApplied(applyConfig);
 
 /** Number of live sessions (for tests and diagnostics). */
 export function sessionCount(): number {

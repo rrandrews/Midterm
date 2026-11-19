@@ -5,6 +5,8 @@ import { monoFontStack } from "../settings/schema";
 import { createPaneState } from "../plugins/paneState";
 import { selectAllPanes, useAppStore } from "../state/store";
 import { editorOptions, markdownMode } from "./settings";
+import { appliedTheme } from "../theme/apply";
+import { subscribeThemeApplied } from "../theme/state";
 import { ViewerModel } from "../viewer/model";
 import { EditorModel } from "./model";
 
@@ -136,5 +138,18 @@ useSettings.subscribe(() => {
   lastOptions = json;
   for (const [, { model }] of entries.entries()) {
     if (model instanceof EditorModel) model.setOptions(options);
+  }
+});
+
+// CodeMirror's light/dark flag follows the theme.
+let lastDark = appliedTheme().dark;
+EditorModel.setDark(lastDark);
+subscribeThemeApplied(() => {
+  const dark = appliedTheme().dark;
+  if (dark === lastDark) return;
+  lastDark = dark;
+  EditorModel.setDark(dark);
+  for (const [, { model }] of entries.entries()) {
+    if (model instanceof EditorModel) model.setDark(dark);
   }
 });

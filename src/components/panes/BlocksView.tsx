@@ -1,4 +1,5 @@
 import { ClipboardCopy, Copy, RotateCw } from "lucide-react";
+import { useThemeRevision } from "../../theme/state";
 import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { homeDirectory } from "../../ipc/system";
 import { type Line, type Run, formatDuration, logicalLines, renderRows } from "../../terminal/blockRender";
@@ -139,6 +140,8 @@ const FinishedBlock = memo(function FinishedBlock({
   runnable: boolean;
 }) {
   const [limit, setLimit] = useState(INITIAL_LINES);
+  // Output is drawn with the theme's colors.
+  const themeRevision = useThemeRevision();
   const { lines, hidden } = useMemo(() => {
     const buffer = session.blocks.buffer;
     const rows = outputRows(block, buffer);
@@ -150,7 +153,8 @@ const FinishedBlock = memo(function FinishedBlock({
     // Blank lines at the end (a trailing newline before the prompt) are not output.
     while (rendered.length && rendered[rendered.length - 1].every((run) => !run.text.trim() && !run.bg)) rendered.pop();
     return { lines: rendered, hidden: logical.length - shown.length };
-  }, [session, block, limit]);
+    // `themeRevision`: colors come from `session.theme`, which changes with the theme.
+  }, [session, block, limit, themeRevision]);
 
   const failed = block.exitCode !== undefined && block.exitCode !== 0;
   const duration = block.endedAt !== undefined ? formatDuration(block.endedAt - block.startedAt) : "";
@@ -192,6 +196,7 @@ const FinishedBlock = memo(function FinishedBlock({
 function RunningBlock({ session, block, branch }: { session: TerminalSession; block: Block; branch: string | null | undefined }) {
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   const elapsed = useElapsed(block.startedAt);
+  useThemeRevision();
 
   // Redraw at most once a frame while output arrives.
   useEffect(() => {

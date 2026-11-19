@@ -57,8 +57,9 @@ export const PaneHost = memo(function PaneHost({ pane }: { pane: PaneNode }) {
     useAppStore.getState().setActivePane(pane.id);
   };
   const spec = plugin?.pane;
+  // A plugin without its own background gets the theme's for its id (`--pane-<id>`), else the default.
   const style = {
-    ...(spec?.background && { "--pane-bg": spec.background }),
+    "--pane-bg": spec?.background ?? `var(--pane-${kind}, var(--pane-default))`,
     ...(spec?.activeBackground && { "--pane-bg-active": spec.activeBackground }),
   } as CSSProperties;
 

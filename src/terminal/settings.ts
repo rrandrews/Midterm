@@ -1,7 +1,9 @@
 import type { SettingField } from "../plugins/fields";
 import { pluginSettings, usePluginSettings } from "../plugins/settings";
 import type { PaneData } from "../state/types";
+import type { ITheme } from "@xterm/xterm";
 import { getSettings } from "../settings/settings";
+import { appliedTheme } from "../theme/apply";
 
 /*
  * The terminal plugin's settings and pane data. Settings are saved under
@@ -107,12 +109,36 @@ export function useTerminalSettings(): TerminalSettings {
   return usePluginSettings("terminal", TERMINAL_FIELDS) as TerminalSettings;
 }
 
-/** Everything a terminal session follows: the terminal's settings plus the global font and accent. */
-export type TerminalConfig = TerminalSettings & { fontFamily: string; fontSize: number; accent: string };
+/**
+ * Everything a terminal session follows: the terminal's settings, the
+ * global font, and the theme's terminal colors.
+ */
+export type TerminalConfig = TerminalSettings & {
+  fontFamily: string;
+  fontSize: number;
+  /** The theme's xterm colors (cursor and selection follow the accent). */
+  colors: ITheme;
+  /** Background for `terminalBackground: "solid"`. */
+  solidBackground: string;
+  /** Find highlights. */
+  match: string;
+  matchActive: string;
+  accent: string;
+};
 
 export function terminalConfig(): TerminalConfig {
-  const { fontFamily, fontSize, accent } = getSettings();
-  return { ...terminalSettings(), fontFamily, fontSize, accent };
+  const { fontFamily, fontSize } = getSettings();
+  const theme = appliedTheme();
+  return {
+    ...terminalSettings(),
+    fontFamily,
+    fontSize,
+    colors: theme.xterm,
+    solidBackground: theme.tokens["terminal-solid"],
+    match: theme.tokens["terminal-match"],
+    matchActive: theme.tokens["terminal-match-active"],
+    accent: theme.tokens.accent.slice(0, 7),
+  };
 }
 
 /** A terminal pane's data. */

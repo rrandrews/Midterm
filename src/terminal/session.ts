@@ -14,7 +14,6 @@ import { branchOf } from "./gitBranch";
 import { registerFileLinks } from "./fileLinkProvider";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
-import { getSettings } from "../settings/settings";
 import { type TerminalConfig, terminalConfig, terminalSettings } from "./settings";
 import { TERMINAL_OPTIONS, terminalOptions } from "./theme";
 
@@ -190,13 +189,13 @@ export class TerminalSession {
       this.search.clearDecorations();
       return false;
     }
-    const accent = getSettings().accent;
+    const { match, matchActive, accent } = terminalConfig();
     const options = {
       incremental,
       decorations: {
-        matchBackground: `${accent}40`,
+        matchBackground: match,
         matchOverviewRuler: accent,
-        activeMatchBackground: `${accent}99`,
+        activeMatchBackground: matchActive,
         activeMatchColorOverviewRuler: accent,
       },
     };

@@ -1,3 +1,4 @@
+import fuzzysort from "fuzzysort";
 import { Command } from "cmdk";
 import { FileText, Layers, PanelsTopLeft, Play, Search, SquareChevronRight } from "lucide-react";
 import { Dialog } from "radix-ui";
@@ -8,7 +9,7 @@ import { homeDirectory } from "../ipc/system";
 import { refocusPane } from "../layout/dock";
 import { useAppStore } from "../state/store";
 import { type PaletteItem, type PaletteSources, paletteItems } from "./items";
-import { closePalette, performPaletteAction, usePalette } from "./state";
+import { type PalettePicker, closePalette, performPaletteAction, usePalette } from "./state";
 import { filesUnder, projectRoot, recentFilePaths } from "./sources";
 
 /*
@@ -206,10 +207,58 @@ function PaletteBody() {
   );
 }
 
+/** A picker over a one-off list (`openPicker`): fuzzy filtered, with a live highlight callback. */
+function PickerBody({ picker }: { picker: PalettePicker }) {
+  const [query, setQuery] = useState("");
+  const items = useMemo(() => {
+    if (!query.trim()) return picker.items;
+    return fuzzysort.go(query.trim(), picker.items, { keys: ["title", "detail"] }).map((result) => result.obj);
+  }, [query, picker]);
+  const [selected, setSelected] = useState(picker.initial ?? picker.items[0]?.key ?? "");
+  useEffect(() => {
+    if (!items.some((item) => item.key === selected)) setSelected(items[0]?.key ?? "");
+  }, [items, selected]);
+  useEffect(() => {
+    if (selected) picker.onHighlight?.(selected);
+  }, [selected, picker]);
+  return (
+    <Command shouldFilter={false} loop label={picker.placeholder} value={selected} onValueChange={setSelected} className="flex max-h-[min(460px,calc(100vh-80px))] flex-col">
+      <div className="flex h-10 flex-none items-center gap-2 border-b border-line px-3 text-fg-dim">
+        <Search size={14} aria-hidden="true" />
+        <Command.Input
+          autoFocus
+          value={query}
+          onValueChange={setQuery}
+          placeholder={picker.placeholder}
+          className="h-full min-w-0 flex-1 bg-transparent text-input text-fg-bright outline-none placeholder:text-fg-faint"
+        />
+      </div>
+      <Command.List className="palette-list min-h-0 flex-1 overflow-y-auto p-[5px]">
+        <Command.Empty className="px-2.5 py-6 text-center text-menu text-fg-dim">No matches</Command.Empty>
+        {items.map((item) => (
+          <Command.Item
+            key={item.key}
+            value={item.key}
+            onSelect={() => {
+              closePalette({ chosen: true });
+              picker.onChoose(item.key);
+            }}
+            className="palette-item flex h-7 cursor-default items-center gap-2 rounded-[5px] px-2.5 text-menu text-fg-soft"
+          >
+            <span className="min-w-0 flex-shrink truncate">{item.title}</span>
+            <span className="min-w-0 flex-1 truncate text-meta text-fg-dim">{item.detail}</span>
+          </Command.Item>
+        ))}
+      </Command.List>
+    </Command>
+  );
+}
+
 /** Mounted once, in App. */
 export function Palette() {
   const open = usePalette((state) => state.open);
   const session = usePalette((state) => state.session);
+  const picker = usePalette((state) => state.picker);
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && closePalette()}>
       <Dialog.Portal>
@@ -224,7 +273,7 @@ export function Palette() {
           className="fixed top-[52px] left-1/2 z-50 w-[min(600px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-lg bg-popover shadow-menu outline-none"
         >
           <Dialog.Title className="sr-only">Command palette</Dialog.Title>
-          <PaletteBody key={session} />
+          {picker ? <PickerBody key={session} picker={picker} /> : <PaletteBody key={session} />}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

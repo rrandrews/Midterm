@@ -10,7 +10,7 @@ describe("validateSettings", () => {
 
   it("keeps valid fields and repairs the rest", () => {
     const settings = validateSettings({
-      version: 2,
+      version: 3,
       fontSize: 99,
       accent: "#5EEAD4",
       keybindings: { "pane.close": ["Cmd+W", 4], bad: "Cmd+X" },
@@ -30,8 +30,8 @@ describe("validateSettings", () => {
   });
 
   it("rejects colors that are not #rrggbb", () => {
-    expect(validateSettings({ accent: "red" }).accent).toBe(DEFAULT_SETTINGS.accent);
-    expect(validateSettings({ accent: "#fff" }).accent).toBe(DEFAULT_SETTINGS.accent);
+    expect(validateSettings({ accent: "red" }).accent).toBe("");
+    expect(validateSettings({ accent: "#fff" }).accent).toBe("");
   });
 });
 
@@ -58,8 +58,13 @@ describe("migrateSettings", () => {
     expect(settings.plugins.terminal.settings?.terminalMode).toBe("blocks");
   });
 
+  it("makes the old default accent the theme's own, and keeps a custom one (version 2)", () => {
+    expect(validateSettings({ version: 2, accent: "#8B9CFF" }).accent).toBe("");
+    expect(validateSettings({ version: 2, accent: "#F472B6" }).accent).toBe("#F472B6");
+  });
+
   it("leaves current settings alone", () => {
-    const current = { version: 2, plugins: { terminal: { settings: { bell: "off" } } } };
+    const current = { version: 3, accent: "#8B9CFF", plugins: { terminal: { settings: { bell: "off" } } } };
     expect(migrateSettings(current)).toEqual(current);
   });
 });

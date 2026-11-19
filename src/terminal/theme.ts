@@ -2,7 +2,11 @@ import type { ITerminalOptions, ITheme } from "@xterm/xterm";
 import { monoFontStack } from "../settings/schema";
 import type { TerminalConfig } from "./settings";
 
-/* xterm appearance. Colors mirror the tokens in src/styles/index.css. */
+/*
+ * xterm appearance. Colors come from the theme (`terminalConfig().colors`,
+ * resolved in src/theme/); `TERMINAL_THEME` is Midterm Dark's, used until
+ * the first configuration is applied.
+ */
 
 export const TERMINAL_THEME: ITheme = {
   // Transparent, so the pane's gradient shows through.
@@ -50,24 +54,11 @@ export const TERMINAL_OPTIONS: ITerminalOptions = {
   allowProposedApi: true,
 };
 
-/**
- * Background for `terminalBackground: "solid"`: the darker end of the
- * terminal pane gradient (`--pane-terminal` in src/styles/index.css).
- */
-export const SOLID_BACKGROUND = "#0e0f12";
-
-/** `#rrggbb` with an alpha byte appended. */
-const withAlpha = (hex: string, alpha: string) => `${hex.slice(0, 7)}${alpha}`;
-
-/** The colors for the given settings: the accent drives the cursor and selection. */
-export function terminalTheme(settings: Pick<TerminalConfig, "accent" | "terminalBackground">): ITheme {
-  const accent = settings.accent.toLowerCase();
+/** The colors for the given config: the theme's, with a solid background if asked for. */
+export function terminalTheme(config: Pick<TerminalConfig, "colors" | "terminalBackground" | "solidBackground">): ITheme {
   return {
-    ...TERMINAL_THEME,
-    background: settings.terminalBackground === "solid" ? SOLID_BACKGROUND : TERMINAL_THEME.background,
-    cursor: accent,
-    selectionBackground: withAlpha(accent, "40"),
-    selectionInactiveBackground: withAlpha(accent, "26"),
+    ...config.colors,
+    background: config.terminalBackground === "solid" ? config.solidBackground : config.colors.background,
   };
 }
 

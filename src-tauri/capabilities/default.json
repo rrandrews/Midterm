@@ -9,12 +9,15 @@
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-destroy",
+    "core:window:allow-set-theme",
+    "core:window:allow-set-background-color",
     "opener:default",
     "opener:allow-reveal-item-in-dir",
     "store:default",
     "window-state:default",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }

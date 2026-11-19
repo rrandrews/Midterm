@@ -7,7 +7,7 @@
 export const ACCENT_PRESETS = ["#8B9CFF", "#5EEAD4", "#F5A524", "#F472B6"] as const;
 
 /** Bump when the saved shape changes, and migrate in `migrateSettings`. */
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 
 /**
  * A plugin's entry in the settings: whether it is enabled, its own settings
@@ -28,8 +28,14 @@ export type Settings = {
   fontFamily: string;
   /** Terminal and editor font size, px. */
   fontSize: number;
-  /** Accent color, `#rrggbb`. */
+  /** Overrides the theme's accent color (`#rrggbb`); empty for the theme's own. */
   accent: string;
+  /** Id of the theme (bundled or custom). */
+  theme: string;
+  /** Follow the system's light or dark appearance, with `themeLight` / `themeDark`. */
+  themeFollowSystem: boolean;
+  themeLight: string;
+  themeDark: string;
   /**
    * Keyboard shortcut overrides by command id. Each value replaces that
    * command's default bindings; an empty list unbinds it.
@@ -45,7 +51,11 @@ export const DEFAULT_SETTINGS: Settings = {
   version: SETTINGS_VERSION,
   fontFamily: "",
   fontSize: 12.5,
-  accent: ACCENT_PRESETS[0],
+  accent: "",
+  theme: "midterm-dark",
+  themeFollowSystem: false,
+  themeLight: "midterm-light",
+  themeDark: "midterm-dark",
   keybindings: {},
   defaultPaneKind: "terminal",
   plugins: {},
@@ -64,6 +74,8 @@ function clampNumber(value: unknown, range: { min: number; max: number }, fallba
 export function isHexColor(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
 }
+
+const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 
 function stringList(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
@@ -101,6 +113,11 @@ export function migrateSettings(raw: unknown): Record<string, unknown> {
     }
     if (Object.keys(settings).length) plugins.terminal = { ...terminal, settings };
     data.plugins = plugins;
+  }
+  if (version < 3) {
+    // The accent became an override of the theme's: the old default is the
+    // default theme's own accent, so only a custom choice is kept.
+    if (typeof data.accent === "string" && data.accent.toLowerCase() === "#8b9cff") data.accent = "";
   }
   data.version = SETTINGS_VERSION;
   return data;
@@ -147,6 +164,10 @@ export function validateSettings(raw: unknown): Settings {
     fontFamily: typeof data.fontFamily === "string" ? data.fontFamily.trim() : d.fontFamily,
     fontSize: clampNumber(data.fontSize, FONT_SIZE_RANGE, d.fontSize),
     accent: isHexColor(data.accent) ? data.accent : d.accent,
+    theme: nonEmpty(data.theme) ? data.theme : d.theme,
+    themeFollowSystem: typeof data.themeFollowSystem === "boolean" ? data.themeFollowSystem : d.themeFollowSystem,
+    themeLight: nonEmpty(data.themeLight) ? data.themeLight : d.themeLight,
+    themeDark: nonEmpty(data.themeDark) ? data.themeDark : d.themeDark,
     keybindings,
     defaultPaneKind:
       typeof data.defaultPaneKind === "string" && data.defaultPaneKind ? data.defaultPaneKind : d.defaultPaneKind,

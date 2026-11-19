@@ -88,8 +88,10 @@ const BASE_EXTENSIONS: Extension = [
   // Cmd+F, Cmd+G, Cmd+S and Ctrl+G are app commands (src/commands/core.ts),
   // which reach the editor through its pane actions.
   keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
-  EditorView.theme({}, { dark: true }),
 ];
+
+/** Whether the theme is dark (CodeMirror picks some defaults by it); set by the registry. */
+let darkTheme = true;
 
 export type EditorOptions = { wordWrap: boolean; tabSize: number; lineNumbers: boolean };
 
@@ -104,6 +106,7 @@ export class EditorModel {
   private readonly language = new Compartment();
   private readonly indent = new Compartment();
   private readonly options = new Compartment();
+  private readonly darkness = new Compartment();
   private optionValues: EditorOptions = { wordWrap: false, tabSize: 4, lineNumbers: true };
   private languageSupport: Extension = [];
   private languageName: string | null = null;
@@ -237,6 +240,15 @@ export class EditorModel {
     this.view.requestMeasure();
   }
 
+  /** Follows the theme's light/dark kind. */
+  static setDark(dark: boolean): void {
+    darkTheme = dark;
+  }
+
+  setDark(dark: boolean): void {
+    this.view.dispatch({ effects: this.darkness.reconfigure(EditorView.theme({}, { dark })) });
+  }
+
   /** Options from the editor's settings (word wrap, tab size, line numbers). */
   setOptions(options: EditorOptions): void {
     this.optionValues = options;
@@ -368,6 +380,7 @@ export class EditorModel {
         this.language.of(this.languageSupport),
         this.indent.of(indent ? indentUnit.of(indent) : []),
         this.options.of(optionExtensions(this.optionValues)),
+        this.darkness.of(EditorView.theme({}, { dark: darkTheme })),
         this.readOnly ? EditorState.readOnly.of(true) : [],
         EditorView.updateListener.of((update) => {
           if (update.docChanged) this.updateDirty();

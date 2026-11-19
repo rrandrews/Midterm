@@ -24,10 +24,12 @@ async function start(): Promise<void> {
   const persist = !import.meta.env.DEV || !(params.has("mockup") || params.has("selftest"));
   // Plugins first: restoring validates each pane's data with its plugin.
   (await import("./plugins")).installPlugins();
+  (await import("./theme/commands")).installThemeCommands();
   const { restoreSavedState, startSaving } = await import("./state/persistence");
   const { loadHomeDirectory, loadLocalHostname } = await import("./ipc/system");
   const { loadSettings } = await import("./settings/settings");
   const { loadRecent } = await import("./palette/sources");
+  const { loadCustomThemes } = await import("./theme/state");
   // All before any pane exists: restored terminals start in their saved
   // directories, directory reports are checked against the host name, and
   // explorers start in (and abbreviate) the home directory.
@@ -35,6 +37,7 @@ async function start(): Promise<void> {
     persist ? restoreSavedState() : undefined,
     loadSettings({ persist }),
     loadRecent({ persist }),
+    loadCustomThemes({ persist }),
     loadLocalHostname(),
     loadHomeDirectory(),
   ]);
@@ -71,6 +74,8 @@ async function start(): Promise<void> {
   }
   if (persist) startSaving();
   (await import("./settings/apply")).installSettingsStyles();
+  // Before the first render, so nothing shows in the wrong colors.
+  (await import("./theme/apply")).installThemes();
   await fontsReady();
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>

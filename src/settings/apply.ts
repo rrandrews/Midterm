@@ -2,20 +2,17 @@ import { monoFontStack } from "./schema";
 import { getSettings, useSettings } from "./settings";
 
 /*
- * Applies settings that are plain CSS, as custom properties on <html>: the
- * accent color (and the text color derived from it) overriding the design
- * tokens, and `--terminal-font` / `--terminal-font-size` for monospaced
- * content drawn outside xterm (blocks, the editor).
+ * Applies settings that are plain CSS, as custom properties on <html>:
+ * `--terminal-font` / `--terminal-font-size` for monospaced content drawn
+ * outside xterm (blocks, the editor). Colors, the accent included, come
+ * from the theme (src/theme/apply.ts).
  */
 
 function apply(): void {
-  const { accent, fontFamily, fontSize } = getSettings();
+  const { fontFamily, fontSize } = getSettings();
   const style = document.documentElement.style;
   style.setProperty("--terminal-font", monoFontStack(fontFamily));
   style.setProperty("--terminal-font-size", `${fontSize}px`);
-  style.setProperty("--color-accent", accent);
-  // A pale tint of the accent for text on `accent-soft` (#DDE2FF for the default).
-  style.setProperty("--color-accent-fg", `color-mix(in srgb, ${accent} 30%, white)`);
 }
 
 let installed = false;
@@ -26,8 +23,8 @@ export function installSettingsStyles(): void {
   installed = true;
   apply();
   const key = () => {
-    const { accent, fontFamily, fontSize } = getSettings();
-    return `${accent}|${fontFamily}|${fontSize}`;
+    const { fontFamily, fontSize } = getSettings();
+    return `${fontFamily}|${fontSize}`;
   };
   let last = key();
   useSettings.subscribe(() => {
