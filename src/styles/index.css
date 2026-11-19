@@ -101,3 +101,18 @@
     outline-offset: -1px;
   }
 }
+
+/* Tab strip: scrolls sideways when the tabs do not fit, without a scrollbar. */
+.tab-scroller {
+  scrollbar-width: none;
+}
+.tab-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+/* A tab (or the new-tab button) under a pane being dragged onto it. */
+[data-pane-drop][data-pane-drop-hover] {
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+  color: var(--color-fg-bright);
+}

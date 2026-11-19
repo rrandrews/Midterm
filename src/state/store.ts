@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { createId, findPane, listPanes, removePane, singlePaneLayout } from "./layout";
+import { appendPane, createId, findPane, listPanes, removePane, singlePaneLayout } from "./layout";
 import { normalizeWorkspaceModel } from "react-resizable-panels";
 import type { Layout, PaneData, PaneNode, Tab, Workspace } from "./types";
 
@@ -37,6 +37,13 @@ export type AppActions = {
   removePane: (paneId: string) => void;
   /** Moves a pane into a new tab of the same workspace and activates it. */
   movePaneToNewTab: (paneId: string) => void;
+  /**
+   * Moves a pane into another tab, to the right of everything there, and
+   * activates that tab. Moving a tab's last pane out closes the tab.
+   */
+  movePaneToTab: (paneId: string, tabId: string) => void;
+  /** Moves a tab to `index` among its workspace's tabs. */
+  moveTab: (tabId: string, index: number) => void;
   /**
    * Merges `patch` into a pane's data in the stored layout (remounting its
    * layout if mounted; prefer the layout handle for a mounted tab).
@@ -275,6 +282,45 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
         }),
       };
     });
+  },
+
+  movePaneToTab: (paneId, tabId) => {
+    set((state) => {
+      const source = findTabOfPane(state, paneId);
+      const pane = source && findPane(source.layout, paneId);
+      const target = findTab(state, tabId);
+      if (!source || !pane || !target || source.id === target.id) return state;
+      const remaining = removePane(source.layout, paneId);
+      let next = updateTab(state, target.id, (current) => ({
+        ...withLayout(current, appendPane(current.layout, pane), { remount: true }),
+        activePaneId: pane.id,
+      }));
+      next = remaining
+        ? updateTab(next, source.id, (current) => withLayout(current, remaining, { remount: true }))
+        : withoutTab(next, source.id);
+      return {
+        ...next,
+        workspaces: next.workspaces.map((workspace) =>
+          workspace.tabs.some((tab) => tab.id === target.id)
+            ? { ...workspace, activeTabId: target.id }
+            : workspace,
+        ),
+      };
+    });
+  },
+
+  moveTab: (tabId, index) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((workspace) => {
+        const from = workspace.tabs.findIndex((tab) => tab.id === tabId);
+        const to = Math.max(0, Math.min(index, workspace.tabs.length - 1));
+        if (from === -1 || from === to) return workspace;
+        const tabs = workspace.tabs.slice();
+        const [tab] = tabs.splice(from, 1);
+        tabs.splice(to, 0, tab);
+        return { ...workspace, tabs };
+      }),
+    }));
   },
 
   updatePaneData: (paneId, patch) => {

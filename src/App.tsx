@@ -1,8 +1,9 @@
 import { useEffect } from "react";
-import { focusActivePane } from "./actions";
+import { dropPaneOnTab, focusActivePane } from "./actions";
 import { PaneLayout } from "./components/layout/PaneLayout";
 import { TitleBar } from "./components/titlebar/TitleBar";
 import { installFocusKeeper } from "./layout/dock";
+import { installPaneDropTargets } from "./layout/paneDrag";
 import { installShortcuts } from "./shortcuts";
 import { selectActiveTab, useAppStore } from "./state/store";
 
@@ -12,8 +13,10 @@ export default function App() {
   useEffect(() => {
     const uninstallShortcuts = installShortcuts();
     const uninstallFocusKeeper = installFocusKeeper();
+    const uninstallDropTargets = installPaneDropTargets(dropPaneOnTab);
     focusActivePane();
     return () => {
+      uninstallDropTargets();
       uninstallShortcuts();
       uninstallFocusKeeper();
     };

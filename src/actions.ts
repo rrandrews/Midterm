@@ -141,6 +141,18 @@ export function movePaneToNewTab(paneId: string): void {
   focusPane(paneId);
 }
 
+/** Moves a pane into another tab (to the right of its panes) and shows that tab. */
+export function movePaneToTab(paneId: string, tabId: string): void {
+  store().movePaneToTab(paneId, tabId);
+  focusPane(paneId);
+}
+
+/** A pane dropped on a tab (`target` is its id) or on the new-tab button (`"new"`). */
+export function dropPaneOnTab(paneId: string, target: string): void {
+  if (target === "new") movePaneToNewTab(paneId);
+  else movePaneToTab(paneId, target);
+}
+
 export type Direction = "left" | "right" | "up" | "down";
 
 /** Moves focus to the nearest pane in a direction, by on-screen geometry. */

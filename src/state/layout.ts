@@ -76,3 +76,17 @@ export function removePane(layout: Layout, paneId: string): Layout | null {
   if (!next || countPanes(next) === 0) return null;
   return next;
 }
+
+/** The layout with `pane` added to the right of everything in it. */
+export function appendPane(layout: Layout, pane: PaneNode): Layout {
+  const root = layout.root;
+  // Extend a horizontal root split rather than nesting another one in it.
+  if (root.type === "split" && root.orientation === "horizontal") {
+    return createLayout({ ...root, children: [...root.children, paneNode(pane)] });
+  }
+  return createLayout({
+    type: "split",
+    orientation: "horizontal",
+    children: [{ ...root, size: undefined }, paneNode(pane)],
+  });
+}

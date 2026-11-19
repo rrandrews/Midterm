@@ -3,6 +3,7 @@ import { countPanes, createLayout, createPane, listPanes, paneNode } from "./lay
 import {
   createTab,
   createWorkspace,
+  findTab,
   findTabOfPane,
   selectActiveTab,
   selectActiveWorkspace,
@@ -251,5 +252,44 @@ describe("pane data", () => {
       kind: "terminal",
       cwd: "/tmp",
     });
+  });
+});
+
+describe("moving tabs and panes between tabs", () => {
+  it("reorders tabs", () => {
+    const first = selectActiveTab(store()).id;
+    const second = store().addTab();
+    const third = store().addTab();
+    store().moveTab(third, 0);
+    expect(selectActiveWorkspace(store()).tabs.map((t) => t.id)).toEqual([third, first, second]);
+    store().moveTab(third, 99);
+    expect(selectActiveWorkspace(store()).tabs.map((t) => t.id)).toEqual([first, second, third]);
+  });
+
+  it("moves a pane into another tab and activates it", () => {
+    const { tab, a, b } = twoPaneTab();
+    const other = createTab();
+    const workspace = createWorkspace("w", [tab, other]);
+    useAppStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    store().movePaneToTab(a.id, other.id);
+    expect(findTabOfPane(store(), a.id)?.id).toBe(other.id);
+    expect(listPanes(findTab(store(), tab.id)!.layout).map((p) => p.id)).toEqual([b.id]);
+    expect(selectActiveTab(store()).id).toBe(other.id);
+    expect(selectActiveTab(store()).activePaneId).toBe(a.id);
+    expect(countPanes(selectActiveTab(store()).layout)).toBe(2);
+    // Appending to a horizontal root extends it instead of nesting.
+    store().movePaneToTab(b.id, other.id);
+    const root = selectActiveTab(store()).layout.root;
+    expect(root.type === "split" && root.children.length).toBe(3);
+  });
+
+  it("closes a tab whose last pane moved away", () => {
+    const from = createTab();
+    const to = createTab();
+    const workspace = createWorkspace("w", [from, to]);
+    useAppStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    const pane = listPanes(from.layout)[0];
+    store().movePaneToTab(pane.id, to.id);
+    expect(selectActiveWorkspace(store()).tabs.map((t) => t.id)).toEqual([to.id]);
   });
 });

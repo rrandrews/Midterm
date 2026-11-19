@@ -98,3 +98,20 @@ Run `bun run dev` and open `localhost:1420/?mockup`:
 4. Drag a separator; panes resize and terminals refit.
 5. Pane menu → Move to new tab, then switch back: both tabs are intact.
 6. Type in a terminal, drag it elsewhere: the text is still there.
+
+## Moving panes between tabs
+
+The library cancels a pane drag released outside the layout, so dropping a
+pane on a tab is handled by `src/layout/paneDrag.ts`: the drag preview
+(rendered only during a pane drag) records the dragged pane, and a
+window-level pointer listener checks what is under the pointer on release.
+Elements with `data-pane-drop="<tab id>"` (each tab) or `data-pane-drop="new"`
+(the `+` button) accept the drop; the hovered one gets
+`data-pane-drop-hover`. The move itself is the store's `movePaneToTab` (the
+pane is appended to the right of the target tab's layout) or
+`movePaneToNewTab`.
+
+Tabs themselves are reordered by dragging (dnd-kit sortable, in
+`TabStrip.tsx`; a 5px move threshold keeps clicks and double-clicks
+working). When they do not fit, the strip scrolls sideways (wheel or
+trackpad) and keeps the active tab in view.

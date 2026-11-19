@@ -7,6 +7,7 @@ import {
   type WorkspaceClassNames,
 } from "react-resizable-panels";
 import { type DockHandle, registerDock, restoreFocusAfterLayoutChange } from "../../layout/dock";
+import { notePaneDrag } from "../../layout/paneDrag";
 import { PANE_LABELS, countPanes } from "../../state/layout";
 import { findTab, useAppStore } from "../../state/store";
 import type { Layout, PaneData, PaneNode, Tab } from "../../state/types";
@@ -44,6 +45,8 @@ const renderSeparator = () => <Separator className="pane-separator" />;
 
 const renderDragPreview = (frame: Frame) => {
   const pane = paneOf(frame);
+  // Rendered only while a pane is dragged: lets tabs accept the drop.
+  if (pane) notePaneDrag(pane.id);
   return pane ? PANE_LABELS[pane.data.kind] : "Pane";
 };
 
