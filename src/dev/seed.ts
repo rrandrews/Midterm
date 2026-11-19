@@ -19,7 +19,7 @@ export function seedMockupLayout(): void {
         type: "split",
         orientation: "vertical",
         children: [
-          paneNode(createPane("editor"), 47),
+          paneNode(createPane("editor", { path: `${MOCK_PROJECT}/src/components/SplitNode.tsx` }), 47),
           {
             type: "split",
             orientation: "horizontal",
@@ -31,7 +31,7 @@ export function seedMockupLayout(): void {
         type: "split",
         orientation: "vertical",
         size: 30,
-        children: [paneNode(createPane("viewer"), 44), paneNode(terminal())],
+        children: [paneNode(createPane("viewer", { path: `${MOCK_PROJECT}/README.md` }), 44), paneNode(terminal())],
       },
     ],
   });

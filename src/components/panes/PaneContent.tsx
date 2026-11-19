@@ -8,7 +8,8 @@ import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuSeparator } fr
 import { peekExplorer } from "../../explorer/explorers";
 import { ExplorerMenuItems } from "./ExplorerMenus";
 import { ExplorerPane } from "./ExplorerPane";
-import { PlaceholderPane } from "./PlaceholderPane";
+import { FileMenuItems } from "./FileMenuItems";
+import { FilePane } from "./FilePane";
 import { TerminalMenuItems } from "./TerminalMenuItems";
 import { TerminalPane } from "./TerminalPane";
 
@@ -49,12 +50,12 @@ export const PaneContent = memo(function PaneContent({ pane }: { pane: PaneNode 
           ) : kind === "explorer" ? (
             <ExplorerPane paneId={pane.id} />
           ) : (
-            <PlaceholderPane paneId={pane.id} kind={kind} path={pane.data.path} />
+            <FilePane paneId={pane.id} kind={kind} path={pane.data.path} />
           )}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent aria-label="Pane">
-        <KindMenuItems paneId={pane.id} kind={kind} />
+        <KindMenuItems paneId={pane.id} kind={kind} path={pane.data.path} />
         <PaneMenuItems paneId={pane.id} />
       </ContextMenuContent>
     </ContextMenu>
@@ -62,13 +63,15 @@ export const PaneContent = memo(function PaneContent({ pane }: { pane: PaneNode 
 });
 
 /** The part of a pane's right-click menu that depends on its kind, with a separator after it. */
-function KindMenuItems({ paneId, kind }: { paneId: string; kind: PaneNode["data"]["kind"] }) {
+function KindMenuItems({ paneId, kind, path }: { paneId: string; kind: PaneNode["data"]["kind"]; path?: string }) {
   const explorer = kind === "explorer" ? peekExplorer(paneId) : undefined;
   const items =
     kind === "terminal" ? (
       <TerminalMenuItems paneId={paneId} />
     ) : explorer ? (
       <ExplorerMenuItems model={explorer} />
+    ) : path ? (
+      <FileMenuItems paneId={paneId} path={path} />
     ) : null;
   if (!items) return null;
   return (
