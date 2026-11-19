@@ -28,9 +28,10 @@ async function start(): Promise<void> {
       import("./terminal/sessions"),
     ]);
     Object.assign(window, { __midterm: { actions, dock, store, sessions } });
-    if (new URLSearchParams(location.search).has("mockup")) {
-      (await import("./dev/seed")).seedMockupLayout();
-    }
+    const params = new URLSearchParams(location.search);
+    if (params.has("mockup")) (await import("./dev/seed")).seedMockupLayout();
+    const selfTestPort = params.get("selftest");
+    if (selfTestPort) void import("./dev/selftest").then((m) => m.runSelfTest(selfTestPort));
   }
   await fontsReady();
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
