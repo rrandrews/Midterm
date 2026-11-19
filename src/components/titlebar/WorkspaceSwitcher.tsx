@@ -71,7 +71,7 @@ export function WorkspaceSwitcher() {
       <Menu>
         <ContextMenuTrigger asChild>
           <MenuTrigger
-            className={`${FRAME} text-fg outline-none data-[state=open]:bg-white/[0.04]`}
+            className={`${FRAME} text-fg outline-none data-[state=open]:bg-hover/68`}
             aria-label={`Switch workspace: ${active.name}`}
           >
             <Badge name={active.name} />

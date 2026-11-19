@@ -79,7 +79,7 @@ function NoticeButton({ onClick, children }: { onClick: () => void; children: Re
   return (
     <button
       type="button"
-      className="h-5 flex-none rounded-[4px] px-2 text-fg-soft hover:bg-white/[0.08]"
+      className="h-5 flex-none rounded-[4px] px-2 text-fg-soft hover:bg-fg-bright/8"
       onClick={onClick}
     >
       {children}

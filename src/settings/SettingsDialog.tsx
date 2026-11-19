@@ -225,7 +225,7 @@ registerSettingsSection({ id: "plugins", label: "Plugins", order: 800, component
 registerSettingsSection({ id: "keyboard", label: "Keyboard", order: 900, component: Keyboard });
 
 const NAV_ITEM =
-  "flex h-7 flex-none items-center rounded-[5px] px-2.5 text-left text-menu text-fg-muted outline-none hover:text-fg-soft aria-[current=page]:bg-white/[0.06] aria-[current=page]:text-fg-bright";
+  "flex h-7 flex-none items-center rounded-[5px] px-2.5 text-left text-menu text-fg-muted outline-none hover:text-fg-soft aria-[current=page]:bg-selected aria-[current=page]:text-fg-bright";
 
 /** Mounted once, in App. */
 export function SettingsDialog() {
@@ -240,7 +240,7 @@ export function SettingsDialog() {
   return (
     <Dialog.Root open={open} onOpenChange={(next) => useSettingsDialog.setState({ open: next })}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/35" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim" />
         <Dialog.Content
           data-owns-keyboard
           aria-describedby={undefined}

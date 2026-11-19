@@ -55,7 +55,7 @@ export function ConfirmHost() {
   return (
     <AlertDialog.Root open={request !== null} onOpenChange={(open) => !open && settle(false)}>
       <AlertDialog.Portal>
-        <AlertDialog.Overlay className="fixed inset-0 z-50 bg-black/40" />
+        <AlertDialog.Overlay className="fixed inset-0 z-50 bg-scrim" />
         <AlertDialog.Content
           className="fixed top-[22%] left-1/2 z-50 w-[360px] -translate-x-1/2 rounded-lg bg-popover p-4 shadow-menu outline-none"
           onCloseAutoFocus={(event) => {
@@ -71,7 +71,7 @@ export function ConfirmHost() {
           </AlertDialog.Description>
           <div className="mt-4 flex justify-end gap-2">
             <AlertDialog.Cancel
-              className="h-7 rounded-[5px] px-3 text-menu text-fg-soft outline-none hover:bg-white/[0.06] focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
+              className="h-7 rounded-[5px] px-3 text-menu text-fg-soft outline-none hover:bg-hover focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
               onClick={() => settle(false)}
             >
               Cancel
