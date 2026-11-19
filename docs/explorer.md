@@ -132,7 +132,8 @@ Status never writes the index (no `update_index`): a write would wake the
 | `src/ipc/fsMock.ts` | In-memory tree used outside Tauri (`bun run dev`), with dotfiles, an ignored directory and git statuses. |
 | `src/explorer/tree.ts` | Pure helpers: paths, `flattenTree` (the visible rows), `gitBadges` (roll-up), `findByPrefix` (type-ahead). Unit-tested. |
 | `src/explorer/model.ts` | `ExplorerModel`: one pane's root, expanded directories, listings, selection, inline edit, git status and watcher. |
-| `src/explorer/explorers.ts` | Registry keyed by pane id, and root following. |
+| `src/explorer/explorers.ts` | Models keyed by pane id (a shared pane state), and root following: unpinned explorers follow the `directory` of the last focused pane whose plugin sets `explorerFollows` (terminals). |
+| `src/plugins/builtin/explorer.tsx` | The explorer plugin: data validation, menu, settings (follow the terminal, hidden files by default). |
 | `ExplorerPane.tsx` | Header, virtualized tree (`@tanstack/react-virtual`), keyboard, inline rename/create. |
 | `ExplorerMenus.tsx` | Right-click items for entries and for the explorer as a whole; trash confirmation. |
 

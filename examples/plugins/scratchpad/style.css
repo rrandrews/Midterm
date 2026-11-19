@@ -1,0 +1,16 @@
+/* Theme tokens are CSS variables (see docs/themes.md and docs/design-tokens.md). */
+.scratchpad {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 14px 18px;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--color-fg-soft);
+  font: var(--terminal-font-size, 12.5px) / 1.6 var(--terminal-font, monospace);
+}
+.scratchpad::placeholder {
+  color: var(--color-fg-faint);
+}

@@ -23,10 +23,12 @@ The shell is spawned on the first `attach`, once the terminal has a size.
 
 ### Lifetime: reconciliation, not manual cleanup
 
-`sessions.ts` keeps sessions in a map keyed by pane id. Nothing disposes a
+`sessions.ts` keeps sessions in a shared pane state keyed by pane id
+(`createPaneState` in `src/plugins/paneState.ts`). Nothing disposes a
 session directly. Instead, whenever the store changes (and whenever a
-terminal is detached) the registry disposes every session that is **both**
-off screen **and** has no `terminal` pane with its id anywhere in the store.
+terminal is released) every session that is **both** held by no mounted
+component **and** has no `terminal` pane with its id anywhere in the store
+is disposed.
 
 That one rule covers closing a pane, a tab or a workspace, and changing a
 pane's kind. When adding features that move panes around, keep the pane in
@@ -55,7 +57,8 @@ before the PTY handle is known are acknowledged as soon as it is.
 - Options and colors are in `theme.ts`. `terminalOptions(settings)` gives
   the ones that follow the settings (font family and size, cursor style and
   blink, scrollback, the accent as cursor and selection color, the
-  background); `sessions.ts` applies changes to every live terminal
+  background), read from `terminalConfig()` (the terminal plugin's settings
+  plus the global font and accent); `sessions.ts` applies changes to every live terminal
   (`TerminalSession.applySettings`), refitting after font changes and
   recreating the WebGL renderer when transparency changes.
 - Background: transparent by default, so the pane gradient shows through
@@ -83,7 +86,7 @@ before the PTY handle is known are acknowledged as soon as it is.
   (`.pane.is-ringing`; bells during a flash are ignored, so a burst costs
   one class change), a soft generated tone (Web Audio, at most one per
   100 ms), or nothing.
-- `copyOnSelect`: the selection is copied when a mouse button is released
+- Copy on select: the selection is copied when a mouse button is released
   over the terminal. Selections made by search are not copied.
 
 ### Shell from the settings
@@ -356,7 +359,14 @@ terminal surviving a re-dock, focus after layout changes, and shell
 integration (OSC 7), automatic tab titles, the close confirmation, and
 M4–M7 features: blocks from the shell's OSC 133 marks (command, output,
 exit status), settings reaching a live terminal, the generated menu bar,
-editor file writes with the stale-save check, and fuzzy file listing.
+editor file writes with the stale-save check, and fuzzy file listing; and
+plugins (M8): the example plugin imported and loaded through `plugin://`,
+its pane opened from a generated command, its stylesheet, skills (code,
+`SKILL.md`, built in, a refused write, invalid input), the placeholder when
+disabled, and removal.
+
+Known failure when the window is not frontmost: "closing a pane ends its
+session" reports focus on `<body>` (also on M7).
 
 ```sh
 # 1. a listener that accepts one POST on PORT and saves the body
@@ -370,8 +380,9 @@ It runs harmless commands in your login shell. Dev builds only.
 
 A terminal pane can show its output as **blocks**, one per command, with an
 input editor at the bottom, instead of the classic terminal. The pane's
-`PaneData.terminalMode` (`"blocks"` / `"classic"`, saved with the layout)
-picks it, falling back to the `terminalMode` setting. It is toggled from
+pane's `terminalMode` (`"blocks"` / `"classic"`, saved with the layout;
+`TerminalData` in `src/terminal/settings.ts`) picks it, falling back to the
+terminal plugin's `terminalMode` setting. It is toggled from
 the terminal's right-click menu or the `terminal.toggleBlocks` command
 (`src/terminal/blockMode.ts`).
 

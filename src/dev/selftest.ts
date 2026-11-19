@@ -12,6 +12,11 @@ import { menuSpecs } from "../commands/nativeMenu";
 import { findFiles, readTextFile, writeTextFile } from "../ipc/fs";
 import { getSettings, useSettings } from "../settings/settings";
 import { blockOutput, canRun } from "../terminal/blockMode";
+import { importPlugin, removePlugin } from "../ipc/plugins";
+import { refreshInstalled } from "../plugins/loader";
+import { getPlugin, loadErrorOf } from "../plugins/registry";
+import { getSkill, invokeSkillTool } from "../plugins/skills";
+import { runCommand } from "../commands/registry";
 
 /*
  * Development aid: exercises the real app (real webview, real PTY) and posts
@@ -226,7 +231,7 @@ async function uiChecks(checks: Check[]): Promise<void> {
   checks.push({
     name: "closing a pane ends its session",
     ok: listPanes(tab().layout).length === 1 && sessionCount() === sessionsBefore - 1 && focusedPane() === first,
-    detail: { panes: listPanes(tab().layout).length, sessions: sessionCount() },
+    detail: { panes: listPanes(tab().layout).length, sessions: [sessionsBefore, sessionCount()], focused: focusedPane() === first, active: `${document.activeElement?.tagName}.${document.activeElement?.className}`, pane: focusedPane(), first, second },
   });
 }
 
@@ -349,6 +354,54 @@ async function featureChecks(checks: Check[]): Promise<void> {
   });
 }
 
+/** The example plugin imported, opened from the palette, disabled (placeholder) and removed again. */
+async function pluginChecks(checks: Check[]): Promise<void> {
+  const id = "scratchpad";
+  const pane = () => document.querySelector(`[data-pane-kind="${id}"]`);
+  await importPlugin(`${__MIDTERM_ROOT__}/examples/plugins/${id}`, true);
+  await refreshInstalled([id]);
+  const loaded = await waitFor(() => {
+    const entry = getPlugin(id);
+    return (entry?.source.type === "imported" && !entry.source.stub) || loadErrorOf(id) !== undefined;
+  }, 5000);
+  checks.push({
+    name: "plugins: an imported plugin's module loads through plugin://",
+    ok: loaded && loadErrorOf(id) === undefined,
+    detail: loadErrorOf(id) ?? getPlugin(id)?.source,
+  });
+
+  const ran = runCommand(`pane.new.${id}`);
+  const opened = await waitFor(() => pane()?.querySelector("textarea.scratchpad") != null, 3000);
+  const styled = opened && getComputedStyle(pane()!.querySelector("textarea")!).resize === "none";
+  checks.push({ name: "plugins: its pane opens from the generated palette command", ok: ran && opened, detail: { ran } });
+  checks.push({ name: "plugins: its stylesheet applies", ok: styled });
+
+  const skill = await invokeSkillTool(`${id}.text`, "read_notes", {});
+  const fileSkill = getSkill(`${id}.notes`);
+  const builtinSkill = await invokeSkillTool("terminal.commands", "recent_blocks", { count: 1 });
+  const refused = await invokeSkillTool("terminal.commands", "run_command", { command: "echo no" });
+  const invalid = await invokeSkillTool(`${id}.text`, "read_notes", { extra: 1 });
+  checks.push({
+    name: "plugins: skills (code, SKILL.md, built in; write refused without confirmation; input validated)",
+    ok: skill.ok && fileSkill !== undefined && builtinSkill.ok && !refused.ok && !invalid.ok,
+    detail: { skill, fileSkill: fileSkill?.skill.title, builtinSkill: builtinSkill.ok || builtinSkill, refused, invalid },
+  });
+
+  useSettings.getState().updatePluginEntry(id, { enabled: false });
+  const placeholder = await waitFor(() => pane()?.querySelector(`[data-plugin-placeholder="${id}"]`) != null, 2000);
+  checks.push({ name: "plugins: disabling shows a placeholder and keeps the pane", ok: placeholder });
+
+  useSettings.getState().updatePluginEntry(id, { enabled: true });
+  const back = await waitFor(() => pane()?.querySelector("textarea.scratchpad") != null, 3000);
+  checks.push({ name: "plugins: enabling brings the pane back", ok: back });
+
+  const paneId = (pane() as HTMLElement | null)?.dataset.paneId;
+  if (paneId) closePaneNow(paneId);
+  await removePlugin(id).catch(() => {});
+  await refreshInstalled();
+  checks.push({ name: "plugins: removing unregisters it", ok: getPlugin(id) === undefined });
+}
+
 export async function runSelfTest(port: string): Promise<void> {
   const checks: Check[] = [];
   const environment = {
@@ -360,6 +413,7 @@ export async function runSelfTest(port: string): Promise<void> {
   let error: string | undefined;
   try {
     await sleep(1500);
+    await pluginChecks(checks);
     await integrationChecks(checks);
     await featureChecks(checks);
     await uiChecks(checks);

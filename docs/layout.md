@@ -57,7 +57,7 @@ the library's `normalizeWorkspaceModel` to collapse the splits left behind.
 
 The active pane is tracked by the app, not the library: pane content is
 rendered through portals, so the library's own "active tabset" does not see
-clicks or focus inside a pane. `PaneContent` marks its pane active on focus or
+clicks or focus inside a pane. `PaneHost` (`src/plugins/PaneHost.tsx`) marks its pane active on focus or
 pointer-down (`setActivePane` in the store) and gets the `is-active` class;
 CSS in `src/styles/dock.css` styles the frame from that with `:has()`.
 

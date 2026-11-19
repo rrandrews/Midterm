@@ -5,12 +5,12 @@ React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
 [explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
-[design-tokens.md](design-tokens.md) · [roadmap.md](roadmap.md)
+[design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [roadmap.md](roadmap.md)
 
 ## Concepts
 
 ```
-workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
+workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | an imported plugin's kind)
            │       └─ pane …      arranged in a nested split layout
            └─ tab …
 ```
@@ -34,7 +34,8 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/layout/dock.ts` | Bridge to the mounted pane layout: imperative handles by tab id, pane focus. |
 | `src/components/titlebar/` | Title bar = tab bar: workspace switcher, tabs, app menu. |
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
-| `src/components/panes/` | Pane content by kind. |
+| `src/plugins/` | The pane plugin contract, registry, API, pane host, skills and the imported-plugin loader; built-in plugins in `builtin/`. See [plugins.md](plugins.md). |
+| `src/components/panes/` | The built-in panes' components. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
 | `src/terminal/` | xterm.js sessions and their registry; blocks mode model, rendering and history ([terminal.md](terminal.md)); file links in output. |
 | `src/explorer/` | File explorer models, their registry, pure tree helpers. |
@@ -46,6 +47,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/dev/` | Development aids (not in production builds). |
 | `src-tauri/src/pty/` | PTY sessions and the commands that drive them. |
 | `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer; whole-file reads and atomic writes for editors and viewers. |
+| `src-tauri/src/plugins/` | Installed plugins: manifest validation, import (folder or .zip), remove, the `plugin://` scheme. |
 | `src-tauri/src/menu.rs` | Native menu. Has no "Close Window", so ⌘W reaches the app. |
 | `src-tauri/src/traffic_lights.rs` | Centres the macOS traffic lights in the web title bar; re-applied on resize and focus. |
 
@@ -61,10 +63,11 @@ each tab's layout. Rules that the store enforces:
 
 State that is **not** in the store, on purpose:
 
-- **Terminal instances.** They live in `src/terminal/sessions.ts`, keyed by
-  pane id, and are reconciled against the store (see [terminal.md](terminal.md)).
-  Explorer models (`src/explorer/explorers.ts`) and editor/viewer models
-  (`src/editor/registry.ts`, including unsaved changes) follow the same rule.
+- **Pane state**: terminal sessions (`src/terminal/sessions.ts`), explorer
+  models (`src/explorer/explorers.ts`) and editor/viewer models
+  (`src/editor/registry.ts`, including unsaved changes). Each is a shared
+  pane state (`createPaneState` in `src/plugins/paneState.ts`), keyed by
+  pane id and disposed once no pane wants it and nothing shows it.
 - **The mounted layout's transient state** (drag in progress, hover). The
   layout component reports finished changes back to the store.
 
@@ -77,14 +80,17 @@ through tauri-plugin-store, and restored before the first render.
 - `src/state/persist.ts`: pure `snapshotState` / `restoreState`. The saved
   shape has a `version` (`SCHEMA_VERSION`); bump it and migrate in
   `restoreState` when the shape changes. Restoring validates everything:
-  layouts go through `normalizeWorkspaceModel`, panes of unknown kinds are
-  dropped, a tab with no valid panes becomes a fresh tab, duplicate ids are
+  layouts go through `normalizeWorkspaceModel`, panes whose kind is not a
+  plugin id are dropped, a tab with no valid panes becomes a fresh tab, duplicate ids are
   replaced, and an unusable file means a fresh start.
 - `src/state/persistence.ts`: restores at startup and saves 300 ms after the
   last change (skipped if nothing saved changed). The plugin writes the file
   shortly after and again on exit.
 - Transient fields (`activity`, `layoutRev`) are not saved.
 - Dev runs with `?mockup` or `?selftest` neither restore nor save.
+- Pane data is validated by the plugin of each pane's kind. A pane whose
+  plugin is missing or disabled is kept as saved (see
+  [plugins.md](plugins.md#restore-and-missing-plugins)).
 
 Window size and position are saved separately by tauri-plugin-window-state.
 
@@ -94,7 +100,9 @@ Pane content components are mounted and unmounted freely: only the active
 tab's layout is mounted, and a layout is remounted when its tab's layout is
 changed from outside. So **state that must survive belongs outside React,
 keyed by pane id**, the way terminal sessions are. A component should only
-attach to that state on mount and detach on unmount.
+attach to that state on mount and detach on unmount (`createPaneState`).
+
+A new pane kind is a plugin: see [plugins.md](plugins.md).
 
 ## Commands and focus
 
@@ -120,22 +128,23 @@ Right-click menus:
 
 | Area | Items | Where |
 |---|---|---|
-| Any pane | kind-specific items, then split, change type, maximize, move to tab, close | `PaneContent.tsx`, `PaneMenuItems.tsx` (shared with the pane toolbar's ⋯ menu) |
-| Terminal (on top of the above) | copy/re-run a block (blocks mode), copy, paste, select all, clear, blocks mode | `TerminalMenuItems.tsx` |
+| Any pane | the plugin's items (`pane.menu`, declarative), then split, change type, maximize, move to tab, close | `src/plugins/PaneHost.tsx`, `PaneMenuItems.tsx` (shared with the pane toolbar's ⋯ menu) |
+| Terminal (on top of the above) | copy/re-run a block (blocks mode), copy, paste, select all, clear, blocks mode | `src/terminal/menu.ts` |
+| Editor / viewer | save, revert, find, go to line, reveal, copy path | `src/editor/menu.ts` |
 | Tab | rename, new tab, close, close others, close to the right | `TabStrip.tsx` |
 | Workspace switcher | new, rename, delete | `WorkspaceSwitcher.tsx` |
 | Empty title bar | new tab, new workspace | `TitleBar.tsx` |
 
 - A terminal whose program reads the mouse (vim, htop) gets right clicks
-  instead; ⌥-right-click opens the menu anyway.
+  instead (`ownsContextMenu`); ⌥-right-click opens the menu anyway.
 - The webview's own menu (Reload, Inspect Element) is suppressed everywhere
   except text fields (`suppressNativeContextMenu` in `App.tsx`). In dev
   builds ⌥-right-click still shows it.
 - Clipboard access goes through `src/ipc/clipboard.ts`
   (tauri-plugin-clipboard-manager; WebKit's own `readText` shows a system
   "Paste" prompt).
-- New pane kinds add their own items the way terminals do, in
-  `PaneContent.tsx`.
+- Pane plugins declare their items (`menu(ctx)` returning `MenuItemSpec`s);
+  see [plugins.md](plugins.md).
 
 ## Content Security Policy
 
@@ -144,11 +153,11 @@ Set in `src-tauri/tauri.conf.json` (`app.security`):
 | Directive | Value | Why |
 |---|---|---|
 | `default-src` | `'self'` | Nothing remote, ever. |
-| `script-src` | `'self'` | Bundled scripts only; Tauri adds hashes for its own. No `eval`. |
-| `style-src` | `'self' 'unsafe-inline'` | React `style` attributes, and `<style>` elements injected by xterm and CodeMirror. Tauri's nonce injection is turned off for this directive (`dangerousDisableAssetCspModification: ["style-src"]`), since a nonce would make browsers ignore `'unsafe-inline'`. |
-| `img-src` | `'self' blob: data:` | The viewer shows images (and local Markdown images) as `blob:` URLs read through the backend. |
+| `script-src` | `'self' plugin: http://plugin.localhost` | Bundled scripts, and imported plugins' modules from the `plugin://` scheme (the second form is how Windows maps it). Tauri adds hashes for its own. No `eval`. |
+| `style-src` | `'self' 'unsafe-inline' plugin: http://plugin.localhost` | React `style` attributes, and `<style>` elements injected by xterm and CodeMirror. Tauri's nonce injection is turned off for this directive (`dangerousDisableAssetCspModification: ["style-src"]`), since a nonce would make browsers ignore `'unsafe-inline'`. |
+| `img-src` | `'self' blob: data: plugin: http://plugin.localhost` | Plugins' images. The viewer shows images (and local Markdown images) as `blob:` URLs read through the backend. |
 | `media-src` | `'self' blob:` | |
-| `font-src` | `'self' data:` | Bundled fonts. |
+| `font-src` | `'self' data: plugin: http://plugin.localhost` | Bundled fonts, and plugins'. |
 | `connect-src` | `'self' ipc: http://ipc.localhost` | Tauri IPC (see [terminal.md](terminal.md#content-security-policy)). |
 | `object-src`, `frame-src`, `form-action`, `base-uri` | `'none'` | Unused. |
 
@@ -176,4 +185,5 @@ exercises the viewer).
 | `?selftest=PORT` | Self-test of the real app; see [terminal.md](terminal.md). |
 
 In dev builds `window.__midterm` exposes `actions`, `dock`, `store`,
-`sessions`, `settings` and `commands` for poking at the app from the console or a test driver.
+`sessions`, `settings`, `commands`, `plugins` (the registry), `skills`,
+`loader` and `invokeSkillTool` for poking at the app from the console or a test driver.

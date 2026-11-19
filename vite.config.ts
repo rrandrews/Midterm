@@ -9,6 +9,9 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
+  // The repository, for the self-test's plugin fixture (src/dev/selftest.ts, dev builds only).
+  define: { __MIDTERM_ROOT__: JSON.stringify(process.cwd()) },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

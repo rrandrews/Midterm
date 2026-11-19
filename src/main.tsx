@@ -40,15 +40,31 @@ async function start(): Promise<void> {
   ]);
   if (import.meta.env.DEV) {
     // Dev-only handles for poking at the app from the console or a test driver.
-    const [actions, dock, store, sessions, settings, commands] = await Promise.all([
+    const [actions, dock, store, sessions, settings, commands, plugins, skills, loader] = await Promise.all([
       import("./actions"),
       import("./layout/dock"),
       import("./state/store"),
       import("./terminal/sessions"),
       import("./settings/settings"),
       import("./commands/registry"),
+      import("./plugins/registry"),
+      import("./plugins/skills"),
+      import("./plugins/loader"),
     ]);
-    Object.assign(window, { __midterm: { actions, dock, store, sessions, settings, commands } });
+    Object.assign(window, {
+      __midterm: {
+        actions,
+        dock,
+        store,
+        sessions,
+        settings,
+        commands,
+        plugins,
+        skills,
+        loader,
+        invokeSkillTool: skills.invokeSkillTool,
+      },
+    });
     if (params.has("mockup")) (await import("./dev/seed")).seedMockupLayout();
     const selfTestPort = params.get("selftest");
     if (selfTestPort) void import("./dev/selftest").then((m) => m.runSelfTest(selfTestPort));
@@ -61,6 +77,8 @@ async function start(): Promise<void> {
       <App />
     </React.StrictMode>,
   );
+  // Imported plugins load after the first render: a slow or broken one never delays the app.
+  void (await import("./plugins/loader")).loadImportedPlugins();
 }
 
 start();

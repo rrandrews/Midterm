@@ -48,19 +48,23 @@ its in-memory tree for `bun run dev` (it has contents for `SplitNode.tsx`,
 | File | Role |
 |---|---|
 | `src/editor/model.ts` | `EditorModel`: one pane's CodeMirror view, disk version, dirty state, external changes, save. Also used read-only by text viewers. |
-| `src/editor/registry.ts` | Models by pane id (editors and viewers), reconciled against the store; pending line reveals; unsaved-changes queries; renames; font settings. |
+| `src/editor/registry.ts` | Models by pane id (editors and viewers), a shared pane state (`src/plugins/paneState.ts`); pending line reveals; unsaved-changes queries; renames; font and editor settings. |
+| `src/editor/settings.ts` | The editor plugin's settings (word wrap, tab size, line numbers) and the viewer's (Markdown rendered or as source). |
 | `src/editor/text.ts` | Pure: line endings and BOM, `minimalChange`, indent detection, breadcrumb segments, position clamping. Unit-tested. |
 | `src/editor/languages.ts` | Language by file name (`@codemirror/language-data`, loaded on demand). |
 | `src/editor/highlight.ts` | Syntax highlighting as `tok-*` classes (styled in `src/styles/editor.css`). |
-| `src/editor/commands.ts` | `editor.revert` ("Revert file"). |
 | `src/viewer/model.ts` | `ViewerModel`: rendered Markdown or an image blob URL, reloaded on change, scroll position. |
 | `src/viewer/markdown.ts` | `marked` (GFM) → DOMPurify. |
 | `src/viewer/links.ts` | Pure: where a link or image in a document points. Unit-tested. |
 | `src/files/watch.ts` | One backend watcher shared by all open files (watches their parent directories). |
 | `src/files/repoRoot.ts` | Nearest ancestor with a `.git` entry, cached; for breadcrumbs. |
 | `src/files/kinds.ts` | Images (with MIME types), Markdown, viewer mode by extension. |
-| `src/components/panes/FilePane.tsx` | The editor and viewer components: breadcrumbs, notices, status messages, Markdown and image views. |
-| `src/components/panes/FileMenuItems.tsx` | Right-click items: save, revert, find, go to line, reveal, copy path. |
+| `src/plugins/builtin/files.tsx` | The editor and viewer plugins: data, `fileHandler` (text → editor by default, viewer as an option; images → viewer), `reveal`, close checks, `editor.revert`. |
+| `src/components/panes/FilePane.tsx` | `EditorPane` and `ViewerPane`, over a shared model host. |
+| `src/components/panes/CodeView.tsx` | CodeMirror view with breadcrumbs and notices (editors, and text in viewers). |
+| `src/components/panes/DocumentView.tsx` | Rendered Markdown and images. |
+| `src/components/panes/FileStatus.tsx` | Status messages and the no-file state. |
+| `src/editor/menu.ts` | Right-click items: save, revert, find, go to line, reveal, copy path. |
 | `src/styles/editor.css` | CodeMirror chrome, syntax colours, Markdown body, image checkerboard. |
 
 ### State outside React
