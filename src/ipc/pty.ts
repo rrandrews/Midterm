@@ -14,6 +14,10 @@ export type PtyOptions = {
   rows: number;
   /** Working directory; the home directory when omitted or missing. */
   cwd?: string;
+  /** Program to run instead of the login shell (no shell integration then). */
+  shell?: string;
+  /** Arguments for `shell`. */
+  shellArgs?: string[];
   /** Raw output bytes. May be called before `spawnPty` resolves. */
   onData: (bytes: Uint8Array) => void;
   /** Called once, after the last `onData`. */
@@ -69,6 +73,8 @@ async function spawnTauriPty(options: PtyOptions): Promise<Pty> {
     cols: options.cols,
     rows: options.rows,
     cwd: options.cwd ?? null,
+    shell: options.shell || null,
+    shellArgs: options.shell ? (options.shellArgs ?? []) : null,
     onData,
     onEvent,
   });

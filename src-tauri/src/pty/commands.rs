@@ -16,9 +16,10 @@ use tauri::{State, Window};
 
 use super::manager::PtyManager;
 use super::session::{Foreground, PtyEvent, Sinks};
-use super::shell::shell_command;
+use super::shell::{CustomShell, shell_command};
 
-/// Starts the user's login shell in a new PTY and returns the session id.
+/// Starts the user's login shell (or `shell` with `shell_args`, from the
+/// settings) in a new PTY and returns the session id.
 ///
 /// `on_data` receives the shell's output as raw bytes: every message is an
 /// `InvokeResponseBody::Raw`, which Tauri delivers to JavaScript as an
@@ -33,6 +34,8 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    shell: Option<String>,
+    shell_args: Option<Vec<String>>,
     on_data: Channel<InvokeResponseBody>,
     on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
@@ -45,7 +48,15 @@ pub fn pty_spawn(
     };
     manager.spawn(
         window.label(),
-        shell_command(cwd.as_deref()),
+        shell_command(
+            cwd.as_deref(),
+            shell
+                .map(|program| CustomShell {
+                    program,
+                    args: shell_args.unwrap_or_default(),
+                })
+                .as_ref(),
+        ),
         cols,
         rows,
         sinks,

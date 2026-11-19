@@ -1,11 +1,13 @@
 import "./commands/core";
+import { installNativeMenu, noteShortcutRun } from "./commands/nativeMenu";
 import { commandForEvent, runCommand } from "./commands/registry";
 import { isConfirming } from "./components/ui/ConfirmDialog";
 import { editingElsewhere } from "./layout/dock";
 
 /*
- * App keyboard shortcuts. The bindings come from the command registry
- * (`src/commands/`), with the user's overrides from the settings.
+ * App keyboard shortcuts and the native menu bar. The bindings come from
+ * the command registry (`src/commands/`), with the user's overrides from
+ * the settings.
  */
 
 /** Whether a key event is an app shortcut (so terminals leave it alone). */
@@ -28,9 +30,16 @@ export function installShortcuts(): () => void {
     event.preventDefault();
     event.stopPropagation();
     // Holding the keys down shouldn't open a tab or split per repeat.
-    if (!event.repeat) runCommand(command.id);
+    if (!event.repeat) {
+      noteShortcutRun(command.id);
+      runCommand(command.id);
+    }
   };
   // Capture phase: runs before the focused terminal or any menu sees the key.
   window.addEventListener("keydown", onKeyDown, true);
-  return () => window.removeEventListener("keydown", onKeyDown, true);
+  const uninstallMenu = installNativeMenu(shortcutsSuspended);
+  return () => {
+    uninstallMenu();
+    window.removeEventListener("keydown", onKeyDown, true);
+  };
 }

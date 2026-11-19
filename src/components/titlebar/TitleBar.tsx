@@ -5,6 +5,7 @@ import { newTab, newWorkspace, splitPane } from "../../actions";
 import { shortcutLabel } from "../../commands/registry";
 import { watchFullscreen } from "../../ipc/window";
 import { openPalette } from "../../palette/state";
+import { openSettings } from "../../settings/SettingsDialog";
 import { DotsIcon } from "../ui/icons";
 import {
   ContextMenu,
@@ -43,6 +44,13 @@ function AppMenu() {
         <MenuSeparator />
         <MenuItem shortcut={shortcutLabel("tab.close")} onSelect={() => closeTab()}>
           Close tab
+        </MenuItem>
+        <MenuSeparator />
+        <MenuItem shortcut={shortcutLabel("palette.open")} onSelect={() => openPalette("all")}>
+          Command palette
+        </MenuItem>
+        <MenuItem shortcut={shortcutLabel("settings.open")} onSelect={() => openSettings()}>
+          Settings…
         </MenuItem>
       </MenuContent>
     </Menu>

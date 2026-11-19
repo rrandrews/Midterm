@@ -50,6 +50,7 @@ async function start(): Promise<void> {
     if (selfTestPort) void import("./dev/selftest").then((m) => m.runSelfTest(selfTestPort));
   }
   if (persist) startSaving();
+  (await import("./settings/apply")).installSettingsStyles();
   await fontsReady();
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>

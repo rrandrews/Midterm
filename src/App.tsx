@@ -4,6 +4,7 @@ import { PaneLayout } from "./components/layout/PaneLayout";
 import { TitleBar } from "./components/titlebar/TitleBar";
 import { ConfirmHost } from "./components/ui/ConfirmDialog";
 import { Palette } from "./palette/Palette";
+import { SettingsDialog } from "./settings/SettingsDialog";
 import { installCloseGuards } from "./ipc/window";
 import { mayCloseEverything } from "./closing";
 import { flushSavedState } from "./state/persistence";
@@ -64,6 +65,7 @@ export default function App() {
         <PaneLayout key={`${tab.id}:${tab.layoutRev}`} tab={tab} />
       </main>
       <Palette />
+      <SettingsDialog />
       <ConfirmHost />
     </div>
   );

@@ -82,16 +82,20 @@ pub fn run() {
             }
         })
         .on_menu_event(|app, event| {
-            if event.id() == menu::QUIT_ID {
+            let id = event.id().as_ref();
+            if id == menu::QUIT_ID {
                 // The webview decides (it may ask first) and calls `app_quit`.
                 if app.emit("quit-requested", ()).is_err() {
                     app.exit(0);
                 }
+            } else if let Some(command) = id.strip_prefix(menu::COMMAND_PREFIX) {
+                let _ = app.emit("menu-command", command);
             }
         })
         .invoke_handler(tauri::generate_handler![
             app_quit,
             local_hostname,
+            menu::menu_set,
             pty::commands::pty_spawn,
             pty::commands::pty_write,
             pty::commands::pty_write_bytes,

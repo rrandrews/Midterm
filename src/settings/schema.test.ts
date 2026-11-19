@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, monoFontStack, validateSettings } from "./schema";
+import { DEFAULT_SETTINGS, joinArgs, monoFontStack, splitArgs, validateSettings } from "./schema";
 
 describe("validateSettings", () => {
   it("gives defaults for nothing usable", () => {
@@ -40,5 +40,16 @@ describe("monoFontStack", () => {
     expect(monoFontStack("")).toMatch(/^"JetBrains Mono Variable"/);
     expect(monoFontStack("Fira Code")).toMatch(/^"Fira Code", "JetBrains/);
     expect(monoFontStack("'SF Mono', Menlo")).toMatch(/^'SF Mono', Menlo, "JetBrains/);
+  });
+});
+
+describe("splitArgs / joinArgs", () => {
+  it("splits on whitespace and honours quotes", () => {
+    expect(splitArgs(" -l  -c 'echo hi' \"a b\" ")).toEqual(["-l", "-c", "echo hi", "a b"]);
+    expect(splitArgs("")).toEqual([]);
+  });
+  it("round-trips", () => {
+    const args = ["-l", "a b", 'say "x"', ""];
+    expect(splitArgs(joinArgs(args))).toEqual(args);
   });
 });

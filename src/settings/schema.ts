@@ -132,3 +132,17 @@ export function monoFontStack(fontFamily: string): string {
   const family = /^["']|,/.test(fontFamily) ? fontFamily : `"${fontFamily.replace(/"/g, "")}"`;
   return `${family}, ${fallback}`;
 }
+
+/** Splits an argument line as a shell would for simple cases: whitespace, with "…" or '…' quoting. */
+export function splitArgs(line: string): string[] {
+  const args: string[] = [];
+  for (const match of line.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
+    args.push(match[1] ?? match[2] ?? match[3] ?? "");
+  }
+  return args;
+}
+
+/** The inverse of `splitArgs`, quoting arguments that need it. */
+export function joinArgs(args: string[]): string {
+  return args.map((arg) => (arg === "" || /\s/.test(arg) ? (arg.includes('"') ? `'${arg}'` : `"${arg}"`) : arg)).join(" ");
+}
