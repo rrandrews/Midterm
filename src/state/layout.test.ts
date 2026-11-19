@@ -1,0 +1,102 @@
+import { describe, expect, it } from "vitest";
+import {
+  countPanes,
+  createLayout,
+  createPane,
+  findPane,
+  frameIdOf,
+  listPanes,
+  paneIdInFrame,
+  paneNode,
+  removePane,
+  singlePaneLayout,
+} from "./layout";
+import type { Layout } from "./types";
+
+function threePanes() {
+  const a = createPane("explorer");
+  const b = createPane("editor");
+  const c = createPane("terminal");
+  const layout = createLayout({
+    type: "split",
+    orientation: "horizontal",
+    children: [
+      paneNode(a, "220px"),
+      { type: "split", orientation: "vertical", children: [paneNode(b, 47), paneNode(c)] },
+    ],
+  });
+  return { layout, a, b, c };
+}
+
+const orientationOf = (layout: Layout) =>
+  layout.root.type === "split" ? layout.root.orientation : "none";
+
+describe("layout helpers", () => {
+  it("creates a single-pane layout", () => {
+    const pane = createPane();
+    const layout = singlePaneLayout(pane);
+    expect(layout.root.type).toBe("tabset");
+    expect(listPanes(layout)).toEqual([pane]);
+    expect(pane.data.kind).toBe("terminal");
+  });
+
+  it("lists panes in visual order and finds them", () => {
+    const { layout, a, b, c } = threePanes();
+    expect(listPanes(layout).map((pane) => pane.id)).toEqual([a.id, b.id, c.id]);
+    expect(countPanes(layout)).toBe(3);
+    expect(findPane(layout, b.id)?.data.kind).toBe("editor");
+    expect(findPane(layout, "missing")).toBeUndefined();
+  });
+
+  it("maps between panes and their frames", () => {
+    const { layout, b } = threePanes();
+    const frameId = frameIdOf(layout, b.id);
+    expect(frameId).toBeDefined();
+    expect(paneIdInFrame(layout, frameId as string)).toBe(b.id);
+    expect(frameIdOf(layout, "missing")).toBeUndefined();
+    expect(paneIdInFrame(layout, "missing")).toBeUndefined();
+  });
+
+  it("gives every frame a unique id", () => {
+    const { layout, a, b, c } = threePanes();
+    const ids = [a, b, c].map((pane) => frameIdOf(layout, pane.id));
+    expect(new Set(ids).size).toBe(3);
+  });
+});
+
+describe("removePane", () => {
+  it("collapses a split left with a single child into its parent", () => {
+    const { layout, a, b, c } = threePanes();
+    const next = removePane(layout, c.id) as Layout;
+    expect(listPanes(next).map((pane) => pane.id)).toEqual([a.id, b.id]);
+    // The nested vertical split is gone; only the horizontal root remains.
+    expect(orientationOf(next)).toBe("horizontal");
+    expect(next.root.type === "split" && next.root.children.every((n) => n.type === "tabset")).toBe(
+      true,
+    );
+  });
+
+  it("promotes the remaining subtree when a root child is removed", () => {
+    const { layout, a, b, c } = threePanes();
+    const next = removePane(layout, a.id) as Layout;
+    expect(listPanes(next).map((pane) => pane.id)).toEqual([b.id, c.id]);
+    expect(orientationOf(next)).toBe("vertical");
+  });
+
+  it("returns null when the last pane is removed", () => {
+    const pane = createPane();
+    expect(removePane(singlePaneLayout(pane), pane.id)).toBeNull();
+  });
+
+  it("returns the same layout when the pane is not in it", () => {
+    const { layout } = threePanes();
+    expect(removePane(layout, "missing")).toBe(layout);
+  });
+
+  it("does not mutate its input", () => {
+    const { layout, c } = threePanes();
+    const snapshot = JSON.stringify(layout);
+    removePane(layout, c.id);
+    expect(JSON.stringify(layout)).toBe(snapshot);
+  });
+});
