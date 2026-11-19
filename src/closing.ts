@@ -2,7 +2,7 @@ import { activePaneId, closePaneNow, focusActivePane, closeTabNow, removeWorkspa
 import type { PaneKind, Tab } from "./state/types";
 import { closePromptMessage } from "./closePrompt";
 import { confirm } from "./components/ui/ConfirmDialog";
-import { paneSpec } from "./plugins/registry";
+import { getPlugin } from "./plugins/registry";
 import type { CloseBlocker } from "./plugins/types";
 import { findPane, listPanes } from "./state/layout";
 import { findTab, findTabOfPane, selectActiveTab, selectActiveWorkspace, useAppStore } from "./state/store";
@@ -23,7 +23,8 @@ async function blockersOf(paneIds: string[]): Promise<CloseBlocker[]> {
     paneIds.map(async (paneId) => {
       const tab = findTabOfPane(state, paneId);
       const kind = tab && findPane(tab.layout, paneId)?.data.kind;
-      const check = kind ? paneSpec(kind)?.closeBlockers : undefined;
+      // Asked even of a disabled plugin: its panes may still hold work (an editor's unsaved buffer).
+      const check = kind ? getPlugin(kind)?.plugin.pane.closeBlockers : undefined;
       return check ? check(paneId).catch(() => []) : [];
     }),
   );

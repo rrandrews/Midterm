@@ -20,7 +20,8 @@ export function pluginSettings(
   settings: Settings = getSettings(),
 ): Record<string, unknown> {
   const raw = settings.plugins[pluginId]?.settings ?? EMPTY;
-  if (!fields) return { ...raw };
+  // No declared fields: the saved object itself (stable, so React sees no change).
+  if (!fields) return raw;
   // Resolved once per saved object, so callers get a stable value to compare.
   let byPlugin = cache.get(raw);
   if (!byPlugin) {

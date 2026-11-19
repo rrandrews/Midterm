@@ -1,6 +1,6 @@
 import { EditorPane, ViewerPane } from "../../components/panes/FilePane";
 import { fileMenu } from "../../editor/menu";
-import { peekEditor, revealInPane, unsavedFiles } from "../../editor/registry";
+import { hasUnsavedChanges, peekEditor, revealInPane, unsavedFiles } from "../../editor/registry";
 import { EDITOR_FIELDS, VIEWER_FIELDS } from "../../editor/settings";
 import { baseName } from "../../explorer/tree";
 import { isImagePath } from "../../files/kinds";
@@ -43,6 +43,7 @@ export const editorPlugin: PanePlugin = {
   pane: {
     ...filePane,
     component: Editor,
+    isDirty: hasUnsavedChanges,
     closeBlockers: async (paneId) => unsavedFiles([paneId]).map((path) => ({ type: "unsaved", name: baseName(path) })),
     fileHandler: (path) => (isImagePath(path) ? false : "default"),
     reveal: revealInPane,

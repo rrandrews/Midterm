@@ -36,8 +36,10 @@ type LoaderState = {
 
 export const useInstalledPlugins = create<LoaderState>()(() => ({ installed: [], loading: [] }));
 
-/** Bumped on every (re)load, so the module URL changes and a replaced plugin's new code runs. */
+/** Bumped on every (re)load, so the module URLs change and a replaced plugin's new code runs. */
 let generation = 0;
+/** The latest load started per plugin id; a load that finishes after a newer one (or a removal) is dropped. */
+const latestLoad = new Map<string, number>();
 
 function stubOf(info: InstalledPlugin): PanePlugin | null {
   const manifest = info.manifest;
@@ -91,21 +93,23 @@ async function loadModule(info: InstalledPlugin): Promise<void> {
   const manifest = info.manifest;
   if (!manifest) return;
   const id = manifest.id;
+  const version = ++generation;
+  latestLoad.set(id, version);
   useInstalledPlugins.setState((state) => ({ loading: [...state.loading, id] }));
   try {
     if (manifest.apiVersion !== API_VERSION) throw new Error(`apiVersion ${manifest.apiVersion} is not supported`);
-    const version = ++generation;
-    const url = `${pluginFileUrl(id, manifest.main)}?v=${version}`;
-    const module = (await import(/* @vite-ignore */ url)) as { default?: unknown };
+    const module = (await import(/* @vite-ignore */ pluginFileUrl(id, manifest.main, version))) as { default?: unknown };
+    if (latestLoad.get(id) !== version) return;
     const plugin = module.default;
     const problems = checkPluginExport(plugin, id);
     if (problems.length) throw new Error(problems.join("; "));
-    setStyle(id, manifest.style ? `${pluginFileUrl(id, manifest.style)}?v=${version}` : null);
+    setStyle(id, manifest.style && isPluginEnabled(id) ? pluginFileUrl(id, manifest.style, version) : null);
     registerPlugin(
       { ...(plugin as PanePlugin), version: manifest.version },
       { type: "imported", dir: info.dir, author: manifest.author },
     );
   } catch (error) {
+    if (latestLoad.get(id) !== version) return;
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Plugin ${id} failed to load:`, error);
     setLoadError(id, message);
@@ -121,6 +125,7 @@ async function applyInstalled(installed: InstalledPlugin[], reload: Set<string> 
   // Removed since last time.
   for (const old of previous) {
     if (!installed.some((info) => info.id === old.id)) {
+      latestLoad.delete(old.id);
       unregisterPlugin(old.id);
       setFileSkills(old.id, []);
       setLoadError(old.id, null);
@@ -141,6 +146,7 @@ async function applyInstalled(installed: InstalledPlugin[], reload: Set<string> 
       const stub = stubOf(info);
       if (stub && !loaded) registerPlugin(stub, { type: "imported", dir: info.dir, author: info.manifest.author, stub: true });
       if (isPluginEnabled(info.id)) loads.push(loadModule(info));
+      else latestLoad.delete(info.id);
     }
     setFileSkills(info.id, skills);
     if (problems.length) console.warn(`Skill files of ${info.id}:`, problems);
@@ -159,20 +165,29 @@ export async function loadImportedPlugins(): Promise<void> {
   } catch (error) {
     console.error("Could not list the installed plugins:", error);
   }
-  // Enabling a stub loads its code.
+  // Enabling a plugin loads its code again (a stub's for the first time,
+  // an edited plugin's anew); disabling takes its stylesheet away.
+  const enabledNow = () => new Map(useInstalledPlugins.getState().installed.map((info) => [info.id, isPluginEnabled(info.id)]));
+  let wasEnabled = enabledNow();
   useSettings.subscribe(() => {
+    const now = enabledNow();
     for (const info of useInstalledPlugins.getState().installed) {
-      const registered = getPlugin(info.id);
-      const stub = registered?.source.type === "imported" && registered.source.stub;
-      const loading = useInstalledPlugins.getState().loading.includes(info.id);
-      if (stub && !loading && isPluginEnabled(info.id)) void loadModule(info);
+      const enabled = now.get(info.id) ?? false;
+      if (enabled === wasEnabled.get(info.id)) continue;
+      if (enabled) void loadModule(info);
+      else {
+        latestLoad.delete(info.id);
+        setStyle(info.id, null);
+      }
     }
+    wasEnabled = now;
   });
 }
 
-/** Lists the installed plugins again, (re)loading `reload`. */
-export async function refreshInstalled(reload: string[] = []): Promise<void> {
-  await applyInstalled(await listPlugins(), new Set(reload));
+/** Lists the installed plugins again, reloading `reload` (every plugin by default, so edits take effect). */
+export async function refreshInstalled(reload?: string[]): Promise<void> {
+  const installed = await listPlugins();
+  await applyInstalled(installed, new Set(reload ?? installed.map((info) => info.id)));
 }
 
 const TRUST_WARNING =
@@ -215,6 +230,6 @@ export async function removePluginInteractively(id: string): Promise<boolean> {
   });
   if (!ok) return false;
   await removePlugin(id);
-  await refreshInstalled();
+  await refreshInstalled([]);
   return true;
 }

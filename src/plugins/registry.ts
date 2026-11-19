@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { registerCommands } from "../commands/registry";
+import { getCommand, registerCommands } from "../commands/registry";
 import { getSettings, useSettings } from "../settings/settings";
 import type { MidtermApi } from "./api";
 import { PLUGIN_ID_PATTERN, type PanePlugin, type PaneSpec, type PluginSource } from "./types";
@@ -95,17 +95,22 @@ export function isPluginEnabled(id: string, settings = getSettings()): boolean {
   return settings.plugins[id]?.enabled !== false;
 }
 
-/** Registered and enabled plugins, in `allPlugins` order. */
+/** An imported plugin known only from its manifest (disabled, loading, or failed to load). */
+export function isStub(entry: RegisteredPlugin | undefined): boolean {
+  return entry?.source.type === "imported" && entry.source.stub === true;
+}
+
+/** Registered, enabled and loaded plugins, in `allPlugins` order: what panes can be created with. */
 export function enabledPlugins(): PanePlugin[] {
   return allPlugins()
-    .filter((entry) => isPluginEnabled(entry.plugin.id))
+    .filter((entry) => !isStub(entry) && isPluginEnabled(entry.plugin.id))
     .map((entry) => entry.plugin);
 }
 
-/** The plugin that renders panes of `kind`, if it is registered and enabled. */
+/** The plugin that renders panes of `kind`, if it is registered, loaded and enabled. */
 export function activePlugin(kind: string): PanePlugin | undefined {
   const entry = plugins.get(kind);
-  return entry && isPluginEnabled(kind) ? entry.plugin : undefined;
+  return entry && !isStub(entry) && isPluginEnabled(kind) ? entry.plugin : undefined;
 }
 
 /** The pane contract of `kind`'s plugin, if it is registered and enabled. */
@@ -166,7 +171,13 @@ function activate(entry: Entry): void {
   if (!api) return;
   const cleanups: (() => void)[] = [];
   try {
-    if (plugin.commands?.length) cleanups.push(registerCommands(plugin.commands));
+    // A plugin may not take over another command's id (it would be lost when the plugin goes).
+    const commands = (plugin.commands ?? []).filter((command) => {
+      const taken = getCommand(command.id) !== undefined;
+      if (taken) console.warn(`Plugin ${plugin.id}: command id "${command.id}" is already taken; ignored.`);
+      return !taken;
+    });
+    if (commands.length) cleanups.push(registerCommands(commands));
     const result = plugin.activate?.(api);
     if (typeof result === "function") cleanups.push(result);
     entry.error = undefined;

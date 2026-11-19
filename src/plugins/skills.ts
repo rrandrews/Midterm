@@ -205,7 +205,12 @@ export async function invokeSkillTool(
   if (!skill.enabled) return { ok: false, error: `The skill "${skillId}" is switched off` };
   const tool = skill.skill.tools?.find((candidate) => candidate.name === toolName);
   if (!tool) return { ok: false, error: `The skill "${skillId}" has no tool "${toolName}"` };
-  const invalid = validateInput(tool.inputSchema, input);
+  let invalid: string[];
+  try {
+    invalid = validateInput(tool.inputSchema, input);
+  } catch (error) {
+    return { ok: false, error: `The tool's input schema failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
   if (invalid.length) return { ok: false, error: `Invalid input: ${invalid.join("; ")}` };
   if (tool.effect === "write") {
     const allowed = confirmWrite ? await confirmWrite({ skill, tool, input }).catch(() => false) : false;

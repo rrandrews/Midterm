@@ -27,7 +27,14 @@ pub const SCHEME: &str = "plugin";
 /// malformed, tries to leave the plugin's folder, or names no file.
 pub fn resolve(root: &Path, uri_path: &str) -> Option<PathBuf> {
     let decoded = percent_decode_str(uri_path.strip_prefix('/')?).decode_utf8().ok()?;
-    let (id, rel) = decoded.split_once('/')?;
+    let (segment, rel) = decoded.split_once('/')?;
+    // `<id>@<generation>`: the webview versions the whole folder per load, so
+    // a reloaded plugin's relative imports are fetched again too.
+    let id = match segment.split_once('@') {
+        Some((id, generation)) if !generation.is_empty() && generation.bytes().all(|b| b.is_ascii_digit()) => id,
+        Some(_) => return None,
+        None => segment,
+    };
     if !manifest::is_valid_id_format(id) || !manifest::is_plain_relative(rel) {
         return None;
     }
@@ -126,6 +133,9 @@ mod tests {
         let canon = root.path().canonicalize().unwrap();
         assert_eq!(resolve(root.path(), "/hello/main.js"), Some(canon.join("hello/main.js")));
         assert_eq!(resolve(root.path(), "/hello/dist/my%20file.css"), Some(canon.join("hello/dist/my file.css")));
+        assert_eq!(resolve(root.path(), "/hello@12/main.js"), Some(canon.join("hello/main.js")));
+        assert_eq!(resolve(root.path(), "/hello@/main.js"), None);
+        assert_eq!(resolve(root.path(), "/hello@x1/main.js"), None);
     }
 
     #[test]

@@ -9,7 +9,7 @@ import { PaneMenuItems } from "../components/layout/PaneMenuItems";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuSeparator } from "../components/ui/Menu";
 import { MenuItems } from "./MenuItems";
 import { PluginPlaceholder } from "./PluginPlaceholder";
-import { activePlugin, apiOf, getPlugin, loadErrorOf, usePluginsVersion } from "./registry";
+import { activePlugin, apiOf, getPlugin, isPluginEnabled, isStub, loadErrorOf, usePluginsVersion } from "./registry";
 import type { MenuItemSpec, PaneContext, PanePlugin } from "./types";
 
 /*
@@ -43,9 +43,13 @@ export const PaneHost = memo(function PaneHost({ pane }: { pane: PaneNode }) {
   const { kind } = pane.data;
   const registered = getPlugin(kind);
   // An imported plugin whose code is not loaded (yet, or it failed) has nothing to render.
-  const stub = registered?.source.type === "imported" && registered.source.stub;
-  const plugin = stub ? undefined : activePlugin(kind);
-  const problem = stub && activePlugin(kind) ? (loadErrorOf(kind) ? `It failed to load: ${loadErrorOf(kind)}` : "Loading…") : undefined;
+  const plugin = activePlugin(kind);
+  const problem =
+    isStub(registered) && isPluginEnabled(kind)
+      ? loadErrorOf(kind)
+        ? `It failed to load: ${loadErrorOf(kind)}`
+        : "Loading…"
+      : undefined;
   const active = useAppStore((state) => selectActiveTab(state).activePaneId === pane.id);
   const ctx = useMemo(() => createPaneContext(pane.id, kind), [pane.id, kind]);
   const activate = () => {

@@ -1,4 +1,4 @@
-import { hasUnsavedChanges, renameOpenModels } from "./editor/registry";
+import { renameOpenModels } from "./editor/registry";
 import { noteRecentFile } from "./palette/recent";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { convertedData, fileHandlers, newPane } from "./plugins/panes";
@@ -234,6 +234,20 @@ export function focusNeighbourPane(direction: Direction): void {
   if (best) focusPane(best.id);
 }
 
+/** Whether a pane may be given another file: its plugin says it has nothing unsaved. */
+function mayReplaceFile(pane: PaneNode): boolean {
+  const spec = paneSpec(pane.data.kind);
+  if (!spec) return false;
+  if (spec.isDirty) {
+    try {
+      return !spec.isDirty(pane.id);
+    } catch {
+      return false;
+    }
+  }
+  return !spec.closeBlockers;
+}
+
 export type OpenFileOptions = {
   /** The pane the request comes from; the file opens in its tab. */
   fromPaneId: string;
@@ -287,7 +301,7 @@ export function openFile(path: string, { fromPaneId, newPane: alwaysNew = false,
     for (const candidateKind of kinds) {
       const ofKind = panes.filter((pane) => pane.data.kind === candidateKind);
       if (ofKind.length === 0) continue;
-      const free = ofKind.filter((pane) => !hasUnsavedChanges(pane.id));
+      const free = ofKind.filter((pane) => mayReplaceFile(pane));
       const target = free.find((pane) => pane.id === tab.activePaneId) ?? free[0];
       if (!target) {
         kind = candidateKind;

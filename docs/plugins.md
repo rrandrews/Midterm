@@ -50,6 +50,7 @@ All `PaneSpec` members are optional:
 | `validateData(raw)` | Restoring saved pane data. Return the fields to keep, or `null` to start the pane afresh. |
 | `createData(from?)` | Data for a new pane opened from `from`. The terminal inherits `directoryOf(from)`. |
 | `convertData(previous)` | "Change pane type". Editor ↔ viewer keep `path`. Without it, the pane gets `createData(pane)`. |
+| `isDirty(paneId)` | Unsaved work right now, synchronously. `openFile` only reuses a pane for another file when this is false; a plugin with `closeBlockers` and no `isDirty` never has its panes reused. |
 | `closeBlockers(paneId)` | What closing would lose: `{ type: "running" \| "unsaved" \| "other", name }`. Every close, quit and type change asks once for all of them. |
 | `directory(pane)` | The directory a pane is in. Used for the palette's project root and for new terminals. |
 | `explorerFollows` | Unpinned explorers follow this pane's `directory` (terminals). |
@@ -232,12 +233,20 @@ the plugins folder works too.
 **Load.** After the first render, `loadImportedPlugins` lists the installed
 plugins and loads each enabled one:
 
-- The module is loaded with `import("plugin://localhost/<id>/<main>?v=N")`
-  (on Windows `http://plugin.localhost/…`). `N` changes on every load, so a
-  replaced plugin's new code runs.
+- The module is loaded with `import("plugin://localhost/<id>@N/<main>")`
+  (on Windows `http://plugin.localhost/…`). `N` changes on every load and
+  versions the whole folder, so a replaced plugin's new code runs, relative
+  imports included. A load that a newer load or a removal overtakes is
+  dropped.
 - The stylesheet is added as a `<link>`.
+- The stylesheet is attached only while the plugin is enabled.
 - A disabled plugin is registered as a **stub** from its manifest, and its
-  code is not run until it is enabled.
+  code is not run until it is enabled. Stubs (disabled, loading or failed)
+  are listed in the settings but never offered for new panes; the default
+  pane kind falls back to the terminal.
+- Enabling a plugin, or Rescan, loads its code again.
+- A plugin's commands may not reuse an existing command id (they are
+  ignored with a warning).
 - A module that fails to load, or exports something invalid, is reported
   in Settings → Plugins and on its panes' placeholders. Every call into a
   plugin (menus, titles, close checks…) is guarded, and each pane has an
@@ -275,8 +284,8 @@ Theme tokens are CSS variables (`var(--color-fg)` and so on; see
    `main.js`.
 2. Import the folder from Settings → Plugins, or symlink it into the plugins
    folder and press Rescan.
-3. After changing the code, import again (or Rescan), and toggle the plugin
-   off and on to reload it.
+3. After changing the code, press Rescan (or toggle the plugin off and on)
+   to reload it.
 
 The example uses `mount` and plain DOM. To use React, take
 `api.react.React` and `api.react.jsxRuntime` and set `pane.component`. A
