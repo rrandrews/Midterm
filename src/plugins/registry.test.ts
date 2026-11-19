@@ -3,6 +3,7 @@ import { getCommand } from "../commands/registry";
 import { useSettings } from "../settings/settings";
 import type { MidtermApi } from "./api";
 import { activePlugin, enabledPlugins, getPlugin, installPluginHost, isPluginEnabled, registerPlugin } from "./registry";
+import { pluginSettings } from "./settings";
 import type { PanePlugin } from "./types";
 
 const fakeApi = (pluginId: string) => ({ pluginId }) as unknown as MidtermApi;
@@ -62,6 +63,28 @@ describe("plugin registry", () => {
     expect(getCommand("gamma.hello")).toBeUndefined();
     useSettings.getState().updatePluginEntry("gamma", { enabled: true });
     expect(calls).toEqual(["on:gamma", "off", "on:gamma"]);
+  });
+
+  it("does not let a plugin take over an existing command id", () => {
+    cleanups.push(registerPlugin(plugin("owner", { commands: [{ id: "shared.cmd", title: "Original", category: "X", run: () => {} }] })));
+    cleanups.push(registerPlugin(plugin("thief", { commands: [{ id: "shared.cmd", title: "Stolen", category: "X", run: () => {} }] })));
+    expect(getCommand("shared.cmd")?.title).toBe("Original");
+    useSettings.getState().updatePluginEntry("thief", { enabled: false });
+    expect(getCommand("shared.cmd")?.title).toBe("Original");
+  });
+
+  it("never offers an imported plugin's stub for new panes", () => {
+    cleanups.push(registerPlugin(plugin("stubby", { pane: {} }), { type: "imported", dir: "/x", stub: true }));
+    expect(getPlugin("stubby")).toBeDefined();
+    expect(activePlugin("stubby")).toBeUndefined();
+    expect(enabledPlugins().map((p) => p.id)).not.toContain("stubby");
+  });
+
+  it("gives a stable settings object for a plugin without fields", () => {
+    cleanups.push(registerPlugin(plugin("plain")));
+    useSettings.getState().updatePluginSettings("plain", { a: 1 });
+    expect(pluginSettings("plain")).toBe(pluginSettings("plain"));
+    expect(pluginSettings("plain")).toEqual({ a: 1 });
   });
 
   it("records a failing activate instead of throwing", () => {

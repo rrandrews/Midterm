@@ -68,10 +68,15 @@ export async function pickPluginSource(kind: "folder" | "zip"): Promise<string |
   return typeof picked === "string" ? picked : null;
 }
 
-/** URL of a file inside an installed plugin, served by the `plugin://` scheme. */
-export function pluginFileUrl(id: string, path: string): string {
+/**
+ * URL of a file inside an installed plugin, served by the `plugin://`
+ * scheme. `generation` versions the whole folder (`<id>@<n>/…`), so a
+ * reloaded module's relative imports are fetched afresh too.
+ */
+export function pluginFileUrl(id: string, path: string, generation?: number): string {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   // Windows maps custom schemes to http://<scheme>.localhost.
   const base = navigator.userAgent.includes("Windows") ? "http://plugin.localhost" : "plugin://localhost";
-  return `${base}/${encodeURIComponent(id)}/${encoded}`;
+  const folder = generation === undefined ? encodeURIComponent(id) : `${encodeURIComponent(id)}@${generation}`;
+  return `${base}/${folder}/${encoded}`;
 }

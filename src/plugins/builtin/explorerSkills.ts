@@ -1,7 +1,8 @@
 import { activePaneId, openPaneBeside } from "../../actions";
 import { peekExplorer } from "../../explorer/explorers";
 import { listDir } from "../../ipc/fs";
-import { selectAllPanes, useAppStore } from "../../state/store";
+import { listPanes } from "../../state/layout";
+import { selectActiveTab, useAppStore } from "../../state/store";
 import type { Skill } from "../types";
 
 const LIST_LIMIT = 500;
@@ -51,8 +52,9 @@ export const explorerSkills: Skill[] = [
         },
         run: async (input) => {
           const { path } = input as { path: string };
+          // Only the active tab's explorers: one in a background tab would change out of sight.
           const find = () =>
-            selectAllPanes(useAppStore.getState())
+            listPanes(selectActiveTab(useAppStore.getState()).layout)
               .filter((pane) => pane.data.kind === "explorer")
               .map((pane) => peekExplorer(pane.id))
               .find((model) => model !== undefined);

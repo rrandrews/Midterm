@@ -95,6 +95,12 @@ export type PaneSpec = {
   createData?(from?: PaneNode): Omit<PaneData, "kind">;
   /** Data when a pane of another kind is changed to this one (editor ↔ viewer keep `path`). */
   convertData?(previous: PaneData): Omit<PaneData, "kind">;
+  /**
+   * Whether the pane has unsaved work right now. `openFile` only gives a
+   * pane another file when this says no; a plugin with `closeBlockers` but
+   * no `isDirty` never has its panes reused.
+   */
+  isDirty?(paneId: string): boolean;
   /** What closing this pane would lose. */
   closeBlockers?(paneId: string): Promise<CloseBlocker[]>;
   /** The directory a pane is "in": the palette's project root, explorers following it. */
