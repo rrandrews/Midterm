@@ -64,7 +64,7 @@ tab. A terminal's background is transparent so its pane gradient shows.
 | Thing | Value |
 |---|---|
 | Title bar height | 38px (`--titlebar-height`) plus a 1px bottom border |
-| Traffic-light gutter | 82px |
+| Traffic-light gutter | 82px. The buttons start 14px from the left, vertically centred in the bar; `src-tauri/src/traffic_lights.rs` lays them out (not `trafficLightPosition`, which leaves their vertical position to AppKit) |
 | Menu | 228px min width, 5px padding, 8px radius; items 28px tall, 5px radius |
 | Pane hover controls | 6px from the pane's top-right; 12px icons, 3px padding |
 | Active-pane bar | 2px, left edge |

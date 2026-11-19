@@ -1,5 +1,6 @@
 mod menu;
 mod pty;
+mod traffic_lights;
 
 use tauri::webview::PageLoadEvent;
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -12,6 +13,24 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(PtyManager::default())
         .menu(menu::build)
+        .setup(|app| {
+            for window in app.webview_windows().values() {
+                traffic_lights::apply(&window.as_ref().window());
+            }
+            Ok(())
+        })
+        // AppKit puts the traffic lights back in their default spot on these.
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                WindowEvent::Resized(_)
+                    | WindowEvent::Focused(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::ThemeChanged(_)
+            ) {
+                traffic_lights::apply(window);
+            }
+        })
         // A page that (re)loads has lost the channels its terminals were
         // streaming to, so their shells can never be reached again: end them
         // rather than leave them stalled until the window closes. This is a

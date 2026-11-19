@@ -37,6 +37,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/dev/` | Development aids (not in production builds). |
 | `src-tauri/src/pty/` | PTY sessions and the commands that drive them. |
 | `src-tauri/src/menu.rs` | Native menu. Has no "Close Window", so ⌘W reaches the app. |
+| `src-tauri/src/traffic_lights.rs` | Centres the macOS traffic lights in the web title bar; re-applied on resize and focus. |
 
 ## State
 
