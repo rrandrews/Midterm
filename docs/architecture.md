@@ -35,6 +35,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src/components/titlebar/` | Title bar = tab bar: workspace switcher, tabs, app menu. |
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
 | `src/plugins/` | The pane plugin contract, registry, API, pane host, skills and the imported-plugin loader; built-in plugins in `builtin/`. See [plugins.md](plugins.md). |
+| `src/ai/` | AI next-command suggestions: context builder and redaction, the suggestion engine, Settings → AI, commands. Requests go through the backend (`src/ipc/ai.ts`); the webview's CSP still allows nothing remote. See [ai.md](ai.md). |
 | `src/theme/` | Themes: model, resolution, bundled themes, importers, applying the theme, the Appearance section and the theme editor pane. See [themes.md](themes.md). |
 | `src/components/panes/` | The built-in panes' components. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |

@@ -364,7 +364,9 @@ plugins (M8): the example plugin imported and loaded through `plugin://`,
 its pane opened from a generated command, its stylesheet, skills (code,
 `SKILL.md`, built in, a refused write, invalid input), the placeholder when
 disabled, and removal; themes (M9): switching theme updates a CSS variable
-and a live terminal's palette, and the theme editor pane opens.
+and a live terminal's palette, and the theme editor pane opens; AI (M10,
+with `&aistub=PORT` and `bun scripts/ai-stub.ts PORT` running): see
+[ai.md](ai.md#self-test).
 
 Known failure when the window is not frontmost: "closing a pane ends its
 session" reports focus on `<body>` (also on M7).
@@ -488,4 +490,5 @@ The suggestion is the most recent history entry that starts with what is
 typed. History is the pane's own commands (kept by its tracker, newest
 first) followed by the global list, which every pane adds to and which is
 saved in `history.json` (last 1000, via `openJsonFile`). Shell history
-files are not read.
+files are not read. At an empty prompt, and while it continues what is
+typed, an AI suggestion can take its place (see [ai.md](ai.md#blocks-input)).

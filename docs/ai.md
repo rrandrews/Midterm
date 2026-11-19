@@ -282,7 +282,144 @@ the machine (spends a little quota).
 
 ## Frontend
 
-> **To be written with the frontend** (`src/ai/`): settings and the IPC
-> wrapper with its browser mock, the context builder and redaction, the
-> suggestion engine, blocks input integration, commands, Settings → AI.
-> See the M10 checklist in [roadmap.md](roadmap.md).
+Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
+`main.tsx`.
+
+| File | What |
+|---|---|
+| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `PROVIDERS` (names, API or CLI, key needed); `toAiError`. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, cancellable. |
+| `context.ts` | Pure: `buildContext` (system prompt and prompt), `redact`, `trimOutput`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
+| `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `providerConfig`. |
+| `AiSection.tsx` | Settings → AI. |
+| `commands.ts` | Commands, the terminal menu's per-pane switch, registration. |
+
+### Settings
+
+`settings.ai` (`src/settings/schema.ts`):
+
+| Field | Meaning |
+|---|---|
+| `suggestions` | On by default, but inert until a provider is chosen (and a model, for APIs; a base URL for `custom`). |
+| `provider` | A provider id, or empty for none. |
+| `model` | The model id. Empty means the CLI's default, for CLI providers only. |
+| `baseUrl` | For `custom`. |
+| `cliPaths` | Executable overrides, by provider id. |
+| `contextBlocks` | Finished blocks sent as context (0–20, default 5). |
+
+A pane's own switch is `aiSuggestions: false` in the terminal pane's data
+(terminal menu → "AI suggestions in this pane", shown in blocks mode once AI
+is set up).
+
+Keys never pass through the settings. The key field is write-only: Save
+sends it to `ai_key_set`, and the UI only ever learns `ai_key_status`. A
+`custom` key is kept per base URL.
+
+### Context
+
+`contextFor(paneId)` collects:
+
+- the OS and shell (the foreground program while at the prompt);
+- the working directory, with home shown as `~`;
+- the git branch;
+- the last `contextBlocks` finished blocks: the command, its directory if
+  different, its output (`blockOutput`), and the exit status;
+- up to 20 earlier commands from the pane and the global history.
+
+`buildContext` then trims each output to its first 15 and last 25 lines
+(240 characters per line, 3000 per block), strips escape sequences, and
+redacts the whole prompt. `redact` replaces:
+
+- PEM private keys;
+- well-known token shapes: OpenAI and Anthropic `sk-…`, GitHub `ghp_` and
+  `github_pat_`, GitLab, Slack, AWS access key ids, Google API keys, npm,
+  and JWTs;
+- the value of assignments whose name contains SECRET, TOKEN, PASSWORD,
+  PASSPHRASE, API_KEY, ACCESS_KEY, PRIVATE_KEY or CREDENTIAL;
+- `--password`, `--token` and similar flags;
+- `Bearer`, `Basic` and `Token` credentials;
+- URL user info passwords.
+
+"Preview what is sent" in the settings shows exactly the text for the
+focused terminal.
+
+The reply goes through `parseSuggestion`: the first line, with code fences,
+backticks and a leading `$` removed. Empty replies, replies over 500
+characters, or replies containing control characters give no suggestion.
+
+### Engine
+
+The blocks input editor (`BlockInput.tsx`) remounts at every prompt and
+reports to the engine:
+
+- `atPrompt(paneId)`: on mount, on focus, and when the editor becomes
+  empty. It asks only if all of these hold:
+  - AI is configured and the pane's switch is on;
+  - the pane is the active one and the window has focus;
+  - no backoff is in force;
+  - nothing was asked at this prompt yet (`promptKey`: the block count and
+    the last block's id).
+
+  The request waits 350 ms and is dropped if the prompt or focus moved.
+- `typed(paneId)`: cancels a pending or running request. A ready
+  suggestion stays, since it may continue what was typed.
+- `leftPrompt(paneId)`: a command runs, the pane closes, or blocks mode is
+  left. Cancels and forgets.
+- `dismiss(paneId)` (Esc): hides the suggestion at this prompt.
+- `suggestNow(paneId)` (command): asks at once, whatever the pause, the
+  backoff or an earlier answer.
+
+Each pane has at most one request in flight (`ai_cancel` on replacement),
+with a reply budget of 120 tokens.
+
+Backoff after errors:
+- `network`, `http` and `timeout` errors double from 15 s up to 10 min.
+- `noKey`, `auth` and `notFound` stop automatic requests until the AI
+  settings change.
+- `empty`, `refused` and `cancelled` are not errors.
+
+Any change to `settings.ai` cancels everything and clears the backoff.
+
+State for the UI is `useAiSuggestions[paneId]`: `{ promptKey, status:
+loading | ready | none | error, text?, error?, dismissed? }`.
+
+### Blocks input
+
+At an empty prompt the AI suggestion is the ghost text. Once the user
+types, the AI suggestion stays only while it continues the typed text;
+otherwise the history's suggestion shows. ⇥ or → accepts the suggestion
+into the editor, and it is never run. Esc dismisses it.
+
+The footer shows where the suggestion comes from ("AI suggestion" or "from
+history"), a pulsing "AI…" while a request runs, or "AI unavailable" with
+the error as a tooltip.
+
+### Commands
+
+- `ai.toggleSuggestions`: AI: Toggle suggestions.
+- `ai.suggestNow`: AI: Suggest a command now. Opens the settings if AI is
+  not set up.
+- `ai.openSettings`: AI: Settings….
+
+### Settings → AI
+
+- A note on what leaves the machine.
+- The suggestions toggle and the context size.
+- The provider, grouped into APIs and CLIs, with its status (key saved, or
+  the CLI found with its path and version).
+- The base URL (custom), the key field with Save and Remove (APIs), or the
+  executable path (CLIs).
+- The model: free text, plus the provider's live list (`ai_models`) with a
+  refresh.
+- Test (`ai_test`) and "Preview what is sent".
+
+### Self-test
+
+With `aistub=PORT` in the self-test URL, and `bun scripts/ai-stub.ts PORT`
+running (a stand-in OpenAI-compatible server), the self-test:
+
+1. runs a command that exports a fake password;
+2. checks that nothing is asked while no provider is chosen;
+3. points `custom` at the stub and asks;
+4. checks that the ghost text shows the stub's answer. The stub only gives
+   that answer when the prompt contains the command and not the secret.
+5. checks that ⇥ accepts it.

@@ -63,7 +63,8 @@ render and saved 200 ms after each change. Dev runs with `?mockup` or
 `src/settings/SettingsDialog.tsx` (⌘, or the app menu). Sections come from
 a registry (`src/settings/sections.ts`): General (font family and size, what
 new tabs and splits open), Appearance (themes and the accent; see
-[themes.md](themes.md#settings-and-gallery)), Plugins (`PluginSettings.tsx`:
+[themes.md](themes.md#settings-and-gallery)), AI (see
+[ai.md](ai.md#settings--ai)), Plugins (`PluginSettings.tsx`:
 installed plugins, enable/disable, import, remove) and Keyboard (click a
 shortcut and press the new keys; ✕ unbinds, ↺ restores the default;
 conflicts are flagged). Below them, one section per pane plugin: Terminal
