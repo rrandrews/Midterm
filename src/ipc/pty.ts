@@ -1,4 +1,5 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { spawnMockPty } from "./ptyMock";
 
 /* Typed wrapper around the Rust PTY commands (src-tauri/src/pty). */
 
@@ -89,53 +90,6 @@ async function spawnTauriPty(options: PtyOptions): Promise<Pty> {
         logFailure("pty_foreground")(error);
         return null;
       }),
-  };
-}
-
-/**
- * Stand-in used when the frontend runs in a plain browser (`bun run dev`
- * without Tauri): echoes input line by line so layout work doesn't need the
- * native shell. Not a shell.
- */
-function spawnMockPty(options: PtyOptions): Pty {
-  const encoder = new TextEncoder();
-  const send = (text: string) => queueMicrotask(() => options.onData(encoder.encode(text)));
-  const prompt = "\x1b[38;2;133;138;150m~/mock\x1b[0m \x1b[38;2;139;156;255m❯\x1b[0m ";
-  const started = performance.now();
-  let line = "";
-
-  send(`\x1b[38;2;133;138;150m[mock pty — run \`bun run tauri dev\` for a real shell]\x1b[0m\r\n${prompt}`);
-
-  return {
-    write: (data) => {
-      for (const char of data) {
-        if (char === "\r") {
-          const command = line.trim();
-          line = "";
-          if (command === "exit") {
-            send("\r\n");
-            queueMicrotask(() =>
-              options.onExit({ code: 0, runtimeMs: performance.now() - started }),
-            );
-            return;
-          }
-          send(command ? `\r\n${command}\r\n${prompt}` : `\r\n${prompt}`);
-        } else if (char === "\x7f") {
-          if (line) {
-            line = line.slice(0, -1);
-            send("\b \b");
-          }
-        } else if (char >= " ") {
-          line += char;
-          send(char);
-        }
-      }
-    },
-    writeBinary: () => {},
-    resize: () => {},
-    ack: () => {},
-    kill: () => {},
-    foreground: async () => ({ pid: 0, name: "mock", isShell: true }),
   };
 }
 
