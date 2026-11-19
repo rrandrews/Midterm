@@ -84,6 +84,9 @@ constants or `useCallback`), because every pane re-renders when they change.
 - WebKit has no `Element.moveBefore`, so when the layout restructures, panes
   that shift are re-inserted into the document and lose keyboard focus.
   `onModelChanged` calls `restoreFocusAfterLayoutChange()` for that.
+- Pane content must not give its split cell an intrinsic size: `.pane` has
+  `contain: size`. Without it a terminal's canvas holds a shrinking cell at
+  its old width, and refits walk it down a few columns per frame.
 - An initial size given in pixels (e.g. a 220px explorer) becomes a
   percentage once the user resizes that split.
 

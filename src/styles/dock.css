@@ -74,11 +74,17 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
   display: none;
 }
 
-/* Pane content backgrounds. */
+/*
+ * Pane content. `contain: size` keeps content (a terminal's canvas) out of
+ * the split cell's intrinsic size: without it, a cell that should shrink is
+ * held at its terminal's width, and each refit shrinks it a few columns per
+ * frame, which plays like a slow animation after every split.
+ */
 .pane {
   height: 100%;
   overflow: hidden;
   outline: none;
+  contain: size;
 }
 .pane-terminal {
   background: var(--pane-terminal);
