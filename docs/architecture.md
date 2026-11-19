@@ -153,7 +153,8 @@ Set in `src-tauri/tauri.conf.json` (`app.security`):
 | `object-src`, `frame-src`, `form-action`, `base-uri` | `'none'` | Unused. |
 
 `devCsp` is the same plus what Vite's dev server needs: inline scripts
-(React Refresh's preamble) and `ws://` / `http://localhost:1420`.
+(React Refresh's preamble), `ws://` / `http://localhost:1420`, and
+`http://127.0.0.1:*` for the self-test's report.
 Rendered Markdown is sanitized (DOMPurify) and never loads anything by
 itself, so it does not rely on the CSP alone.
 

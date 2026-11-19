@@ -8,6 +8,10 @@ import { isConfirming } from "../components/ui/ConfirmDialog";
 import { findPane } from "../state/layout";
 import { findTabOfPane, selectActiveTab, useAppStore } from "../state/store";
 import { peekSession, sessionCount } from "../terminal/sessions";
+import { menuSpecs } from "../commands/nativeMenu";
+import { findFiles, readTextFile, writeTextFile } from "../ipc/fs";
+import { getSettings, useSettings } from "../settings/settings";
+import { blockOutput, canRun } from "../terminal/blockMode";
 
 /*
  * Development aid: exercises the real app (real webview, real PTY) and posts
@@ -266,6 +270,85 @@ async function integrationChecks(checks: Check[]): Promise<void> {
   checks.push({ name: "titles: back to the directory after the program ends", ok: idle, detail: tabOf()?.title });
 }
 
+
+/** M4–M7: blocks from the real shell's OSC 133 marks, menu, files, settings. */
+async function featureChecks(checks: Check[]): Promise<void> {
+  const paneId = listPanes(selectActiveTab(useAppStore.getState()).layout)[0]?.id;
+  const session = paneId && peekSession(paneId);
+  if (!paneId || !session) {
+    checks.push({ name: "features: a terminal to test in", ok: false });
+    return;
+  }
+
+  // Blocks: the shell marks prompts and commands, and a command becomes a block.
+  const present = await waitFor(() => session.blocks.snapshot().integration === "present", 8000);
+  checks.push({ name: "blocks: shell prints OSC 133 marks", ok: present, detail: session.blocks.snapshot().integration });
+  const atPrompt = await waitFor(() => canRun(session), 8000);
+  checks.push({ name: "blocks: shell reaches a prompt", ok: atPrompt, detail: session.blocks.snapshot().phase });
+  if (atPrompt) {
+    const before = session.blocks.snapshot().blocks.length;
+    session.runCommand("echo blocks-$((40+2)); false");
+    const finished = await waitFor(() => {
+      const blocks = session.blocks.snapshot().blocks;
+      return blocks.length > before && blocks[blocks.length - 1].exitCode !== undefined;
+    }, 8000);
+    const blocks = session.blocks.snapshot().blocks;
+    const last = blocks[blocks.length - 1];
+    const output = last ? blockOutput(session, last) : "";
+    checks.push({
+      name: "blocks: a command becomes a block with output and exit status",
+      ok: finished && last?.exitCode === 1 && output.includes("blocks-42") && !output.includes("$((") && canRun(session),
+      detail: { command: last?.command, exitCode: last?.exitCode, output: output.slice(0, 200) },
+    });
+  }
+
+  // Settings reach live terminals.
+  const fontSize = getSettings().fontSize;
+  useSettings.getState().updateSettings({ fontSize: fontSize + 1.5 });
+  await sleep(50);
+  const applied = (session as unknown as { term: { options: { fontSize: number } } }).term.options.fontSize;
+  useSettings.getState().updateSettings({ fontSize });
+  checks.push({ name: "settings: font size applies to a live terminal", ok: applied === fontSize + 1.5, detail: applied });
+
+  // The generated menu bar is accepted by the backend.
+  const menu = await invoke("menu_set", { menus: menuSpecs() }).then(
+    () => true,
+    (failure: unknown) => String(failure),
+  );
+  checks.push({ name: "menu: generated menu bar is accepted", ok: menu === true, detail: menu });
+
+  // Editor file round trip, with the conflict check.
+  const path = `/tmp/midterm-selftest-${Math.random().toString(36).slice(2)}.txt`;
+  const created = await writeTextFile(path, "one\n", { kind: "absent" });
+  const read = await readTextFile(path);
+  const stale = created.kind === "written" ? created.version : null;
+  const second = stale && (await writeTextFile(path, "two\n", { kind: "version", version: stale }));
+  const conflict = stale && (await writeTextFile(path, "three\n", { kind: "version", version: stale }));
+  const reread = await readTextFile(path);
+  checks.push({
+    name: "files: write, read, and refuse a stale save",
+    ok:
+      created.kind === "written" &&
+      read.kind === "text" &&
+      read.text === "one\n" &&
+      second?.kind === "written" &&
+      conflict?.kind === "conflict" &&
+      reread.kind === "text" &&
+      reread.text === "two\n",
+    detail: { created: created.kind, second: second?.kind, conflict: conflict?.kind },
+  });
+  await invoke("fs_trash", { paths: [path] }).catch(() => {});
+
+  // Fuzzy file open can list a real directory.
+  const cwd = session.cwd;
+  const found = cwd ? await findFiles(cwd, 50).catch((failure: unknown) => String(failure)) : "no cwd";
+  checks.push({
+    name: "palette: lists files under the terminal's directory",
+    ok: typeof found !== "string",
+    detail: typeof found === "string" ? found : found.paths.length,
+  });
+}
+
 export async function runSelfTest(port: string): Promise<void> {
   const checks: Check[] = [];
   const environment = {
@@ -278,6 +361,7 @@ export async function runSelfTest(port: string): Promise<void> {
   try {
     await sleep(1500);
     await integrationChecks(checks);
+    await featureChecks(checks);
     await uiChecks(checks);
     await ptyChecks(checks);
   } catch (caught) {

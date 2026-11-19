@@ -349,7 +349,10 @@ reported as the shell (`isShell: true`).
 posts a JSON report to a local listener: raw-byte delivery, running commands,
 environment, resize, an 8 MB flood, exit codes, kill, terminal scaling, a
 terminal surviving a re-dock, focus after layout changes, and shell
-integration (OSC 7), automatic tab titles and the close confirmation.
+integration (OSC 7), automatic tab titles, the close confirmation, and
+M4–M7 features: blocks from the shell's OSC 133 marks (command, output,
+exit status), settings reaching a live terminal, the generated menu bar,
+editor file writes with the stale-save check, and fuzzy file listing.
 
 ```sh
 # 1. a listener that accepts one POST on PORT and saves the body
