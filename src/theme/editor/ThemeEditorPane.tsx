@@ -254,6 +254,7 @@ export function ThemeEditorPane({
   useEffect(() => registerPaneFocuser(paneId, () => rootRef.current?.focus({ preventScroll: true })), [paneId]);
   useEffect(() => registerPaneActions(paneId, { save: () => saveRef.current(), undo, redo }), [paneId]);
 
+  const resolved = useMemo(() => (draft ? resolveTheme(draft) : null), [draft]);
   if (!owner) {
     return (
       <div ref={rootRef} tabIndex={-1} className="flex h-full flex-col items-center justify-center gap-2 text-meta text-fg-dim outline-none">
@@ -267,7 +268,6 @@ export function ThemeEditorPane({
     );
   }
 
-  const resolved = useMemo(() => (draft ? resolveTheme(draft) : null), [draft]);
   if (!draft || !resolved) {
     return (
       <div ref={rootRef} tabIndex={-1} className="flex h-full items-center justify-center text-meta text-fg-dim outline-none">
