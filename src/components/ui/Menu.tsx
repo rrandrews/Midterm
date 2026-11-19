@@ -31,7 +31,7 @@ const SURFACE =
 
 const ITEM =
   "flex h-7 w-full cursor-default items-center gap-2 rounded-[5px] px-2.5 text-left text-menu " +
-  "text-fg-soft outline-none data-[highlighted]:bg-white/[0.06] data-[disabled]:opacity-40";
+  "text-fg-soft outline-none data-[highlighted]:bg-hover data-[disabled]:opacity-40";
 
 /**
  * Focus goes back to a pane when a menu closes, not to whatever opened it,
@@ -125,7 +125,7 @@ export function MenuSubTrigger({
   const Primitive = usePrimitive();
   return (
     <Primitive.SubTrigger
-      className={`${ITEM} data-[state=open]:bg-white/[0.06] ${className}`}
+      className={`${ITEM} data-[state=open]:bg-hover ${className}`}
       {...props}
     >
       <span className="min-w-0 flex-1 truncate">{children}</span>

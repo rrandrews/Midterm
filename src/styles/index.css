@@ -6,8 +6,9 @@
 @import "./editor.css";
 
 /*
- * Design tokens. Values are taken from the reference mockup; see
- * docs/design-tokens.md for what each one is used for.
+ * Design tokens. These defaults are Midterm Dark's resolved values; the active
+ * theme overrides every one of them at runtime on <html> (docs/themes.md).
+ * See docs/design-tokens.md for what each one is used for.
  */
 @theme {
   --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
@@ -40,6 +41,12 @@
   --color-accent-soft: color-mix(in srgb, var(--color-accent) 10%, transparent);
   --color-accent-fg: #dde2ff;
 
+  /* States: hover and selected overlays, modal backdrop, drop shadow */
+  --color-hover: #ffffff0f;
+  --color-selected: #ffffff0f;
+  --color-scrim: #00000059;
+  --color-shadow: #00000080;
+
   /* Status / syntax */
   --color-ok: #a5d6a7;
   --color-warn: #f2c27b;
@@ -52,6 +59,38 @@
   --color-type: #f2c27b;
   --color-punctuation: #9096a1;
 
+  /* Terminal (the xterm palette; the background is transparent, see --terminal-solid) */
+  --color-terminal-bg: #00000000;
+  --color-terminal-fg: #d5d7dc;
+  --color-terminal-cursor: #8b9cff;
+  --color-terminal-cursor-accent: #0c0d10;
+  --color-terminal-selection: #8b9cff40;
+  --color-terminal-selection-inactive: #8b9cff26;
+  --color-terminal-match: #8b9cff40;
+  --color-terminal-match-active: #8b9cff99;
+
+  /* ANSI */
+  --color-ansi-black: #15161b;
+  --color-ansi-red: #e8868a;
+  --color-ansi-green: #a5d6a7;
+  --color-ansi-yellow: #f2c27b;
+  --color-ansi-blue: #82b4ff;
+  --color-ansi-magenta: #c3a6ff;
+  --color-ansi-cyan: #5eead4;
+  --color-ansi-white: #b9bcc4;
+  --color-ansi-bright-black: #5a5f6a;
+  --color-ansi-bright-red: #f2a3a6;
+  --color-ansi-bright-green: #bfe5c0;
+  --color-ansi-bright-yellow: #f7d49b;
+  --color-ansi-bright-blue: #a8cbff;
+  --color-ansi-bright-magenta: #d6c2ff;
+  --color-ansi-bright-cyan: #8cf2e2;
+  --color-ansi-bright-white: #f2f3f5;
+
+  /* Active tab gradient stops (composited into --tab-active) */
+  --color-tab-active-from: #15161b;
+  --color-tab-active-to: #121318;
+
   /* Type scale (px values straight from the mockup) */
   --text-badge: 9px;
   --text-micro: 10.5px;
@@ -62,7 +101,7 @@
   --text-input: 13px;
   --text-title: 18px;
 
-  --shadow-menu: 0 0 0 1px #2a2d35, 0 12px 32px rgb(0 0 0 / 0.5);
+  --shadow-menu: 0 0 0 1px var(--color-line-strong), 0 12px 32px var(--color-shadow);
 }
 
 :root {
@@ -140,6 +179,6 @@
   margin-top: 2px;
 }
 .palette-item[data-selected="true"] {
-  background: rgb(255 255 255 / 0.06);
+  background: var(--color-selected);
   color: var(--color-fg-bright);
 }

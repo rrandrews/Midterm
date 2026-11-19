@@ -6,7 +6,18 @@ as Tailwind v4 `@theme` tokens (so they generate utilities such as
 `bg-popover`, `text-fg-dim`, `text-meta`), and pane gradients as plain custom
 properties on `:root`.
 
-Use the tokens. Do not write raw hex values or pixel font sizes in components.
+The color values in `index.css` are only defaults (Midterm Dark's resolved
+values, so the first paint matches). The active theme sets every color token,
+`--terminal-solid`, the `--pane-*` gradients, `--tab-active` and
+`--shadow-menu` at runtime on `<html>`; see `docs/themes.md` for how a theme
+derives them. The values below are Midterm Dark's.
+
+Use the tokens. Do not write raw hex values, white/black alpha overlays
+(`bg-white/[0.06]`, `rgb(255 255 255 / …)`) or pixel font sizes in components:
+they break light themes. For a one-off tint with no token of its own, mix a
+token, e.g. `color-mix(in srgb, var(--color-fg-bright) 8%, transparent)` or
+the Tailwind modifier `bg-fg-bright/8`; scale a state token the same way
+(`bg-hover/68`) when a state needs to be fainter than the standard one.
 
 ## Colors
 
@@ -18,6 +29,7 @@ Use the tokens. Do not write raw hex values or pixel font sizes in components.
 | `raised` | `#2A2D35` | Pressed/open icon buttons |
 | `line` | `#1F2128` | Hairlines: title bar border, pane separators, tab edges |
 | `line-menu` | `#262931` | Menu separators |
+| `line-strong` | `#2A2D35` | Blockquote rule, the menu outline in `--shadow-menu` |
 | `line-block` | `#FFFFFF0F` | Between blocks (blocks mode) |
 | `line-input` | `#FFFFFF12` | Above the blocks input editor |
 | `fg-bright` | `#F2F3F5` | Active tab, emphasized text |
@@ -30,12 +42,24 @@ Use the tokens. Do not write raw hex values or pixel font sizes in components.
 | `accent` | `#8B9CFF` | Active-pane bar, cursor, drop indicator, workspace badge |
 | `accent-soft` | accent at 10% | Drop indicator fill |
 | `accent-fg` | `#DDE2FF` | Text on `accent-soft` |
+| `hover` | `#FFFFFF0F` | Hover / highlighted rows and buttons (`bg-hover`); explorer rows use it at 42.5% |
+| `selected` | `#FFFFFF0F` | Selected / current item (`bg-selected`): palette item, settings section, explorer row (scaled) |
+| `scrim` | `#00000059` | Modal backdrops (`bg-scrim`; the palette's is `bg-scrim/72`) |
+| `shadow` | `#00000080` | Shadow color in `--shadow-menu`; at 50% the markdown code-block well |
 | `ok` / `warn` / `err` / `info` | `#A5D6A7` / `#F2C27B` / `#E8868A` / `#82B4FF` | Status; `warn` is the tab activity dot |
 | `keyword` / `comment` | `#C3A6FF` / `#7F8592` | Syntax: keywords, comments |
 | `string` / `function` / `type` / `punctuation` | `#A5D6A7` / `#82B4FF` / `#F2C27B` / `#9096A1` | Syntax: strings, function names, types and tags (and numbers), angle brackets. Mapped from lezer tags in `src/editor/highlight.ts` |
 
 `accent-soft` is derived from `accent` with `color-mix`, so changing the
 accent changes both.
+
+Further tokens, published for completeness (the terminal and blocks code reads
+them from the resolved theme): `terminal-bg`, `terminal-fg`,
+`terminal-cursor`, `terminal-cursor-accent`, `terminal-selection`,
+`terminal-selection-inactive`, `terminal-match`, `terminal-match-active`, the
+16 `ansi-*` colors (`ansi-black` … `ansi-bright-white`), and
+`tab-active-from` / `tab-active-to` (the stops of `--tab-active`).
+`terminal-solid` is published as `--terminal-solid`, not `--color-…`.
 
 ## Type
 
@@ -64,6 +88,8 @@ Neutral graphite gradients whose angle varies slightly by pane kind:
 `--pane-explorer`, `--pane-editor`, `--pane-terminal`,
 `--pane-terminal-active`, `--pane-viewer`, and `--tab-active` for the active
 tab. A terminal's background is transparent so its pane gradient shows.
+`--pane-default` is for plugin panes without a background of their own; a
+theme can add `--pane-<plugin id>`.
 
 ## Metrics
 

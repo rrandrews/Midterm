@@ -54,7 +54,7 @@
   color: var(--color-fg-mid);
 }
 .editor-host .cm-editor .cm-activeLine {
-  background: rgb(255 255 255 / 0.025);
+  background: color-mix(in srgb, var(--color-fg-bright) 2.5%, transparent);
 }
 .editor-host .cm-editor .cm-selectionBackground,
 .editor-host .cm-editor .cm-content ::selection {
@@ -64,11 +64,11 @@
   background: color-mix(in srgb, var(--color-accent) 26%, transparent);
 }
 .editor-host .cm-editor .cm-selectionMatch {
-  background: rgb(255 255 255 / 0.07);
+  background: color-mix(in srgb, var(--color-fg-bright) 7%, transparent);
 }
 .editor-host .cm-editor .cm-matchingBracket {
-  background: rgb(255 255 255 / 0.08);
-  outline: 1px solid rgb(255 255 255 / 0.12);
+  background: color-mix(in srgb, var(--color-fg-bright) 8%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--color-fg-bright) 12%, transparent);
   color: inherit;
 }
 .editor-host .cm-editor .cm-nonmatchingBracket {
@@ -132,13 +132,13 @@
   padding: 0 8px;
   border: none;
   border-radius: 5px;
-  background: rgb(255 255 255 / 0.06);
+  background: color-mix(in srgb, var(--color-fg-bright) 6%, transparent);
   background-image: none;
   color: var(--color-fg-soft);
   font: inherit;
 }
 .editor-host .cm-editor .cm-button:hover {
-  background: rgb(255 255 255 / 0.1);
+  background: color-mix(in srgb, var(--color-fg-bright) 10%, transparent);
 }
 .editor-host .cm-editor .cm-panel button[name="close"] {
   top: 4px;
@@ -278,7 +278,7 @@
   font-variant-ligatures: none;
   font-size: 0.92em;
   color: var(--color-fg-soft);
-  background: rgb(255 255 255 / 0.05);
+  background: color-mix(in srgb, var(--color-fg-bright) 5%, transparent);
   border-radius: 4px;
   padding: 1px 4px;
 }
@@ -286,7 +286,7 @@
   margin: 0 0 12px;
   padding: 10px 12px;
   border-radius: 6px;
-  background: rgb(0 0 0 / 0.25);
+  background: color-mix(in srgb, var(--color-shadow) 50%, transparent);
   overflow-x: auto;
   line-height: 1.6;
 }
@@ -328,9 +328,10 @@
 
 /* Images in viewers: on a faint checkerboard so transparency shows. */
 .viewer-image {
+  --checker: color-mix(in srgb, var(--color-fg-bright) 3%, transparent);
   background-image:
-    linear-gradient(45deg, rgb(255 255 255 / 0.03) 25%, transparent 25%, transparent 75%, rgb(255 255 255 / 0.03) 75%),
-    linear-gradient(45deg, rgb(255 255 255 / 0.03) 25%, transparent 25%, transparent 75%, rgb(255 255 255 / 0.03) 75%);
+    linear-gradient(45deg, var(--checker) 25%, transparent 25%, transparent 75%, var(--checker) 75%),
+    linear-gradient(45deg, var(--checker) 25%, transparent 25%, transparent 75%, var(--checker) 75%);
   background-position:
     0 0,
     8px 8px;

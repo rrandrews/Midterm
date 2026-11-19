@@ -262,7 +262,7 @@ export function Palette() {
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && closePalette()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/25" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim/72" />
         <Dialog.Content
           data-owns-keyboard
           aria-describedby={undefined}
