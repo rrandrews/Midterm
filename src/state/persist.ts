@@ -92,19 +92,8 @@ function restoreTab(saved: unknown): Tab {
 function restoreWorkspace(saved: unknown, index: number): Workspace | null {
   if (!isRecord(saved) || !Array.isArray(saved.tabs)) return null;
   const tabs = saved.tabs.map(restoreTab);
-  // Ids must be unique for the store's lookups to make sense.
-  const seen = new Set<string>();
-  const unique = tabs.map((tab) => {
-    if (!seen.has(tab.id)) {
-      seen.add(tab.id);
-      return tab;
-    }
-    const copy = { ...tab, id: createTab().id };
-    seen.add(copy.id);
-    return copy;
-  });
   const name = nonEmptyString(saved.name) ? saved.name : `workspace ${index + 1}`;
-  const workspace = createWorkspace(name, unique.length ? unique : [createTab()]);
+  const workspace = createWorkspace(name, tabs.length ? tabs : [createTab()]);
   if (nonEmptyString(saved.id)) workspace.id = saved.id;
   if (workspace.tabs.some((tab) => tab.id === saved.activeTabId)) {
     workspace.activeTabId = saved.activeTabId as string;
@@ -131,15 +120,28 @@ export function restoreState(saved: unknown): AppState | null {
     workspaceIds.add(workspace.id);
   }
 
-  // Duplicate pane ids across tabs would make two panes share one terminal.
-  const panes = new Set<string>();
+  // Ids must be unique across the whole app: the store finds tabs by id, and
+  // two panes with one id would share a terminal. A tab whose id is taken
+  // gets a new one; a tab with a pane id seen before (in any tab, or twice
+  // in its own layout) is replaced by a fresh tab.
+  const tabIds = new Set<string>();
+  const paneIds = new Set<string>();
   for (const workspace of workspaces) {
-    workspace.tabs = workspace.tabs.map((tab) => {
+    workspace.tabs = workspace.tabs.map((restored) => {
+      let tab = restored;
       const ids = listPanes(tab.layout).map((pane) => pane.id);
-      if (ids.some((id) => panes.has(id))) return createTab({ title: tab.title });
-      for (const id of ids) panes.add(id);
+      if (new Set(ids).size !== ids.length || ids.some((id) => paneIds.has(id))) {
+        tab = createTab({ title: tab.title });
+      } else {
+        for (const id of ids) paneIds.add(id);
+      }
+      if (tabIds.has(tab.id)) tab = { ...tab, id: createTab().id };
+      tabIds.add(tab.id);
       return tab;
     });
+    if (!workspace.tabs.some((tab) => tab.id === workspace.activeTabId)) {
+      workspace.activeTabId = workspace.tabs[0].id;
+    }
   }
 
   const activeWorkspaceId = workspaces.some((workspace) => workspace.id === saved.activeWorkspaceId)

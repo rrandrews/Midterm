@@ -1,5 +1,6 @@
 mod menu;
 mod pty;
+mod quit_guard;
 mod traffic_lights;
 
 use tauri::webview::PageLoadEvent;
@@ -10,7 +11,29 @@ use pty::PtyManager;
 /// Quits the app; called by the webview once quitting has been confirmed.
 #[tauri::command]
 fn app_quit(app: AppHandle) {
+    quit_guard::QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
     app.exit(0);
+}
+
+/// This machine's host name, as shells report it in OSC 7 (`gethostname`).
+#[tauri::command]
+fn local_hostname() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        // SAFETY: the buffer is valid for its length; gethostname NUL-terminates
+        // on success when the name fits.
+        let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+        if rc != 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&b| b == 0)?;
+        String::from_utf8(buf[..end].to_vec()).ok()
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::var("COMPUTERNAME").ok()
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +47,7 @@ pub fn run() {
         .manage(PtyManager::default())
         .menu(menu::build)
         .setup(|app| {
+            quit_guard::install(app.handle());
             for window in app.webview_windows().values() {
                 traffic_lights::apply(&window.as_ref().window());
             }
@@ -62,6 +86,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_quit,
+            local_hostname,
             pty::commands::pty_spawn,
             pty::commands::pty_write,
             pty::commands::pty_write_bytes,

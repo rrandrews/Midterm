@@ -1,4 +1,5 @@
-import { activePaneId, closePaneNow, closeTabNow, removeWorkspaceNow } from "./actions";
+import { activePaneId, closePaneNow, closeTabNow, removeWorkspaceNow, setPaneKind } from "./actions";
+import type { PaneKind } from "./state/types";
 import { confirm } from "./components/ui/ConfirmDialog";
 import { findPane, listPanes } from "./state/layout";
 import { findTab, findTabOfPane, selectActiveTab, useAppStore } from "./state/store";
@@ -50,6 +51,14 @@ function terminalPanesOf(paneIds: string[]): string[] {
 export async function closePane(paneId = activePaneId()): Promise<void> {
   if (!paneId) return;
   if (await mayClose(terminalPanesOf([paneId]), "this pane", "Close pane")) closePaneNow(paneId);
+}
+
+/** Changing a terminal pane to another kind ends its shell, so it asks like closing. */
+export async function changePaneKind(paneId: string, kind: PaneKind): Promise<void> {
+  if (kind !== "terminal" && !(await mayClose(terminalPanesOf([paneId]), "the terminal", "Change type"))) {
+    return;
+  }
+  setPaneKind(paneId, kind);
 }
 
 export async function closeTab(tabId: string = selectActiveTab(store()).id): Promise<void> {

@@ -23,8 +23,10 @@ async function start(): Promise<void> {
   // Dev seeds and self-tests use throwaway state that must not replace the saved one.
   const persist = !import.meta.env.DEV || !(params.has("mockup") || params.has("selftest"));
   const { restoreSavedState, startSaving } = await import("./state/persistence");
-  // Before any terminal exists, so restored ones start in their saved directories.
-  if (persist) await restoreSavedState();
+  const { loadLocalHostname } = await import("./ipc/system");
+  // Both before any terminal exists: restored ones start in their saved
+  // directories, and directory reports are checked against the host name.
+  await Promise.all([persist ? restoreSavedState() : undefined, loadLocalHostname()]);
   if (import.meta.env.DEV) {
     // Dev-only handles for poking at the app from the console or a test driver.
     const [actions, dock, store, sessions] = await Promise.all([

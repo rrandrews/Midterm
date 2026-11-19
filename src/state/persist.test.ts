@@ -91,6 +91,24 @@ describe("snapshot and restore", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("keeps tab ids unique across workspaces", () => {
+    const saved = roundTrip(snapshotState(sampleState()));
+    saved.workspaces[1].tabs[0].id = saved.workspaces[0].tabs[0].id;
+    const restored = restoreState(saved)!;
+    const ids = restored.workspaces.flatMap((w) => w.tabs.map((t) => t.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const w of restored.workspaces) expect(w.tabs.some((t) => t.id === w.activeTabId)).toBe(true);
+  });
+
+  it("replaces a tab whose layout repeats a pane id", () => {
+    const saved = roundTrip(snapshotState(sampleState()));
+    const root = saved.workspaces[0].tabs[0].layout.root;
+    root.children[1].tabs[0].id = root.children[0].tabs[0].id;
+    const tab = restoreState(saved)!.workspaces[0].tabs[0];
+    expect(listPanes(tab.layout)).toHaveLength(1);
+    expect(tab.title).toBe("named");
+  });
+
   it("returns null for a layout with no panes", () => {
     expect(restoreLayout({ version: 1, root: { type: "split", orientation: "horizontal", children: [] } })).toBeNull();
   });

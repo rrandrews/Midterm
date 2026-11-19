@@ -1,9 +1,9 @@
-import { closePane } from "../../closing";
 import { useState } from "react";
 import { TabsetDragHandle, useParentTabsetState } from "react-resizable-panels";
-import { movePaneToNewTab, setPaneKind, splitPane, toggleMaximizePane } from "../../actions";
+import { movePaneToNewTab, movePaneToTab, splitPane, toggleMaximizePane } from "../../actions";
+import { changePaneKind, closePane } from "../../closing";
 import { notePaneFocused, refocusPane } from "../../layout/dock";
-import { useAppStore } from "../../state/store";
+import { findTabOfPane, selectActiveWorkspace, useAppStore } from "../../state/store";
 import { PANE_LABELS } from "../../state/layout";
 import { PANE_KINDS, type PaneNode } from "../../state/types";
 import { DotsIcon, GripIcon } from "../ui/icons";
@@ -28,6 +28,12 @@ type PaneToolbarProps = {
 export function PaneToolbar({ pane, alone }: PaneToolbarProps) {
   const [open, setOpen] = useState(false);
   const maximized = useParentTabsetState()?.isMaximized ?? false;
+  // Tabs this pane can move to (only read while the menu is open).
+  const otherTabs = open
+    ? selectActiveWorkspace(useAppStore.getState()).tabs.filter(
+        (tab) => tab.id !== findTabOfPane(useAppStore.getState(), pane.id)?.id,
+      )
+    : [];
 
   return (
     <div className="flex gap-0.5">
@@ -77,7 +83,7 @@ export function PaneToolbar({ pane, alone }: PaneToolbarProps) {
                 <MenuItem
                   key={kind}
                   checked={pane.data.kind === kind}
-                  onSelect={() => setPaneKind(pane.id, kind)}
+                  onSelect={() => void changePaneKind(pane.id, kind)}
                 >
                   {PANE_LABELS[kind]}
                 </MenuItem>
@@ -87,9 +93,20 @@ export function PaneToolbar({ pane, alone }: PaneToolbarProps) {
           <MenuItem shortcut="⇧⌘↩" disabled={alone} onSelect={() => toggleMaximizePane(pane.id)}>
             {maximized ? "Restore pane" : "Maximize pane"}
           </MenuItem>
-          <MenuItem disabled={alone} onSelect={() => movePaneToNewTab(pane.id)}>
-            Move to new tab
-          </MenuItem>
+          <MenuSub>
+            <MenuSubTrigger>Move to tab</MenuSubTrigger>
+            <MenuSubContent>
+              {otherTabs.map((tab) => (
+                <MenuItem key={tab.id} onSelect={() => movePaneToTab(pane.id, tab.id)}>
+                  {tab.title}
+                </MenuItem>
+              ))}
+              {otherTabs.length > 0 && <MenuSeparator />}
+              <MenuItem disabled={alone} onSelect={() => movePaneToNewTab(pane.id)}>
+                New tab
+              </MenuItem>
+            </MenuSubContent>
+          </MenuSub>
           <MenuSeparator />
           <MenuItem shortcut="⌘W" onSelect={() => closePane(pane.id)}>
             Close pane

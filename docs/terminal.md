@@ -224,9 +224,10 @@ arrays (still handled by `src/ipc/pty.ts`, but slower). Allow
 ## Working directory
 
 A session learns its shell's directory from OSC 7 (`file://host/path`,
-parsed by `src/terminal/osc.ts`). The host in the first report, which comes
-from our own shell integration, is taken as the local host; later reports
-naming another host (a shell inside `ssh`) are ignored.
+parsed by `src/terminal/osc.ts`). Only reports naming this machine count:
+an empty host, `localhost`, or the host name from `gethostname` (the
+`local_hostname` command, loaded at startup), which is what zsh, bash and
+fish report. Reports from elsewhere (a shell inside `ssh`) are ignored.
 
 - Each change is written to the pane's `PaneData.cwd` (`updatePaneData` in
   `src/actions.ts`: through the mounted layout's handle if the tab is
@@ -242,7 +243,9 @@ pane's terminal by `terminalTitle` (`src/terminal/titles.ts`): the
 foreground program, or, while the shell waits, the last part of its
 directory (`~` for home). Sessions look the foreground up (`pty_foreground`)
 250 ms after output, since starting or ending a program always produces
-some; there is no polling while a terminal is quiet. Renaming a tab to an
+some, and every 2 s while a program (not the shell) is in the foreground,
+since one program can hand over to another silently. An idle shell is not
+polled. Renaming a tab to an
 empty name hands its title back to the panes.
 
 ## Asking before closing
@@ -253,10 +256,17 @@ program, asks with `confirm()` (`src/components/ui/ConfirmDialog.tsx`).
 Menus and shortcuts use these; a shell that exits by itself closes its pane
 through `closePaneNow` without asking.
 
+Changing a terminal pane to another kind ends its shell, so it asks the same
+way (`changePaneKind`).
+
 Closing the window asks the same way (`installCloseGuards` in
-`src/ipc/window.ts`). ⌘Q is our own menu item (`menu::QUIT_ID`): the backend
-emits `quit-requested`, and the webview asks, flushes the saved state and
-calls `app_quit`.
+`src/ipc/window.ts`). Quitting: the backend emits `quit-requested`, and the
+webview asks, flushes the saved state (waiting for a save already in
+flight) and calls `app_quit`. ⌘Q is our own menu item (`menu::QUIT_ID`);
+Quit from the Dock, logout and shutdown go through
+`applicationShouldTerminate:`, which `src-tauri/src/quit_guard.rs` adds to
+Tao's app delegate at runtime. It lets termination through once `app_quit`
+has run, or when there is no webview to ask.
 
 Known gap: a program started with `exec` keeps the shell's pid, so it is
 reported as the shell (`isShell: true`).

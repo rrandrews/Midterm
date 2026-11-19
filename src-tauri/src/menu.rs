@@ -86,8 +86,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let file =
-            Submenu::with_items(app, "File", true, &[&quit])?;
+        let file = Submenu::with_items(app, "File", true, &[&quit])?;
         let help = Submenu::with_items(
             app,
             "Help",

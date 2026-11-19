@@ -37,8 +37,13 @@ export function startSaving(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastSaved: string | undefined;
 
-  const save = async () => {
+  let inFlight: Promise<void> = Promise.resolve();
+  const save = () => {
     timer = undefined;
+    inFlight = inFlight.then(write);
+    return inFlight;
+  };
+  const write = async () => {
     if (!file) return;
     const snapshot = snapshotState(useAppStore.getState());
     // Most store changes (focus, activity dots) do not touch saved fields.
@@ -48,9 +53,12 @@ export function startSaving(): () => void {
     await file.set(KEY, snapshot).catch((error) => console.error("Could not save the state:", error));
   };
   flushPending = async () => {
-    if (timer === undefined) return;
-    clearTimeout(timer);
-    await save();
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      await save();
+    }
+    // A save the debounce already started may still be on its way.
+    await inFlight;
   };
 
   const unsubscribe = useAppStore.subscribe(() => {

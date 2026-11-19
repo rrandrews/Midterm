@@ -2,8 +2,10 @@ import { useRef } from "react";
 
 type InlineEditProps = {
   value: string;
-  /** Called with the new value on Enter or blur (not called if unchanged or blank). */
+  /** Called with the new value on Enter or blur (not called if unchanged, or blank unless `allowEmpty`). */
   onCommit: (value: string) => void;
+  /** A blank value is committed too (it means something, e.g. "name it automatically"). */
+  allowEmpty?: boolean;
   /** Called when editing ends, whether or not anything was committed. */
   onDone: () => void;
   label: string;
@@ -11,13 +13,20 @@ type InlineEditProps = {
 };
 
 /** A text field that edits a label in place and sizes itself to its content. */
-export function InlineEdit({ value, onCommit, onDone, label, className = "" }: InlineEditProps) {
+export function InlineEdit({
+  value,
+  onCommit,
+  onDone,
+  label,
+  allowEmpty = false,
+  className = "",
+}: InlineEditProps) {
   // Escape blurs the field; this keeps that blur from committing.
   const cancelled = useRef(false);
 
   const finish = (input: HTMLInputElement) => {
     const next = input.value.trim();
-    if (!cancelled.current && next && next !== value) onCommit(next);
+    if (!cancelled.current && (next || allowEmpty) && next !== value) onCommit(next);
     onDone();
   };
 

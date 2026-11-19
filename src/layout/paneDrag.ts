@@ -52,7 +52,10 @@ export function installPaneDropTargets(drop: (paneId: string, target: string) =>
     if (dragged) setHovered(targetAt(event.clientX, event.clientY));
   };
   const onPointerUp = (event: PointerEvent) => {
-    const paneId = dragged;
+    // The preview exists exactly while the library's drag does; without it
+    // the drag was cancelled (e.g. the window lost focus) and this release
+    // is an ordinary click.
+    const paneId = document.querySelector(".pane-drag-preview") ? dragged : null;
     const target = paneId && targetAt(event.clientX, event.clientY)?.dataset.paneDrop;
     end();
     // After the library has finished (cancelling) its own drag.
@@ -67,7 +70,10 @@ export function installPaneDropTargets(drop: (paneId: string, target: string) =>
     if (event.key === "Escape") end();
   };
   window.addEventListener("keydown", onKeyDown, true);
+  // The library cancels its drag when the window loses focus.
+  window.addEventListener("blur", end);
   return () => {
+    window.removeEventListener("blur", end);
     window.removeEventListener("keydown", onKeyDown, true);
     onDrop = null;
     end();

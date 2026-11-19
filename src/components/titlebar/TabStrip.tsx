@@ -65,6 +65,7 @@ function TabItem({ tab, active }: { tab: Tab; active: boolean }) {
       {renaming ? (
         <InlineEdit
           label="Tab name (empty to name it automatically)"
+          allowEmpty
           value={tab.title}
           onCommit={(title) => renameTab(tab.id, title)}
           onDone={() => {

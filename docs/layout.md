@@ -111,6 +111,11 @@ Elements with `data-pane-drop="<tab id>"` (each tab) or `data-pane-drop="new"`
 pane is appended to the right of the target tab's layout) or
 `movePaneToNewTab`.
 
+A pane that is alone in its tab cannot be dragged (the library disables
+dragging the only frame), so the pane menu also has **Move to tab ›**,
+listing the workspace's other tabs and a new tab. A drop only counts while
+the library's drag preview exists; the window losing focus cancels both.
+
 Tabs themselves are reordered by dragging (dnd-kit sortable, in
 `TabStrip.tsx`; a 5px move threshold keeps clicks and double-clicks
 working). When they do not fit, the strip scrolls sideways (wheel or

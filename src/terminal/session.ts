@@ -6,6 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
 import { openExternal } from "../ipc/shell";
+import { localHostname } from "../ipc/system";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { TERMINAL_OPTIONS } from "./theme";
@@ -27,6 +28,11 @@ export type SessionEvents = {
  * output, so there is no need to poll while the terminal is quiet.
  */
 const FOREGROUND_CHECK_MS = 250;
+/**
+ * While a program runs, it can hand the terminal to another without any
+ * output (`sleep 1; yes > /dev/null`), so it is looked up this often too.
+ */
+const FOREGROUND_POLL_MS = 2000;
 
 /**
  * A shell that ran for less than this probably failed to start. Its pane
@@ -83,11 +89,10 @@ export class TerminalSession {
   /** Last directory the shell reported; until then, where it was started. */
   private currentCwd: string | undefined;
   /**
-   * Host named in the first OSC 7, which comes from our own shell
-   * integration. Reports naming another host (e.g. from inside `ssh`) are
-   * not directories on this machine and are ignored.
+   * Fallback when this machine's host name is unknown: the host named in
+   * the first OSC 7, which normally comes from our own shell integration.
    */
-  private localHost: string | undefined;
+  private firstHost: string | undefined;
 
   private lastForeground: PtyForeground | null = null;
   private foregroundTimer: ReturnType<typeof setTimeout> | undefined;
@@ -270,12 +275,26 @@ export class TerminalSession {
     else this.pendingAck += bytes;
   }
 
-  private scheduleForegroundCheck(): void {
-    if (this.foregroundTimer !== undefined) return;
+  /**
+   * Whether an OSC 7 host is this machine. Reports from elsewhere (a shell
+   * inside `ssh`) are not directories here and are ignored.
+   */
+  private isLocal(host: string): boolean {
+    if (host === "" || host === "localhost") return true;
+    const local = localHostname();
+    if (local) return host === local || host === local.replace(/\.local$/, "");
+    this.firstHost ??= host;
+    return host === this.firstHost;
+  }
+
+  private scheduleForegroundCheck(delay = FOREGROUND_CHECK_MS): void {
+    if (this.foregroundTimer !== undefined || this.disposed) return;
     this.foregroundTimer = setTimeout(() => {
       this.foregroundTimer = undefined;
-      void this.foreground();
-    }, FOREGROUND_CHECK_MS);
+      void this.foreground().then((current) => {
+        if (current && !current.isShell) this.scheduleForegroundCheck(FOREGROUND_POLL_MS);
+      });
+    }, delay);
   }
 
   private noteForeground(current: PtyForeground | null): void {
@@ -289,9 +308,7 @@ export class TerminalSession {
 
   private handleCwdReport(data: string): void {
     const reported = parseOsc7(data);
-    if (!reported) return;
-    this.localHost ??= reported.host;
-    if (reported.host !== this.localHost || reported.path === this.currentCwd) return;
+    if (!reported || !this.isLocal(reported.host) || reported.path === this.currentCwd) return;
     this.currentCwd = reported.path;
     this.events.onCwdChange(this, reported.path);
   }
