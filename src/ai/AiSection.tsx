@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type CliStatus,
   PROVIDERS,
@@ -15,7 +15,7 @@ import { BUTTON, CommitField, FIELD, Row, SectionHeading, Toggle } from "../sett
 import { useSettings } from "../settings/settings";
 import { AI_CONTEXT_RANGE } from "../settings/schema";
 import { activeTerminal } from "../terminal/blockMode";
-import { aiConfigured, contextFor, providerConfig } from "./engine";
+import { aiConfigured, clearBackoff, contextFor, providerConfig } from "./engine";
 
 /*
  * Settings → AI: next-command suggestions and the provider they come from.
@@ -79,20 +79,29 @@ function ModelPicker({ provider, model, ready }: { provider: string; model: stri
   const [models, setModels] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const info = providerInfo(provider);
+  // The whole provider config: a list is only shown for the config it was asked for.
+  const configKey = JSON.stringify(providerConfig(useSettings.getState()));
+  useSettings((s) => s.ai);
+  const latest = useRef(0);
   const load = useCallback(() => {
     const config = providerConfig();
     if (!config) return;
+    const request = ++latest.current;
     setError(null);
     setModels(null);
     void aiModels(config).then(
-      (list) => setModels([...list].sort()),
-      (raw: unknown) => setError(toAiError(raw).message),
+      (list) => request === latest.current && setModels([...list].sort()),
+      (raw: unknown) => request === latest.current && setError(toAiError(raw).message),
     );
   }, []);
   useEffect(() => {
     if (ready) load();
-    else setModels(null);
-  }, [ready, load, provider]);
+    else {
+      latest.current += 1;
+      setModels(null);
+      setError(null);
+    }
+  }, [ready, load, configKey]);
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-1.5">
@@ -149,6 +158,7 @@ export function AiSection() {
     if (!config || !keyDraft.trim()) return;
     try {
       await aiKeySet(config, keyDraft);
+      clearBackoff();
       setKeyDraft("");
       setKeyError(null);
       recheck();
@@ -177,7 +187,7 @@ export function AiSection() {
   return (
     <div>
       <div className="mb-3 rounded-[5px] bg-raised px-3 py-2 text-meta text-fg-mid">
-        Suggestions send the current terminal’s recent commands, their output (cut to its start and end), the directory, git
+        Suggestions send the current terminal’s own recent commands (never other terminals’), their output (cut to its start and end), the directory, git
         branch, shell and OS to the provider you choose. Values that look like secrets are replaced with [redacted] first.
         Nothing is sent until you choose a provider{info?.type === "api" ? " and a model" : ""}, and a suggestion is only ever
         placed in the input editor, never run.

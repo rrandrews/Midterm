@@ -154,14 +154,14 @@ November 2026:
 | CLI | Version checked | Invocation |
 |---|---|---|
 | Claude Code | 2.1.328 | `claude -p --output-format text --tools "" --strict-mcp-config --disable-slash-commands --permission-mode dontAsk --no-session-persistence --effort low [--system-prompt S] [--model M]`, prompt on stdin. `--tools ""` turns off every built-in tool. |
-| Codex | codex-cli 0.170.0 | `codex exec --sandbox read-only --skip-git-repo-check --ephemeral --color never -c model_reasoning_effort="low" -C <tmp> -o <tmp>/last-message.txt [-m M] -`, system + prompt on stdin (no system flag). The reply is read from the `-o` file (stdout carries progress). |
+| Codex | codex-cli 0.170.0 | `codex exec --ignore-user-config -c mcp_servers={} --sandbox read-only --skip-git-repo-check --ephemeral --color never -c model_reasoning_effort="low" -C <tmp> -o <tmp>/last-message.txt [-m M] -`, system + prompt on stdin (no system flag). The reply is read from the `-o` file (stdout carries progress). The user's `config.toml` (and the MCP servers in it) is not loaded, so a run fed with terminal output has no side-effecting tools; sign-in still comes from `CODEX_HOME`. |
 | Antigravity | 1.5.12 | `agy --sandbox --disable-slash-commands --output-format text (--model M \| --effort low) -p "<system>\n\n<prompt>"`. `-p` takes the prompt as its value (no stdin form). Model ids carry their effort (`gemini-…-low`), so `--effort low` is passed only without a model. No `--dangerously-skip-permissions`, so tool permissions are not granted. `--mode plan` is not used: it turns the reply into a planning session. |
 
 `agy -p` printed nothing without a TTY in some versions (upstream issue
 76); 1.5.12 prints normally with stdout piped, so it is run without a PTY.
 If an older version prints nothing, the result is an `empty` error.
-Flags for Claude Code and Antigravity were also checked by running them
-headless; Codex flags are from `codex exec --help` only.
+All three CLIs' flags were checked by running them headless (Codex
+0.170.0 with exactly the flags above).
 
 Models: `agy models` prints `id<TAB>name` lines, parsed into ids. Claude
 Code and Codex have no listing command, so `ai_models` returns `[]` and the
@@ -323,11 +323,16 @@ sends it to `ai_key_set`, and the UI only ever learns `ai_key_status`. A
 - the git branch;
 - the last `contextBlocks` finished blocks: the command, its directory if
   different, its output (`blockOutput`), and the exit status;
-- up to 20 earlier commands from the pane and the global history.
+- up to 20 earlier commands of the same terminal (never other panes' or
+  the saved global history).
 
-`buildContext` then trims each output to its first 15 and last 25 lines
-(240 characters per line, 3000 per block), strips escape sequences, and
-redacts the whole prompt. `redact` replaces:
+The branch is looked up at the current prompt, not taken from the last
+block (which has the branch from when it started).
+
+`buildContext` strips escape sequences from each output, redacts it, and
+only then trims it to its first 15 and last 25 lines (240 characters per
+line, 3000 per block). Redacting first means a secret that straddles a cut
+is still recognised. The whole prompt is redacted again at the end. `redact` replaces:
 
 - PEM private keys;
 - well-known token shapes: OpenAI and Anthropic `sk-…`, GitHub `ghp_` and
@@ -362,11 +367,21 @@ reports to the engine:
   The request waits 350 ms and is dropped if the prompt or focus moved.
 - `typed(paneId)`: cancels a pending or running request. A ready
   suggestion stays, since it may continue what was typed.
-- `leftPrompt(paneId)`: a command runs, the pane closes, or blocks mode is
-  left. Cancels and forgets.
+- `leftPrompt(paneId)`: the editor unmounts (a command runs, blocks mode is
+  left, the pane closes, or its tab is hidden). Pending work is cancelled;
+  an answer or a dismissal is kept, so returning to the tab at the same
+  prompt neither asks again nor brings back a dismissed suggestion.
+- `paneSwitchedOff(paneId)`: the pane's switch was turned off. Drops
+  pending work and the suggestion; `shownSuggestion` also hides anything
+  for a pane that is switched off or when AI is not configured.
 - `dismiss(paneId)` (Esc): hides the suggestion at this prompt.
 - `suggestNow(paneId)` (command): asks at once, whatever the pause, the
-  backoff or an earlier answer.
+  backoff or an earlier answer, but only while the pane shows its blocks
+  prompt.
+
+Eligibility is checked again right before the request goes out (after the
+context is built): still configured, the pane allowed, at the same visible
+prompt and, for automatic requests, still focused and not backed off.
 
 Each pane has at most one request in flight (`ai_cancel` on replacement),
 with a reply budget of 120 tokens.
@@ -377,7 +392,8 @@ Backoff after errors:
   settings change.
 - `empty`, `refused` and `cancelled` are not errors.
 
-Any change to `settings.ai` cancels everything and clears the backoff.
+Any change to `settings.ai` cancels everything and clears the backoff, and
+so does saving a key.
 
 State for the UI is `useAiSuggestions[paneId]`: `{ promptKey, status:
 loading | ready | none | error, text?, error?, dismissed? }`.

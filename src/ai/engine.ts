@@ -3,9 +3,8 @@ import { activePaneId, livePane } from "../actions";
 import { type ProviderConfig, type ProviderId, aiCancel, aiSuggest, providerInfo, toAiError } from "../ipc/ai";
 import { homeDirectory } from "../ipc/system";
 import { getSettings, useSettings } from "../settings/settings";
-import { blockOutput } from "../terminal/blockMode";
+import { blockOutput, canRun, requestedMode } from "../terminal/blockMode";
 import { branchOf } from "../terminal/gitBranch";
-import { globalHistory } from "../terminal/history";
 import type { TerminalSession } from "../terminal/session";
 import { peekSession } from "../terminal/sessions";
 import { type BuiltContext, buildContext, parseSuggestion } from "./context";
@@ -17,7 +16,8 @@ import { type BuiltContext, buildContext, parseSuggestion } from "./context";
  * a command runs or the pane closes). A request is made only for the
  * focused pane, after a short pause, at most one per pane at a time, and
  * only once per prompt; errors back off. Nothing is sent until a provider
- * (and, for APIs, a model) is chosen.
+ * (and, for APIs, a model) is chosen, and only this terminal's own history
+ * is sent.
  */
 
 export type SuggestionStatus = "loading" | "ready" | "none" | "error";
@@ -96,8 +96,8 @@ export async function contextFor(paneId: string): Promise<BuiltContext | null> {
     .blocks.filter((block) => block.end !== undefined && block.command.trim());
   const recentBlocks = limit > 0 ? finished.slice(-limit) : [];
   const cwd = session.cwd;
-  const last = finished[finished.length - 1];
-  const branch = last && last.cwd === cwd && last.branch !== undefined ? last.branch : cwd ? await branchOf(cwd).catch(() => null) : null;
+  // Looked up now: the last block's branch is from when it started (before a `git switch`).
+  const branch = cwd ? await branchOf(cwd).catch(() => null) : null;
   const foreground = session.foregroundProgram;
   return buildContext({
     os: osName(),
@@ -110,7 +110,8 @@ export async function contextFor(paneId: string): Promise<BuiltContext | null> {
       output: blockOutput(session, block),
       cwd: homeRelative(block.cwd),
     })),
-    recentCommands: [...globalHistory().slice(-50), ...session.blocks.commands.slice(-50)],
+    // This terminal's own commands only: other panes' history is not sent.
+    recentCommands: session.blocks.commands.slice(-50),
   });
 }
 
@@ -150,7 +151,21 @@ function noteFailure(kind: string): void {
   else blockedUntil = Date.now() + Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (failures - 1));
 }
 
-async function request(paneId: string, key: string): Promise<void> {
+/** Whether the pane shows its blocks prompt, so a suggestion can be shown. */
+function promptVisible(paneId: string, session: TerminalSession): boolean {
+  return requestedMode(paneId) === "blocks" && canRun(session);
+}
+
+/** Whether a request for `key` may still go out (checked again right before sending). */
+function mayAsk(paneId: string, key: string, automatic: boolean): boolean {
+  const session = peekSession(paneId);
+  if (!session || !aiConfigured() || !paneAllows(paneId)) return false;
+  if (promptKey(session) !== key || !promptVisible(paneId, session)) return false;
+  if (automatic && (activePaneId() !== paneId || !document.hasFocus() || Date.now() < blockedUntil)) return false;
+  return true;
+}
+
+async function request(paneId: string, key: string, automatic: boolean): Promise<void> {
   const settings = getSettings();
   const provider = providerConfig(settings);
   if (!provider) return;
@@ -162,6 +177,11 @@ async function request(paneId: string, key: string): Promise<void> {
   try {
     const context = await contextFor(paneId);
     if (!context || !stillCurrent()) return;
+    if (!mayAsk(paneId, key, automatic)) {
+      inFlight.delete(paneId);
+      setEntry(paneId, null);
+      return;
+    }
     const { text } = await aiSuggest({
       requestId,
       provider,
@@ -208,8 +228,7 @@ export function atPrompt(paneId: string): void {
     paneId,
     setTimeout(() => {
       timers.delete(paneId);
-      const current = peekSession(paneId);
-      if (current && promptKey(current) === key && activePaneId() === paneId) void request(paneId, key);
+      if (mayAsk(paneId, key, true)) void request(paneId, key, true);
     }, DEBOUNCE_MS),
   );
 }
@@ -221,10 +240,28 @@ export function typed(paneId: string): void {
   if (loading) setEntry(paneId, null);
 }
 
-/** The prompt went away (a command runs, the pane closes, blocks mode is left). */
+/**
+ * The editor went away: a command runs, blocks mode is left, the pane
+ * closes, or its tab is hidden. Pending work is dropped; an answer (or a
+ * dismissal) is kept for when the same prompt shows again, and ignored once
+ * the pane is at another prompt.
+ */
 export function leftPrompt(paneId: string): void {
+  const loading = useAiSuggestions.getState()[paneId]?.status === "loading";
+  cancelRequest(paneId);
+  if (loading || !peekSession(paneId)) setEntry(paneId, null);
+}
+
+/** The pane's switch was turned off: nothing pending, nothing shown. */
+export function paneSwitchedOff(paneId: string): void {
   cancelRequest(paneId);
   setEntry(paneId, null);
+}
+
+/** A key was saved: automatic requests may try again. */
+export function clearBackoff(): void {
+  failures = 0;
+  blockedUntil = 0;
 }
 
 /** Esc: hides the suggestion at this prompt. */
@@ -236,16 +273,18 @@ export function dismiss(paneId: string): void {
 
 /** "Suggest now": asks at once, whatever the pause, backoff or an earlier answer. */
 export function suggestNow(paneId: string): boolean {
-  if (!aiConfigured() || !paneAllows(paneId)) return false;
   const session = peekSession(paneId);
   if (!session) return false;
-  void request(paneId, promptKey(session));
+  const key = promptKey(session);
+  if (!mayAsk(paneId, key, false)) return false;
+  void request(paneId, key, false);
   return true;
 }
 
 /** The suggestion to show for a pane at its current prompt, if any. */
 export function shownSuggestion(entry: PaneSuggestion | undefined, session: TerminalSession): PaneSuggestion | undefined {
   if (!entry || entry.dismissed || entry.promptKey !== promptKey(session)) return undefined;
+  if (!aiConfigured() || !paneAllows(session.paneId)) return undefined;
   return entry;
 }
 

@@ -6,7 +6,7 @@ import { registerSettingsSection } from "../settings/sections";
 import { getSettings, useSettings } from "../settings/settings";
 import { activeTerminal } from "../terminal/blockMode";
 import { AiSection } from "./AiSection";
-import { aiConfigured, installAiEngine, paneAllows, suggestNow } from "./engine";
+import { aiConfigured, installAiEngine, paneAllows, paneSwitchedOff, suggestNow } from "./engine";
 
 /*
  * AI commands, the per-pane switch in the terminal menu, and Settings → AI.
@@ -25,7 +25,9 @@ export function aiMenuItems(paneId: string): MenuItemSpec[] {
       label: "AI suggestions in this pane",
       checked: on,
       run: () => {
-        if (livePane(paneId)) updatePaneData(paneId, { aiSuggestions: on ? false : undefined });
+        if (!livePane(paneId)) return;
+        if (on) paneSwitchedOff(paneId);
+        updatePaneData(paneId, { aiSuggestions: on ? false : undefined });
       },
     },
   ];
@@ -47,7 +49,7 @@ export function installAi(): void {
       run: () => {
         const paneId = activeTerminal();
         if (!paneId) return;
-        if (!suggestNow(paneId)) openSettings("ai");
+        if (!suggestNow(paneId) && !aiConfigured()) openSettings("ai");
       },
     },
     { id: "ai.openSettings", title: "AI: Settings…", category: "AI", run: () => openSettings("ai") },

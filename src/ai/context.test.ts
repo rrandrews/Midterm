@@ -36,6 +36,13 @@ describe("trimOutput", () => {
     expect(out[OUTPUT_HEAD_LINES]).toBe("… (60 lines omitted)");
     expect(out[out.length - 1]).toBe("line 99");
   });
+
+  it("redacts a private key whose header falls in the omitted middle", () => {
+    const filler = Array.from({ length: 30 }, (_, i) => `line ${i}`);
+    const body = Array.from({ length: 40 }, (_, i) => `KEYBODY${i}abcdefghijklmnop`);
+    const text = [...filler, "-----BEGIN RSA PRIVATE KEY-----", ...body, "-----END RSA PRIVATE KEY-----", "done"].join("\n");
+    expect(trimOutput(text)).not.toContain("KEYBODY");
+  });
 });
 
 describe("buildContext", () => {

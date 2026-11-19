@@ -220,12 +220,18 @@ pub fn claude_args(model: &str, system: &str) -> Vec<OsString> {
 }
 
 /// `codex exec -`, prompt (system text first; there is no system flag) on
-/// stdin. Read-only sandbox, no session files, allowed outside a git
-/// repository, low reasoning effort, final message written to `out_file`
-/// (stdout also carries progress).
+/// stdin. The user's `config.toml` is not loaded (`--ignore-user-config`;
+/// sign-in still comes from `CODEX_HOME`), so MCP servers and other tools
+/// configured there are not available to a run fed with terminal output;
+/// `mcp_servers={}` makes sure of it. Read-only sandbox, no session files,
+/// allowed outside a git repository, low reasoning effort, final message
+/// written to `out_file` (stdout also carries progress).
 pub fn codex_args(model: &str, cwd: &Path, out_file: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "exec".into(),
+        "--ignore-user-config".into(),
+        "-c".into(),
+        "mcp_servers={}".into(),
         "--sandbox".into(),
         "read-only".into(),
         "--skip-git-repo-check".into(),
@@ -426,6 +432,8 @@ mod tests {
             Path::new("/tmp/d/o.txt"),
         ));
         assert_eq!(args[0], "exec");
+        assert!(args.contains(&"--ignore-user-config".to_string()));
+        assert!(args.windows(2).any(|w| w == ["-c", "mcp_servers={}"]));
         assert!(args.windows(2).any(|w| w == ["--sandbox", "read-only"]));
         assert!(args.windows(2).any(|w| w == ["-o", "/tmp/d/o.txt"]));
         assert!(args.windows(2).any(|w| w == ["-C", "/tmp/d"]));

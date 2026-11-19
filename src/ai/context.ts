@@ -20,7 +20,7 @@ export type ContextInput = {
   branch?: string | null;
   /** Finished blocks, oldest first (the caller limits how many). */
   blocks: readonly ContextBlock[];
-  /** Earlier commands, oldest first. */
+  /** Earlier commands of the same terminal, oldest first. */
   recentCommands: readonly string[];
 };
 
@@ -81,10 +81,15 @@ export function redact(text: string): string {
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
-/** A block's output cut to its head and tail, long lines clipped, ANSI and trailing blank lines dropped. */
+/**
+ * A block's output cut to its head and tail, long lines clipped, ANSI and
+ * trailing blank lines dropped. Redacted before it is cut, so a secret
+ * that straddles a cut (a private key's header dropped, its body kept) is
+ * still recognised.
+ */
 export function trimOutput(output: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences are what is stripped
-  const plain = output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\r/g, "");
+  const plain = redact(output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\r/g, ""));
   const lines = plain.split("\n").map((line) => clip(line.trimEnd(), LINE_CHARS));
   while (lines.length && !lines[lines.length - 1]) lines.pop();
   let kept = lines;
