@@ -292,3 +292,181 @@ Large chunks are delivered over Tauri's custom IPC protocol, so the CSP
 `ipc: http://ipc.localhost` in `connect-src`. If that were blocked, Tauri
 would fall back to `postMessage` and chunks would arrive as number arrays
 (still handled by `src/ipc/pty.ts`, but slower).
+
+## Working directory
+
+A session learns its shell's directory from OSC 7 (`file://host/path`,
+parsed by `src/terminal/osc.ts`). Only reports naming this machine count:
+an empty host, `localhost`, or the host name from `gethostname` (the
+`local_hostname` command, loaded at startup), which is what zsh, bash and
+fish report. Reports from elsewhere (a shell inside `ssh`) are ignored.
+
+- Each change is written to the pane's `PaneData.cwd` (`updatePaneData` in
+  `src/actions.ts`: through the mounted layout's handle if the tab is
+  showing, else the store), so it is saved with the layout.
+- A session starts its shell in the pane's saved `cwd`; the backend falls
+  back to the home directory if it no longer exists.
+- New splits and new tabs start in the active pane's `cwd`.
+
+## Tab titles
+
+A tab the user has not named (`Tab.titleLocked`) is titled after its active
+pane's terminal by `terminalTitle` (`src/terminal/titles.ts`): the
+foreground program, or, while the shell waits, the last part of its
+directory (`~` for home). Sessions look the foreground up (`pty_foreground`)
+250 ms after output, since starting or ending a program always produces
+some, and every 2 s while a program (not the shell) is in the foreground,
+since one program can hand over to another silently. An idle shell is not
+polled. Renaming a tab to an
+empty name hands its title back to the panes.
+
+## Asking before closing
+
+`src/closing.ts` wraps closing a pane, tab or workspace: it looks up the
+foreground of every terminal that would end and, if any is running a
+program, asks with `confirm()` (`src/components/ui/ConfirmDialog.tsx`).
+Menus and shortcuts use these; a shell that exits by itself closes its pane
+through `closePaneNow` without asking.
+
+Changing a terminal pane to another kind ends its shell, so it asks the same
+way (`changePaneKind`).
+
+Closing the window asks the same way (`installCloseGuards` in
+`src/ipc/window.ts`). Quitting: the backend emits `quit-requested`, and the
+webview asks, flushes the saved state (waiting for a save already in
+flight) and calls `app_quit`. ⌘Q is our own menu item (`menu::QUIT_ID`);
+Quit from the Dock, logout and shutdown go through
+`applicationShouldTerminate:`, which `src-tauri/src/quit_guard.rs` adds to
+Tao's app delegate at runtime. It lets termination through once `app_quit`
+has run, or when there is no webview to ask.
+
+Known gap: a program started with `exec` keeps the shell's pid, so it is
+reported as the shell (`isShell: true`).
+
+## Checking the real app without looking at it
+
+`src/dev/selftest.ts` drives the running app (real webview, real shell) and
+posts a JSON report to a local listener: raw-byte delivery, running commands,
+environment, resize, an 8 MB flood, exit codes, kill, terminal scaling, a
+terminal surviving a re-dock, focus after layout changes, and shell
+integration (OSC 7), automatic tab titles and the close confirmation.
+
+```sh
+# 1. a listener that accepts one POST on PORT and saves the body
+# 2. the app, pointed at the self-test:
+bun run tauri dev --config '{"build":{"devUrl":"http://localhost:1420/?selftest=PORT"}}'
+```
+
+It runs harmless commands in your login shell. Dev builds only.
+
+## Blocks mode
+
+A terminal pane can show its output as **blocks**, one per command, with an
+input editor at the bottom, instead of the classic terminal. The pane's
+`PaneData.terminalMode` (`"blocks"` / `"classic"`, saved with the layout)
+picks it, falling back to the `terminalMode` setting. It is toggled from
+the terminal's right-click menu or the `terminal.toggleBlocks` command
+(`src/terminal/blockMode.ts`).
+
+| File | Role |
+|---|---|
+| `src/terminal/blocks.ts` | `parseOsc133`, `BlockTracker`: follows the marks and keeps the list of blocks. Tested with `@xterm/headless`. |
+| `src/terminal/blockRender.ts` | Buffer rows → styled runs (and plain text), duration format. |
+| `src/terminal/history.ts` | History and autosuggestions; the global list in `history.json`. |
+| `src/terminal/gitBranch.ts` | Branch of a directory (`gitStatus`, cached 3 s). |
+| `src/terminal/blockMode.ts` | Mode, block actions, context-menu target, the toggle command. |
+| `src/components/panes/BlocksView.tsx` | The blocks and their headers; `BlockInput.tsx` is the editor. |
+| `src/styles/blocks.css` | Layout and look, from the mockup. |
+
+### The terminal stays the source of truth
+
+The xterm instance is unchanged in blocks mode: same size, same parsing,
+same flow control. It stays attached under the blocks view, invisible
+(`opacity: 0`), so switching to classic shows the full history and a
+full-screen program can take over at once.
+
+`session.blocks` (a `BlockTracker`) registers an OSC 133 handler on the
+terminal's parser. On C it places an xterm marker (`registerMarker`) on
+the cursor's row: the block's first output row. On D it places another at
+the start of D's logical line, and records how many cells into that line D
+was printed: output without a final newline ends there, even if the next
+prompt follows on the same row (bash). Markers follow their rows through
+scrollback trimming and reflow (a marker on a soft-wrapped row would be
+disposed when widening merges it, hence the logical line start). When a finished block loses a marker (its
+rows left the scrollback, or were erased) it is dropped. The running
+block is re-anchored instead, at the top of the screen (erased) or of the
+buffer (trimmed), and flagged `truncated`. `ESC [ 3 J` (what `clear`
+sends), ⌃L in the editor and the Clear menu item drop all blocks; a
+running `clear` is dropped when it ends.
+
+A command sent from the input editor gets its block at once
+(`tracker.submit`, before anything is written to the shell), anchored on the
+prompt row, and the phase becomes `running`, so a second Enter or Run again
+cannot type into it. C moves the start to the real output. If the next
+prompt comes without a C (bash marks nothing for a line that is only a
+subshell, or a DEBUG trap replaced ours) the block still ends there, with
+its output starting after the echoed command line and no exit status.
+
+Each block has its command (exactly what the editor sent, else read back
+from the buffer between B and C), the cwd at C (from OSC 7), the branch of that cwd
+(looked up at C), the exit status from D and the duration from C to D,
+measured in the frontend.
+
+The tracker also knows the **phase** (`prompt` after A/B/D, `running`
+after C), whether the **alternate screen** is active
+(`buffer.onBufferChange`), and whether the shell has **integration**:
+`pending` until the first mark, `absent` if none came within 3 s of the
+first output.
+
+### What is shown
+
+`TerminalPane` draws `BlocksView` over the terminal when the pane is in
+blocks mode, the shell has not turned out to lack integration, and no
+program is on the alternate screen. Otherwise the classic terminal shows
+(vim, less, htop run full-pane as usual and the blocks come back when they
+exit; a shell without integration stays classic, and the menu item says
+so).
+
+- Finished blocks are DOM, rendered once from their buffer rows
+  (`renderRows`: cell colors and attributes to spans, soft-wrapped rows
+  joined into one line so the DOM wraps them at its own width). At most
+  the last 300 lines are rendered; "Show earlier lines" adds 2000 at a
+  time. Blocks use `content-visibility: auto`.
+- The running block is redrawn from the buffer at most once a frame while
+  output arrives (the last 500 rows, with the cursor), so progress bars and
+  `\r` updates look right.
+- Blocks are bottom-aligned and the list sticks to the bottom unless the
+  user scrolls up; running a command scrolls back down.
+- Header: cwd (`~`-relative), branch, and `exit N · duration` (err color
+  when non-zero), with copy command / copy output / run again buttons on
+  hover. The same actions are at the top of the right-click menu on a
+  block.
+- Text in blocks is selectable; the menu's Copy uses the page selection.
+
+### Keyboard
+
+- At a prompt the **input editor** (a textarea with a ghost-text overlay)
+  has the keyboard. ⏎ runs, ⇧⏎ adds a line, ⇥ or → (at the end) accepts
+  the suggestion, ↑/↓ walk the history (from the first/last line), Esc
+  leaves the history, ⌃C clears the line, ⌃D on an empty line sends EOF,
+  ⌃L clears the blocks. App shortcuts still run first (capture phase).
+  Paste from the menu goes into the editor.
+- Running a command sends it to the shell as if typed
+  (`session.runCommand`). A multi-line one has to arrive as one command
+  line: as a bracketed paste when the shell enabled it, else with each
+  newline quoted as ⌃V ⌃J, which readline (bash 3.2) and zle insert
+  literally.
+- While a command runs, the hidden terminal has the keyboard, so
+  interactive prompts, ⌃C and typeahead work as in classic mode. Clicking
+  the blocks gives the keyboard back to whichever target is current.
+- `registerPaneFocuser` focuses the editor at a prompt, the terminal
+  otherwise, and the pane hands focus over when the phase or mode changes
+  while it has it.
+
+### History and suggestions
+
+The suggestion is the most recent history entry that starts with what is
+typed. History is the pane's own commands (kept by its tracker, newest
+first) followed by the global list, which every pane adds to and which is
+saved in `history.json` (last 1000, via `openJsonFile`). Shell history
+files are not read.
