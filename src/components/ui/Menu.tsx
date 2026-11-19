@@ -33,9 +33,13 @@ const ITEM =
   "flex h-7 w-full cursor-default items-center gap-2 rounded-[5px] px-2.5 text-left text-menu " +
   "text-fg-soft outline-none data-[highlighted]:bg-white/[0.06] data-[disabled]:opacity-40";
 
-/** Focus goes back to a pane when a menu closes, not to whatever opened it. */
+/**
+ * Focus goes back to a pane when a menu closes, not to whatever opened it,
+ * unless the command opened a text field (rename, new file), which keeps it.
+ */
 function returnFocusToPane(event: Event): void {
   event.preventDefault();
+  if (document.activeElement instanceof HTMLInputElement) return;
   refocusPane();
 }
 

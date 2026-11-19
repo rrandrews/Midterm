@@ -1,7 +1,13 @@
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { countPanes, createPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
-import { findTabOfPane, selectActiveTab, selectActiveWorkspace, useAppStore } from "./state/store";
-import type { Layout, PaneData, PaneKind } from "./state/types";
+import {
+  findTabOfPane,
+  selectActiveTab,
+  selectActiveWorkspace,
+  selectAllPanes,
+  useAppStore,
+} from "./state/store";
+import type { Layout, PaneData, PaneKind, PaneNode } from "./state/types";
 
 /*
  * User-level commands, shared by menus and keyboard shortcuts.
@@ -207,4 +213,84 @@ export function focusNeighbourPane(direction: Direction): void {
     }
   }
   if (best) focusPane(best.id);
+}
+
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+
+/** Pane kinds that can show a file, best first. Images only display; text prefers the editor. */
+function kindsFor(path: string): PaneKind[] {
+  return IMAGE_FILE.test(path) ? ["viewer"] : ["editor", "viewer"];
+}
+
+/**
+ * Opens a file from `fromPaneId` (an explorer, say) in the same tab: in an
+ * editor or viewer pane already there (the last active one if several), or,
+ * with `newPane` or when there is none, in a new pane split off the largest
+ * pane that is not an explorer.
+ */
+export function openFile(
+  path: string,
+  { fromPaneId, newPane = false }: { fromPaneId: string; newPane?: boolean },
+): void {
+  const tab = findTabOfPane(store(), fromPaneId);
+  const dock = tab && getDock(tab);
+  if (!tab || !dock) return;
+  const layout = dock.getModel();
+  const panes = listPanes(layout);
+  const kinds = kindsFor(path);
+
+  if (!newPane) {
+    for (const kind of kinds) {
+      const candidates = panes.filter((pane) => pane.data.kind === kind);
+      const target = candidates.find((pane) => pane.id === tab.activePaneId) ?? candidates[0];
+      if (target) {
+        dock.updateTab(target.id, { data: { ...target.data, path } });
+        focusPane(target.id);
+        return;
+      }
+    }
+  }
+
+  addPaneBeside(fromPaneId, createPane(kinds[0], { path }));
+}
+
+/**
+ * Adds a pane to `fromPaneId`'s tab by splitting the roomiest pane along its
+ * longer side. Explorers are split only as a last resort (it squeezes the
+ * tree), and only the one the request came from.
+ */
+export function addPaneBeside(fromPaneId: string, pane: PaneNode): void {
+  const tab = findTabOfPane(store(), fromPaneId);
+  const dock = tab && getDock(tab);
+  if (!dock) return;
+  const layout = dock.getModel();
+  let best: { id: string; area: number; wide: boolean } | undefined;
+  for (const candidate of listPanes(layout)) {
+    const explorer = candidate.data.kind === "explorer";
+    if (explorer && candidate.id !== fromPaneId) continue;
+    const rect = document
+      .querySelector<HTMLElement>(`[data-pane-id="${CSS.escape(candidate.id)}"]`)
+      ?.getBoundingClientRect();
+    if (!rect) continue;
+    const area = rect.width * rect.height * (explorer ? 0.01 : 1);
+    if (!best || area > best.area) best = { id: candidate.id, area, wide: rect.width >= rect.height * 1.2 };
+  }
+  const frameId = best && frameIdOf(layout, best.id);
+  if (!best || !frameId) return;
+  const region = best.wide ? "right" : "bottom";
+  if (dock.addTab(pane, { target: { tabsetId: frameId, region } })) focusPane(pane.id);
+}
+
+/** Opens a terminal in `cwd`, in a new pane of `fromPaneId`'s tab. */
+export function openTerminalAt(cwd: string, fromPaneId: string): void {
+  addPaneBeside(fromPaneId, createPane("terminal", { cwd }));
+}
+
+/** Points editor and viewer panes showing `from` (or a file inside it) at `to` after a rename. */
+export function renameOpenFiles(from: string, to: string): void {
+  for (const pane of selectAllPanes(store())) {
+    const path = pane.data.path;
+    if (!path || (path !== from && !path.startsWith(`${from}/`))) continue;
+    updatePaneData(pane.id, { path: to + path.slice(from.length) });
+  }
 }

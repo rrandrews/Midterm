@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "./dock.css";
 @import "./terminal.css";
+@import "./explorer.css";
 
 /*
  * Design tokens. Values are taken from the reference mockup; see

@@ -4,6 +4,7 @@ Midterm is a Tauri 2 app: a Rust backend (`src-tauri/`) that owns PTYs, and a
 React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
+[explorer.md](explorer.md) ·
 [design-tokens.md](design-tokens.md) · [roadmap.md](roadmap.md)
 
 ## Concepts
@@ -16,8 +17,9 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 
 - A **workspace** is a named group of tabs. One is active at a time.
 - A **tab** holds any number of **panes** in a nested split layout.
-- A **pane** has a kind. Only `terminal` is implemented; the other kinds
-  render a placeholder (see the roadmap).
+- A **pane** has a kind. `terminal` and `explorer` are implemented;
+  `editor` and `viewer` render a placeholder naming their file (see the
+  roadmap).
 
 ## Source map
 
@@ -32,10 +34,12 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/components/panes/` | Pane content by kind. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
 | `src/terminal/` | xterm.js sessions and their registry. |
+| `src/explorer/` | File explorer models, their registry, pure tree helpers. |
 | `src/ipc/` | Typed wrappers over Tauri commands. The only place that calls `invoke`. |
 | `src/styles/` | Tailwind entry + design tokens, and CSS for the layout and terminal. |
 | `src/dev/` | Development aids (not in production builds). |
 | `src-tauri/src/pty/` | PTY sessions and the commands that drive them. |
+| `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer. |
 | `src-tauri/src/menu.rs` | Native menu. Has no "Close Window", so ⌘W reaches the app. |
 | `src-tauri/src/traffic_lights.rs` | Centres the macOS traffic lights in the web title bar; re-applied on resize and focus. |
 

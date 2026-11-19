@@ -1,4 +1,5 @@
 import { createLayout, createPane, paneNode, singlePaneLayout } from "../state/layout";
+import { MOCK_PROJECT } from "../ipc/fsMock";
 import { createTab, createWorkspace, useAppStore } from "../state/store";
 
 /**
@@ -7,6 +8,8 @@ import { createTab, createWorkspace, useAppStore } from "../state/store";
  * the two side by side. Loaded only by `?mockup` in dev builds.
  */
 export function seedMockupLayout(): void {
+  // In a browser the mock file tree has this project, for the explorer to show.
+  const terminal = () => createPane("terminal", { cwd: MOCK_PROJECT });
   const frontend = createLayout({
     type: "split",
     orientation: "horizontal",
@@ -20,7 +23,7 @@ export function seedMockupLayout(): void {
           {
             type: "split",
             orientation: "horizontal",
-            children: [paneNode(createPane("terminal")), paneNode(createPane("terminal"), 36)],
+            children: [paneNode(terminal()), paneNode(terminal(), 36)],
           },
         ],
       },
@@ -28,7 +31,7 @@ export function seedMockupLayout(): void {
         type: "split",
         orientation: "vertical",
         size: 30,
-        children: [paneNode(createPane("viewer"), 44), paneNode(createPane("terminal"))],
+        children: [paneNode(createPane("viewer"), 44), paneNode(terminal())],
       },
     ],
   });

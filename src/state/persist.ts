@@ -55,6 +55,14 @@ function restorePaneData(data: unknown): PaneData | null {
   if (!isRecord(data) || !PANE_KINDS.includes(data.kind as PaneData["kind"])) return null;
   const restored: PaneData = { kind: data.kind as PaneData["kind"] };
   if (nonEmptyString(data.cwd)) restored.cwd = data.cwd;
+  if (nonEmptyString(data.path)) restored.path = data.path;
+  if (nonEmptyString(data.root)) restored.root = data.root;
+  if (data.pinned === true) restored.pinned = true;
+  if (data.showHidden === true) restored.showHidden = true;
+  if (Array.isArray(data.expanded)) {
+    const expanded = data.expanded.filter(nonEmptyString);
+    if (expanded.length) restored.expanded = expanded;
+  }
   return restored;
 }
 

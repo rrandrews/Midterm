@@ -1,6 +1,5 @@
-import { homeDir } from "@tauri-apps/api/path";
-import { isTauri } from "@tauri-apps/api/core";
 import { closePaneNow, updatePaneData } from "../actions";
+import { homeDirectory } from "../ipc/system";
 import { findPane, listPanes } from "../state/layout";
 import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
 import { TerminalSession } from "./session";
@@ -88,17 +87,6 @@ function scheduleReconcile(): void {
  * active pane may have moved); `setAutoTitle` ignores unchanged titles.
  */
 
-let home: string | undefined;
-if (isTauri()) {
-  homeDir().then(
-    (dir) => {
-      home = dir;
-      scheduleTitles();
-    },
-    (error) => console.warn("Could not read the home directory:", error),
-  );
-}
-
 function updateTitles(): void {
   const state = useAppStore.getState();
   for (const workspace of state.workspaces) {
@@ -108,7 +96,7 @@ function updateTitles(): void {
         (tab.activePaneId && findPane(tab.layout, tab.activePaneId)) || listPanes(tab.layout)[0];
       if (!pane || pane.data.kind !== "terminal") continue;
       const session = sessions.get(pane.id);
-      const title = terminalTitle(session?.foregroundProgram ?? null, session?.cwd ?? pane.data.cwd, home);
+      const title = terminalTitle(session?.foregroundProgram ?? null, session?.cwd ?? pane.data.cwd, homeDirectory());
       if (title) state.setAutoTitle(tab.id, title);
     }
   }

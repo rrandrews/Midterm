@@ -40,6 +40,26 @@ describe("snapshot and restore", () => {
     ]);
   });
 
+  it("keeps valid explorer and file fields and drops malformed ones", () => {
+    const explorer = createPane("explorer", {
+      root: "/src",
+      pinned: true,
+      showHidden: true,
+      expanded: ["/src/a", "", 3 as unknown as string],
+    });
+    const editor = createPane("editor", { path: "/src/a/b.ts", pinned: "yes" as unknown as boolean });
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: [paneNode(explorer), paneNode(editor)],
+    });
+    const restored = restoreLayout(roundTrip(layout));
+    expect(restored && listPanes(restored).map((pane) => pane.data)).toEqual([
+      { kind: "explorer", root: "/src", pinned: true, showHidden: true, expanded: ["/src/a"] },
+      { kind: "editor", path: "/src/a/b.ts" },
+    ]);
+  });
+
   it("does not save transient fields", () => {
     const state = sampleState();
     state.workspaces[0].tabs[0] = { ...state.workspaces[0].tabs[0], activity: true, layoutRev: 4 };

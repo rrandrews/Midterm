@@ -13,19 +13,11 @@ Done so far:
   directory; automatic tab titles; tab reordering, pane-to-tab drops, tab
   overflow; maximize pane; confirmation before closing running programs.
   See [terminal.md](terminal.md) and [layout.md](layout.md).
-
-## M3 — File explorer pane
-
-Goal: the `explorer` pane kind shows a live file tree.
-
-- [ ] Rust commands: list directory, stat, create, rename, delete (to trash)
-- [ ] File watching with `notify`, debounced, scoped to expanded directories
-- [ ] Respect `.gitignore` (`ignore` crate), with a toggle for hidden files
-- [ ] Virtualized tree with keyboard navigation and type-ahead
-- [ ] Root follows the focused terminal's cwd, with a pin to stop following
-- [ ] Git status badges (M / U / …) per file and rolled up to directories
-- [ ] Context menu: open, open in new pane, reveal in Finder, copy path, rename, delete
-- [ ] Opening a file targets an existing editor/viewer pane or splits to create one
+- M3: file explorer pane: live tree with watching, .gitignore, hidden-file
+  toggle, keyboard navigation and type-ahead, root following the focused
+  terminal (pinnable), git badges, context menu, opening files into
+  editor/viewer panes. Right-click menus across the app. See
+  [explorer.md](explorer.md).
 
 ## M4 — Editor and viewer panes
 
@@ -90,6 +82,8 @@ input is a separate editor at the bottom.
 
 - [ ] Shell integration follow-ups: run the fish script and test on a machine with fish; bash 5.1+ and Linux paths are untested; Debian reads `/etc/bash.bashrc` twice (once itself, once via `/etc/profile`); an `/etc/zshenv` that sets `ZDOTDIR` skips integration; a `.zshrc` that assigns `precmd_functions=(…)` drops our hook
 - [ ] Busy check misses programs started with `exec` (same pid as the shell)
+- [ ] Explorer: multi-select, drag and drop (move files, drop a path into a terminal), remember scroll position across remounts
+- [ ] Shells inherit the launching terminal's environment in dev (e.g. another terminal's `ZDOTDIR`, which swaps in its history file and integration)
 
 - [ ] Stack several panes in one frame as tabs (currently rejected; see [layout.md](layout.md))
 - [ ] Floating panes and pop-out windows (supported by the layout library)

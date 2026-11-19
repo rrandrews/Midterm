@@ -1,0 +1,13 @@
+/* File explorer rows (src/components/panes/ExplorerPane.tsx). */
+
+.explorer-row:hover {
+  background: rgb(255 255 255 / 0.025);
+}
+
+/* The mockup's selected row; fainter while the tree does not have focus. */
+.explorer-row.is-selected {
+  background: rgb(255 255 255 / 0.035);
+}
+.explorer-tree:focus-within .explorer-row.is-selected {
+  background: rgb(255 255 255 / 0.05);
+}

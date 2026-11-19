@@ -20,6 +20,16 @@ export type PaneData = {
   kind: PaneKind;
   /** Terminal: last working directory the shell reported (OSC 7). New shells for this pane start there. */
   cwd?: string;
+  /** Editor / viewer: the open file. */
+  path?: string;
+  /** Explorer: the directory at the top of the tree. */
+  root?: string;
+  /** Explorer: the root stays put instead of following the focused terminal's directory. */
+  pinned?: boolean;
+  /** Explorer: dotfiles and ignored files are listed too. */
+  showHidden?: boolean;
+  /** Explorer: expanded directories (absolute paths). */
+  expanded?: string[];
 };
 
 export type PaneNode = TabNode<PaneData>;
