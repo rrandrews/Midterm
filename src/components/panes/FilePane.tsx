@@ -37,14 +37,14 @@ function FileModelPane({ paneId, kind, path }: { paneId: string; kind: FileKind;
 
   if (!model) return null;
   return model instanceof EditorModel ? (
-    <EditorView paneId={paneId} model={model} />
+    <CodeView paneId={paneId} model={model} />
   ) : (
     <DocumentView paneId={paneId} model={model} />
   );
 }
 
 /** Code in CodeMirror: editable in editors, read-only for text in viewers. */
-function EditorView({ paneId, model }: { paneId: string; model: EditorModel }) {
+function CodeView({ paneId, model }: { paneId: string; model: EditorModel }) {
   const snap = useSyncExternalStore(model.subscribe, model.snapshot);
   const rootRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);

@@ -171,12 +171,14 @@ unpinning jumps back to the terminal's directory.
 
 ### Opening files
 
-`openFile` in `src/actions.ts`: an editor or viewer pane already in the tab
-gets the file (the last active one if several; images go to viewers only);
-with "Open in new pane", or if there is none, a new pane is split off the
-roomiest non-explorer pane, along its longer side (`addPaneBeside`). The
-path is `PaneData.path`. Renaming a file updates panes showing it
-(`renameOpenFiles`).
+`openFile` in `src/actions.ts`: a pane already showing the file gets focus;
+else an editor or viewer pane already in the tab gets the file (the last
+active one if several, never an editor with unsaved changes; images go to
+viewers only); with "Open in new pane", or if there is none, a new pane is
+split off the roomiest non-explorer pane, along its longer side
+(`addPaneBeside`). The path is `PaneData.path`. Renaming a file updates
+panes showing it (`renameOpenFiles`), keeping their buffers. See
+[editor.md](editor.md).
 
 ### Keyboard
 

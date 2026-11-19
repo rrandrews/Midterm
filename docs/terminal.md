@@ -64,7 +64,8 @@ before the PTY handle is known are acknowledged as soon as it is.
 - App shortcuts (`src/shortcuts.ts`) are excluded from xterm with
   `attachCustomKeyEventHandler`; the window-level handler runs them.
 - Links open in the default browser on ⌘-click (`src/ipc/shell.ts`, http(s)
-  only).
+  only). File references such as `src/a.ts:12:5` open in an editor on
+  ⌘-click (`src/terminal/fileLinkProvider.ts`; see [editor.md](editor.md)).
 - Input typed while the shell is starting is queued and sent, in order, once
   it is running.
 

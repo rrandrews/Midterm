@@ -14,6 +14,7 @@ palette and the native menu bar are generated from it.
 | `core.ts` | The app's own commands (tabs, panes, workspaces, find/save forwarding). |
 
 - Ids are stable (`pane.splitRight`); settings refer to them.
+- Registered elsewhere: `editor.revert` (`src/editor/commands.ts`).
 - The functions commands run stay in `src/actions.ts` (and `closing.ts`).
   Add the function there, then register a command for it. Pane kinds
   register their own commands from their own modules.
