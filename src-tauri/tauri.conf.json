@@ -13,8 +13,17 @@
     "windows": [
       {
         "title": "midterm",
-        "width": 800,
-        "height": 600
+        "width": 1440,
+        "height": 900,
+        "minWidth": 640,
+        "minHeight": 400,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 13
+        },
+        "backgroundColor": "#0C0D10"
       }
     ],
     "security": {

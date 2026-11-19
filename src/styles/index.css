@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Values are taken from the reference mockup; see
+ * docs/design-tokens.md for what each one is used for.
+ */
+@theme {
+  --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+
+  /* Surfaces */
+  --color-app: #0c0d10;
+  --color-field: #15161b;
+  --color-menu: #1a1c22;
+  --color-raised: #2a2d35;
+
+  /* Lines */
+  --color-line: #1f2128;
+  --color-line-menu: #262931;
+  --color-line-strong: #2a2d35;
+
+  /* Text, brightest to faintest */
+  --color-fg-bright: #f2f3f5;
+  --color-fg: #e4e5e9;
+  --color-fg-soft: #d5d7dc;
+  --color-fg-mid: #b9bcc4;
+  --color-fg-muted: #9096a1;
+  --color-fg-dim: #858a96;
+  --color-fg-faint: #5a5f6a;
+
+  /* Accent (user-configurable later; soft = 10% alpha) */
+  --color-accent: #8b9cff;
+  --color-accent-soft: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  --color-accent-fg: #dde2ff;
+
+  /* Status / syntax */
+  --color-ok: #a5d6a7;
+  --color-warn: #f2c27b;
+  --color-err: #e8868a;
+  --color-info: #82b4ff;
+  --color-keyword: #c3a6ff;
+  --color-comment: #7f8592;
+
+  /* Type scale (px values straight from the mockup) */
+  --text-badge: 9px;
+  --text-micro: 10.5px;
+  --text-meta: 11px;
+  --text-crumb: 11.5px;
+  --text-menu: 12px;
+  --text-ui: 12.5px;
+  --text-input: 13px;
+  --text-title: 18px;
+
+  --shadow-menu: 0 0 0 1px #2a2d35, 0 12px 32px rgb(0 0 0 / 0.5);
+}
+
+:root {
+  /* Pane backgrounds: neutral graphite, angle varies slightly per pane kind. */
+  --pane-explorer: linear-gradient(180deg, #121317 0%, #0e0f12 100%);
+  --pane-editor: linear-gradient(175deg, #131419 0%, #0f1013 100%);
+  --pane-terminal: linear-gradient(185deg, #111216 0%, #0d0e11 100%);
+  --pane-terminal-active: linear-gradient(180deg, #15161c 0%, #111216 100%);
+  --pane-viewer: linear-gradient(170deg, #131419 0%, #0e0f12 100%);
+  --tab-active: linear-gradient(180deg, #15161b, #121318);
+
+  --titlebar-height: 38px;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-app);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+  -webkit-font-smoothing: antialiased;
+  /* A desktop app, not a document: no text selection or rubber-banding in chrome. */
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: none;
+  cursor: default;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}

@@ -25,3 +25,6 @@ dist-ssr
 mockup/
 # Claude Code local settings
 .claude/settings.local.json
+
+# Playwright MCP output
+.playwright-mcp/
