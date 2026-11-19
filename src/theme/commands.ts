@@ -1,12 +1,12 @@
-import { activePaneId, livePane, openPaneBeside, updatePaneData } from "../actions";
+import { activePaneId, livePane, openPaneBeside, revealPane, updatePaneData } from "../actions";
 import { registerCommands } from "../commands/registry";
-import { focusPane } from "../layout/dock";
 import { openPicker } from "../palette/state";
 import { registerPlugin } from "../plugins/registry";
 import { registerSettingsSection } from "../settings/sections";
 import { getSettings, useSettings } from "../settings/settings";
 import { selectAllPanes, useAppStore } from "../state/store";
 import { AppearanceSection } from "./AppearanceSection";
+import { mayEditAnother, useThemeDraft } from "./editor/draft";
 import { themeEditorPlugin } from "./editor/plugin";
 import { allThemes, currentTheme, findTheme, selectTheme, useThemeState } from "./state";
 
@@ -15,12 +15,15 @@ import { allThemes, currentTheme, findTheme, selectTheme, useThemeState } from "
  * section and the theme editor plugin.
  */
 
-/** Opens the theme editor on a theme: in an editor pane already open, else in a new pane beside the active one. */
-export function editTheme(themeId: string): void {
-  const existing = selectAllPanes(useAppStore.getState()).find((pane) => pane.data.kind === "theme-editor");
+/** Opens the theme editor on a theme: in the editor pane already open (wherever it is), else in a new pane beside the active one. */
+export async function editTheme(themeId: string): Promise<void> {
+  const editors = selectAllPanes(useAppStore.getState()).filter((pane) => pane.data.kind === "theme-editor");
+  const owner = useThemeDraft.getState().ownerPaneId;
+  const existing = editors.find((pane) => pane.id === owner) ?? editors[0];
   if (existing) {
+    if (!(await mayEditAnother(themeId))) return;
     updatePaneData(existing.id, { themeId });
-    focusPane(existing.id);
+    revealPane(existing.id);
     return;
   }
   const from = activePaneId();
@@ -67,7 +70,7 @@ export function installThemeCommands(): void {
   registerPlugin(themeEditorPlugin);
   registerCommands([
     { id: "theme.select", title: "Theme: Select…", category: "View", run: pickTheme, menu: "View" },
-    { id: "theme.editCurrent", title: "Theme: Edit current", category: "View", run: () => editTheme(currentTheme().id) },
+    { id: "theme.editCurrent", title: "Theme: Edit current", category: "View", run: () => void editTheme(currentTheme().id) },
     { id: "theme.toggleLightDark", title: "Theme: Toggle light/dark", category: "View", run: toggleLightDark },
   ]);
 }

@@ -1,4 +1,7 @@
 import { create } from "zustand";
+import { confirm } from "../../components/ui/ConfirmDialog";
+import { getSettings, useSettings } from "../../settings/settings";
+import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID } from "../bundled";
 import { findTheme, freeThemeId, freeThemeName, isBundled, saveTheme, selectTheme, selectedThemeId, useThemeState } from "../state";
 import type { AnsiName, PaneBackground, Theme, TokenName } from "../types";
 
@@ -11,6 +14,8 @@ import type { AnsiName, PaneBackground, Theme, TokenName } from "../types";
  */
 
 type DraftState = {
+  /** The theme editor pane that owns the draft; other editor panes point to it. */
+  ownerPaneId: string | null;
   /** Id of the theme being edited; null when nothing is. */
   sourceId: string | null;
   draft: Theme | null;
@@ -20,7 +25,18 @@ type DraftState = {
 
 const HISTORY_LIMIT = 200;
 
-export const useThemeDraft = create<DraftState>()(() => ({ sourceId: null, draft: null, past: [], future: [] }));
+export const useThemeDraft = create<DraftState>()(() => ({ ownerPaneId: null, sourceId: null, draft: null, past: [], future: [] }));
+
+/** Makes `paneId` the editor pane if there is none. Returns whether it is the owner. */
+export function claimEditor(paneId: string): boolean {
+  const { ownerPaneId } = useThemeDraft.getState();
+  if (ownerPaneId === null) useThemeDraft.setState({ ownerPaneId: paneId });
+  return useThemeDraft.getState().ownerPaneId === paneId;
+}
+
+export function releaseEditor(paneId: string): void {
+  if (useThemeDraft.getState().ownerPaneId === paneId) useThemeDraft.setState({ ownerPaneId: null });
+}
 
 const sameTheme = (a: Theme | null | undefined, b: Theme | null | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -36,6 +52,20 @@ function publish(): void {
   useThemeState.setState({ draft: isDraftDirty(state) ? state.draft : null });
 }
 
+/**
+ * Asks before replacing a dirty draft with another theme. Resolves true when
+ * it is fine to switch (nothing unsaved, the same theme, or confirmed).
+ */
+export async function mayEditAnother(themeId: string): Promise<boolean> {
+  const state = useThemeDraft.getState();
+  if (state.sourceId === themeId || !isDraftDirty(state)) return true;
+  return confirm({
+    title: "Discard theme changes?",
+    message: `“${state.draft?.name ?? "The theme"}” has unsaved changes. Editing another theme discards them.`,
+    action: "Discard",
+  });
+}
+
 /** Starts editing a theme (keeping a draft already open for it). */
 export function startEditing(themeId: string): void {
   const state = useThemeDraft.getState();
@@ -48,7 +78,7 @@ export function startEditing(themeId: string): void {
 
 /** Stops editing, dropping unsaved edits. */
 export function stopEditing(): void {
-  useThemeDraft.setState({ sourceId: null, draft: null, past: [], future: [] });
+  useThemeDraft.setState({ ownerPaneId: null, sourceId: null, draft: null, past: [], future: [] });
   publish();
 }
 
@@ -155,8 +185,18 @@ export function saveDraft(): Theme | null {
     : saveTheme(draft);
   useThemeDraft.setState({ sourceId: saved.id, draft: structuredClone(saved), past: [], future: [] });
   if (wasShowing || isBundled(sourceId)) selectTheme(saved.id);
+  repairSystemPicks(saved);
   publish();
   return saved;
+}
+
+/** A theme whose kind changed may no longer be the light (or dark) pick for following the system. */
+function repairSystemPicks(theme: Theme): void {
+  const { themeLight, themeDark } = getSettings();
+  const patch: { themeLight?: string; themeDark?: string } = {};
+  if (themeDark === theme.id && theme.kind !== "dark") patch.themeDark = DEFAULT_THEME_ID;
+  if (themeLight === theme.id && theme.kind !== "light") patch.themeLight = DEFAULT_LIGHT_THEME_ID;
+  if (Object.keys(patch).length) useSettings.getState().updateSettings(patch);
 }
 
 /** Back to the saved theme (undoable). */

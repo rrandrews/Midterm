@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useSettings } from "../settings/settings";
 import { midtermDark } from "./bundled";
-import { discardDraft, isDraftDirty, redo, saveDraft, setToken, startEditing, stopEditing, undo, useThemeDraft } from "./editor/draft";
+import { claimEditor, discardDraft, releaseEditor, setKind, isDraftDirty, redo, saveDraft, setToken, startEditing, stopEditing, undo, useThemeDraft } from "./editor/draft";
 import { resolveTheme } from "./resolve";
 import { currentResolvedTheme, currentTheme, deleteTheme, duplicateTheme, findTheme, selectTheme, selectedThemeId, useThemeState, withAccent } from "./state";
 
@@ -61,6 +61,22 @@ describe("theme editor draft", () => {
     expect(useThemeDraft.getState().draft?.overrides?.fg).toBe("#123456");
     discardDraft();
     expect(isDraftDirty()).toBe(false);
+  });
+
+  it("lets go of a system pick whose kind changed", () => {
+    const copy = duplicateTheme("dracula")!;
+    useSettings.getState().updateSettings({ themeDark: copy.id });
+    startEditing(copy.id);
+    setKind("light");
+    saveDraft();
+    expect(useSettings.getState().themeDark).toBe("midterm-dark");
+  });
+
+  it("gives the draft to one editor pane at a time", () => {
+    expect(claimEditor("a")).toBe(true);
+    expect(claimEditor("b")).toBe(false);
+    releaseEditor("a");
+    expect(claimEditor("b")).toBe(true);
   });
 
   it("saves a bundled theme as a new custom theme and shows it", () => {

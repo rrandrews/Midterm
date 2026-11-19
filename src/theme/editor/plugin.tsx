@@ -7,7 +7,8 @@ import { selectAllPanes, useAppStore } from "../../state/store";
 
 function Editor({ paneId, data }: PaneProps) {
   const themeId = typeof data.themeId === "string" ? data.themeId : currentTheme().id;
-  return <ThemeEditorPane paneId={paneId} themeId={themeId} onPick={(id) => updatePaneData(paneId, { themeId: id })} />;
+  const retarget = (id: string) => updatePaneData(paneId, { themeId: id });
+  return <ThemeEditorPane paneId={paneId} themeId={themeId} onPick={retarget} onSaved={retarget} />;
 }
 
 /** The theme editor, as a pane so edits preview on the real panes around it. */
@@ -20,7 +21,8 @@ export const themeEditorPlugin: PanePlugin = {
     component: Editor,
     validateData: (raw) => (typeof raw.themeId === "string" && raw.themeId ? { themeId: raw.themeId } : {}),
     createData: () => ({ themeId: currentTheme().id }),
-    closeBlockers: async () => (isDraftDirty() ? [{ type: "other", name: "The theme has unsaved changes" }] : []),
+    closeBlockers: async (paneId) =>
+      useThemeDraft.getState().ownerPaneId === paneId && isDraftDirty() ? [{ type: "other", name: "The theme has unsaved changes" }] : [],
     tabTitle: () => "theme",
     splittable: false,
     menu: () => [],

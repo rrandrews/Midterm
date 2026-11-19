@@ -19,16 +19,33 @@ export function appliedTheme(): ResolvedTheme {
   return applied ?? currentResolvedTheme();
 }
 
+/** What the native window was last told, so it is only told again on a change. */
+let nativeAppearance: "dark" | "light" | "system" | undefined;
+let nativeBackground: string | undefined;
+
+/**
+ * The native window's appearance and background. While following the
+ * system the appearance is left unforced (`null`): a forced appearance would
+ * also pin the webview's `prefers-color-scheme`, which is how the system's
+ * changes are noticed.
+ */
 function applyNative(theme: ResolvedTheme): void {
   if (!isTauri()) return;
   const window = getCurrentWindow();
-  void window.setTheme(theme.dark ? "dark" : "light").catch((error) => console.warn("setTheme failed:", error));
-  void window
-    .setBackgroundColor(theme.tokens.app)
-    .catch((error) => console.warn("setBackgroundColor failed:", error));
+  const appearance = useSettings.getState().themeFollowSystem ? "system" : theme.dark ? "dark" : "light";
+  if (appearance !== nativeAppearance) {
+    nativeAppearance = appearance;
+    void window.setTheme(appearance === "system" ? null : appearance).catch((error) => console.warn("setTheme failed:", error));
+  }
+  if (theme.tokens.app !== nativeBackground) {
+    nativeBackground = theme.tokens.app;
+    void window.setBackgroundColor(theme.tokens.app).catch((error) => console.warn("setBackgroundColor failed:", error));
+  }
 }
 
 export function applyTheme(theme: ResolvedTheme): void {
+  // Following the system can be switched on without the theme changing.
+  applyNative(theme);
   if (applied === theme) return;
   const previous = applied;
   applied = theme;
@@ -40,7 +57,6 @@ export function applyTheme(theme: ResolvedTheme): void {
   for (const [name, value] of Object.entries(vars)) style.setProperty(name, value);
   style.colorScheme = theme.dark ? "dark" : "light";
   root.dataset.theme = theme.kind;
-  if (!previous || previous.dark !== theme.dark || previous.tokens.app !== theme.tokens.app) applyNative(theme);
   noteThemeApplied();
 }
 
