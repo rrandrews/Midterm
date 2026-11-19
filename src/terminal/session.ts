@@ -2,11 +2,13 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
+import { type ITheme, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
 import { openExternal } from "../ipc/shell";
 import { localHostname } from "../ipc/system";
+import { BlockTracker } from "./blocks";
+import { branchOf } from "./gitBranch";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { TERMINAL_OPTIONS } from "./theme";
@@ -63,6 +65,8 @@ export class TerminalSession {
   private readonly term = new Terminal(TERMINAL_OPTIONS);
   private readonly fit = new FitAddon();
   private readonly resizeObserver = new ResizeObserver(() => this.scheduleFit());
+  /** Commands and their output, from the shell's OSC 133 marks (blocks mode). */
+  readonly blocks: BlockTracker;
   private webgl: WebglAddon | null = null;
   private fitFrame = 0;
 
@@ -126,6 +130,7 @@ export class TerminalSession {
       this.handleCwdReport(data);
       return true;
     });
+    this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
     this.term.onResize(({ cols, rows }) => {
       if (this.phase === "running") this.pty?.resize(cols, rows);
     });
@@ -206,6 +211,31 @@ export class TerminalSession {
   /** Clears the scrollback and screen, keeping the line the cursor is on. */
   clear(): void {
     this.term.clear();
+    this.blocks.clear();
+  }
+
+  /**
+   * Runs a command line as if typed at the prompt and Enter pressed. A
+   * multi-line one goes as a bracketed paste when the shell supports it,
+   * so it runs as one command line rather than line by line.
+   */
+  runCommand(command: string): void {
+    this.blocks.noteCommand(command);
+    const typed = command.replace(/\r?\n/g, "\r");
+    const data =
+      typed.includes("\r") && this.term.modes.bracketedPasteMode
+        ? `\x1b[200~${command}\x1b[201~\r`
+        : `${typed}\r`;
+    this.send({ binary: false, data });
+  }
+
+  /** The terminal's colors (blocks are drawn in the same palette). */
+  get theme(): ITheme {
+    return this.term.options.theme ?? {};
+  }
+
+  get cols(): number {
+    return this.term.cols;
   }
 
   /** Sends text to the shell as if typed (used by the self-test). */
@@ -224,6 +254,7 @@ export class TerminalSession {
     this.settle(this.unsettled);
     this.unsettled = 0;
     this.pty?.kill();
+    this.blocks.dispose();
     this.term.dispose();
   }
 
