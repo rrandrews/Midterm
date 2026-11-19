@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "./dock.css";
+@import "./terminal.css";
 
 /*
  * Design tokens. Values are taken from the reference mockup; see
@@ -11,7 +13,7 @@
   /* Surfaces */
   --color-app: #0c0d10;
   --color-field: #15161b;
-  --color-menu: #1a1c22;
+  --color-popover: #1a1c22;
   --color-raised: #2a2d35;
 
   /* Lines */
@@ -67,32 +69,35 @@
   color-scheme: dark;
 }
 
-html,
-body,
-#root {
-  height: 100%;
-}
+/* In the base layer so utility classes (e.g. outline-none) can override. */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
 
-body {
-  margin: 0;
-  overflow: hidden;
-  background: var(--color-app);
-  color: var(--color-fg);
-  font-family: var(--font-sans);
-  font-size: var(--text-ui);
-  -webkit-font-smoothing: antialiased;
-  /* A desktop app, not a document: no text selection or rubber-banding in chrome. */
-  user-select: none;
-  -webkit-user-select: none;
-  overscroll-behavior: none;
-  cursor: default;
-}
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--color-app);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-ui);
+    -webkit-font-smoothing: antialiased;
+    /* A desktop app, not a document: no text selection or rubber-banding in chrome. */
+    user-select: none;
+    -webkit-user-select: none;
+    overscroll-behavior: none;
+    cursor: default;
+  }
 
-button {
-  cursor: pointer;
-}
+  button {
+    cursor: pointer;
+  }
 
-:focus-visible {
-  outline: 1px solid var(--color-accent);
-  outline-offset: -1px;
+  :focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: -1px;
+  }
 }

@@ -1,0 +1,190 @@
+/*
+ * Styles for the pieces rendered by the pane layout (react-resizable-panels'
+ * Workspace), which is unstyled. Class names are assigned in PaneLayout.tsx.
+ */
+
+/* A pane's frame: fills its split cell; the header floats over the content. */
+.pane-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-frame > [data-tab-panels] {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.pane-frame [data-tab-content] {
+  height: 100%;
+}
+
+/*
+ * Active pane: 2px accent bar down its left edge. "Active" is our own state
+ * (the `is-active` class PaneContent puts on its `.pane`), because the
+ * layout library does not see interactions inside pane content.
+ */
+.pane-frame:has(.pane.is-active)::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 2;
+  width: 2px;
+  background: var(--color-accent);
+  pointer-events: none;
+}
+
+.pane-frame[data-tabset-dragging] {
+  opacity: 0.45;
+}
+
+/* Hover controls (drag handle + menu), top right. Each frame holds one pane,
+   so the library's tab list is never shown. */
+.pane-header {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity 80ms;
+}
+
+.pane-frame:hover > .pane-header,
+.pane-frame:has(.pane.is-active) > .pane-header,
+.pane-header:focus-within,
+.pane-header:has([data-state="open"]) {
+  opacity: 1;
+}
+
+.pane-tablist {
+  display: none;
+}
+
+/* Pane content backgrounds. */
+.pane {
+  height: 100%;
+  overflow: hidden;
+  outline: none;
+}
+.pane-terminal {
+  background: var(--pane-terminal);
+}
+.pane-terminal.is-active {
+  background: var(--pane-terminal-active);
+}
+.pane-explorer {
+  background: var(--pane-explorer);
+}
+.pane-editor {
+  background: var(--pane-editor);
+}
+.pane-viewer {
+  background: var(--pane-viewer);
+}
+
+/* Hairline between panes, with an accent grip while hovered or dragged. */
+.pane-separator {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  background: var(--color-line);
+  outline: none;
+}
+.pane-separator[aria-orientation="vertical"] {
+  width: 1px;
+}
+.pane-separator[aria-orientation="horizontal"] {
+  height: 1px;
+}
+.pane-separator::after {
+  content: "";
+  position: absolute;
+  border-radius: 3px;
+  background: var(--color-accent);
+  opacity: 0;
+  transition: opacity 80ms;
+  pointer-events: none;
+}
+.pane-separator[aria-orientation="vertical"]::after {
+  top: calc(50% - 16px);
+  left: -2px;
+  width: 5px;
+  height: 32px;
+}
+.pane-separator[aria-orientation="horizontal"]::after {
+  left: calc(50% - 16px);
+  top: -2px;
+  width: 32px;
+  height: 5px;
+}
+.pane-separator:not([data-separator="inactive"])::after,
+.pane-separator:focus-visible::after {
+  opacity: 0.85;
+}
+
+/* Where a dragged pane will land. One element for the whole drag, so it
+   glides between regions. Painted 6px inside the region it covers. */
+.pane-drop {
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: inset 110ms ease-out;
+  pointer-events: none;
+}
+.pane-drop::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 6px;
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+.pane-drop::after {
+  position: relative;
+  color: var(--color-accent-fg);
+  font-size: var(--text-crumb);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pane-drop[data-region="left"]::after {
+  content: "Split left";
+}
+.pane-drop[data-region="right"]::after {
+  content: "Split right";
+}
+.pane-drop[data-region="top"]::after {
+  content: "Split above";
+}
+.pane-drop[data-region="bottom"]::after {
+  content: "Split below";
+}
+.pane-drop[data-edge="left"]::after {
+  content: "Dock left";
+}
+.pane-drop[data-edge="right"]::after {
+  content: "Dock right";
+}
+.pane-drop[data-edge="top"]::after {
+  content: "Dock top";
+}
+.pane-drop[data-edge="bottom"]::after {
+  content: "Dock bottom";
+}
+
+/* Chip that follows the pointer while a pane is dragged. */
+.pane-drag-preview {
+  z-index: 6;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: var(--color-popover);
+  box-shadow: var(--shadow-menu);
+  color: var(--color-fg-soft);
+  font-size: var(--text-meta);
+  white-space: nowrap;
+  pointer-events: none;
+}

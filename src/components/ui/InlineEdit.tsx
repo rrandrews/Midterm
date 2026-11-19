@@ -1,0 +1,46 @@
+import { useRef } from "react";
+
+type InlineEditProps = {
+  value: string;
+  /** Called with the new value on Enter or blur (not called if unchanged or blank). */
+  onCommit: (value: string) => void;
+  /** Called when editing ends, whether or not anything was committed. */
+  onDone: () => void;
+  label: string;
+  className?: string;
+};
+
+/** A text field that edits a label in place and sizes itself to its content. */
+export function InlineEdit({ value, onCommit, onDone, label, className = "" }: InlineEditProps) {
+  // Escape blurs the field; this keeps that blur from committing.
+  const cancelled = useRef(false);
+
+  const finish = (input: HTMLInputElement) => {
+    const next = input.value.trim();
+    if (!cancelled.current && next && next !== value) onCommit(next);
+    onDone();
+  };
+
+  return (
+    <input
+      aria-label={label}
+      defaultValue={value}
+      autoFocus
+      spellCheck={false}
+      className={`min-w-[3ch] rounded-sm bg-field px-1 text-fg-bright outline-none ring-1 ring-accent [field-sizing:content] select-text ${className}`}
+      onFocus={(event) => event.currentTarget.select()}
+      onBlur={(event) => finish(event.currentTarget)}
+      onKeyDown={(event) => {
+        // Keep app shortcuts and tab-strip handlers from seeing typing.
+        event.stopPropagation();
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          cancelled.current = true;
+          event.currentTarget.blur();
+        }
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+    />
+  );
+}

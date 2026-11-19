@@ -1,0 +1,107 @@
+import { useCallback } from "react";
+import {
+  type DisableDropArgs,
+  Workspace as Dock,
+  Separator,
+  type TabsetNode,
+  type WorkspaceChangedMeta,
+  type WorkspaceClassNames,
+} from "react-resizable-panels";
+import { focusActivePane } from "../../actions";
+import { type DockHandle, registerDock } from "../../layout/dock";
+import { PANE_LABELS, countPanes } from "../../state/layout";
+import { useAppStore } from "../../state/store";
+import type { Layout, PaneData, PaneNode, Tab } from "../../state/types";
+import { PaneContent } from "../panes/PaneContent";
+import { PaneToolbar } from "./PaneToolbar";
+
+type Frame = TabsetNode<PaneData>;
+
+// Everything passed to the layout is defined out here: these props are part
+// of what every pane re-renders for, so they must be referentially stable.
+
+const CLASS_NAMES: WorkspaceClassNames<PaneData> = {
+  tabset: "pane-frame",
+  header: "pane-header",
+  tabList: "pane-tablist",
+  dropIndicator: "pane-drop",
+  dragPreview: "pane-drag-preview",
+};
+
+const paneOf = (frame: Frame): PaneNode | undefined =>
+  frame.tabs.find((pane) => pane.id === frame.selectedId) ?? frame.tabs[0];
+
+/**
+ * One pane per frame: a dragged pane can split a frame or dock at an edge of
+ * the layout, but never stacks into another pane's frame (as a second tab).
+ */
+function rejectStacking({ target }: DisableDropArgs<PaneData>): boolean {
+  if ("edge" in target) return false;
+  return "index" in target || target.region === "center";
+}
+
+const renderContent = (pane: PaneNode) => <PaneContent pane={pane} />;
+
+const renderSeparator = () => <Separator className="pane-separator" />;
+
+const renderDragPreview = (frame: Frame) => {
+  const pane = paneOf(frame);
+  return pane ? PANE_LABELS[pane.data.kind] : "Pane";
+};
+
+/**
+ * The split layout of one tab's panes.
+ *
+ * Uncontrolled: it starts from `tab.layout` and reports changes back to the
+ * store. Give it a key that changes with `tab.id` and `tab.layoutRev`, so it
+ * remounts when a different layout has to be shown. Remounting is cheap
+ * because pane state (terminals) lives outside React.
+ */
+export function PaneLayout({ tab }: { tab: Tab }) {
+  const tabId = tab.id;
+  const alone = countPanes(tab.layout) <= 1;
+
+  const dockRef = useCallback(
+    (handle: DockHandle | null) => (handle ? registerDock(tabId, handle) : undefined),
+    [tabId],
+  );
+
+  const onModelChanged = useCallback(
+    (layout: Layout, meta: WorkspaceChangedMeta) => {
+      const { setTabLayout, closeTab } = useAppStore.getState();
+      if (countPanes(layout) === 0) {
+        closeTab(tabId);
+        return;
+      }
+      setTabLayout(tabId, layout);
+      // WebKit re-inserts a moved pane's DOM, which drops keyboard focus.
+      if (meta.reason === "move") focusActivePane();
+    },
+    [tabId],
+  );
+
+  const renderToolbar = useCallback(
+    (frame: Frame) => {
+      const pane = paneOf(frame);
+      return pane ? <PaneToolbar pane={pane} alone={alone} /> : null;
+    },
+    [alone],
+  );
+
+  return (
+    <Dock<PaneData>
+      workspaceRef={dockRef}
+      className="min-h-0 flex-1"
+      classNames={CLASS_NAMES}
+      defaultModel={tab.layout}
+      disableDrop={rejectStacking}
+      onModelChanged={onModelChanged}
+      renderSeparator={renderSeparator}
+      renderTabContent={renderContent}
+      renderTabsetDragPreview={renderDragPreview}
+      renderTabsetToolbar={renderToolbar}
+      tabsetMinHeight="56px"
+      tabsetMinWidth="96px"
+    />
+  );
+}

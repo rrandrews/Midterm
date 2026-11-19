@@ -1,0 +1,26 @@
+/* xterm.js host. Padding matches the mockup's terminal panes. */
+.terminal-pane {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 10px 6px 10px 18px;
+}
+
+.terminal-host {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* The pane gradient shows through the terminal. */
+.terminal-host .xterm,
+.terminal-host .xterm-viewport,
+.terminal-host .xterm-screen {
+  background-color: transparent !important;
+}
+
+.terminal-host .xterm {
+  height: 100%;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
