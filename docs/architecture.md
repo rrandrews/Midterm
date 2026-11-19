@@ -4,7 +4,7 @@ Midterm is a Tauri 2 app: a Rust backend (`src-tauri/`) that owns PTYs, and a
 React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
-[explorer.md](explorer.md) · [commands.md](commands.md) ·
+[explorer.md](explorer.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
 [design-tokens.md](design-tokens.md) · [roadmap.md](roadmap.md)
 
 ## Concepts
@@ -29,6 +29,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/actions.ts` | User-level actions (split, close, new tab…). Commands, menus and shortcuts call these. |
 | `src/commands/` | Command registry: ids, titles, key bindings; see [commands.md](commands.md). |
 | `src/shortcuts.ts` | Window-level shortcut handler, driven by the registry. |
+| `src/palette/` | Command palette; see [palette.md](palette.md). |
 | `src/settings/` | User settings: schema, validation, persisted store. |
 | `src/layout/dock.ts` | Bridge to the mounted pane layout: imperative handles by tab id, pane focus. |
 | `src/components/titlebar/` | Title bar = tab bar: workspace switcher, tabs, app menu. |

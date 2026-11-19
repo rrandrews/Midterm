@@ -104,6 +104,7 @@ pub fn run() {
             fs::commands::fs_create,
             fs::commands::fs_rename,
             fs::commands::fs_trash,
+            fs::commands::fs_find_files,
             fs::commands::git_status,
             fs::commands::fs_watch_start,
             fs::commands::fs_watch_set,

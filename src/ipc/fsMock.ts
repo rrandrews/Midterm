@@ -1,4 +1,4 @@
-import type { FsEntry, GitCode, GitStatus, ListOptions, WatchEvent, Watcher } from "./fs";
+import type { FoundFiles, FsEntry, GitCode, GitStatus, ListOptions, WatchEvent, Watcher } from "./fs";
 
 /*
  * Development aid: an in-memory file tree standing in for the backend when
@@ -134,3 +134,19 @@ export async function watch(onEvent: (event: WatchEvent) => void): Promise<Watch
 
 /** Where a mock terminal starts, so the explorer has a repository to follow. */
 export const MOCK_PROJECT = ROOT;
+
+export async function findFiles(root: string, limit: number): Promise<FoundFiles> {
+  const paths: string[] = [];
+  const walk = (dir: string, prefix: string) => {
+    const node = lookup(dir);
+    for (const [name, child] of [...(node?.children ?? [])].sort(([a], [b]) => a.localeCompare(b))) {
+      const path = `${dir}/${name}`;
+      if (name.startsWith(".") || IGNORED.has(path)) continue;
+      if (child.dir) walk(path, `${prefix}${name}/`);
+      else paths.push(`${prefix}${name}`);
+    }
+  };
+  if (!lookup(root)?.dir) throw new Error(`Not a directory: ${root}`);
+  walk(root === "/" ? "" : root, "");
+  return { paths: paths.slice(0, limit), truncated: paths.length > limit };
+}

@@ -16,6 +16,18 @@ import { terminalTitle } from "./titles";
  */
 
 const sessions = new Map<string, TerminalSession>();
+/** Input to type into a pane's shell as soon as its session exists (e.g. a command to run). */
+const startupInput = new Map<string, string>();
+
+/**
+ * Types `data` into the pane's shell once it starts (queued like early
+ * keystrokes). For a pane that is about to be created.
+ */
+export function queueStartupInput(paneId: string, data: string): void {
+  const session = sessions.get(paneId);
+  if (session) session.input(data);
+  else startupInput.set(paneId, (startupInput.get(paneId) ?? "") + data);
+}
 
 export function acquireSession(paneId: string): TerminalSession {
   let session = sessions.get(paneId);
@@ -46,6 +58,9 @@ export function acquireSession(paneId: string): TerminalSession {
       },
     }, savedCwd);
     sessions.set(paneId, session);
+    const input = startupInput.get(paneId);
+    startupInput.delete(paneId);
+    if (input) session.input(input);
   }
   return session;
 }

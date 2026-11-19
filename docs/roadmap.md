@@ -18,6 +18,11 @@ Done so far:
   terminal (pinnable), git badges, context menu, opening files into
   editor/viewer panes. Right-click menus across the app. See
   [explorer.md](explorer.md).
+- M5: command palette (⌘K, ⌘P files, ⇧⌘P commands): commands from a
+  registry with rebindable shortcuts, tabs and workspaces by name, fuzzy
+  file open in the project root, run a shell command in a new pane,
+  recent items first. See [palette.md](palette.md) and
+  [commands.md](commands.md).
 
 ## M4 — Editor and viewer panes
 
@@ -31,17 +36,6 @@ Goal: the `editor` and `viewer` pane kinds open files.
 - [ ] Viewer: rendered Markdown, images, and a read-only fallback for other text
 - [ ] Find in file (⌘F), go to line
 - [ ] Clickable `path:line` in terminal output opens the editor there
-
-## M5 — Command palette
-
-Goal: the title bar's command button and ⌘K open a palette.
-
-- [ ] Palette UI (cmdk or equivalent), styled to the mockup's command button
-- [ ] Command registry generated from `src/actions.ts`, with shortcut hints
-- [ ] Fuzzy file open within the workspace root
-- [ ] Switch tab / workspace by name
-- [ ] Run a shell command in a new pane
-- [ ] Recent commands and files first
 
 ## M6 — Blocks terminal mode
 

@@ -33,6 +33,7 @@ All paths are absolute strings. `src/ipc/fs.ts` is the only caller.
 | `fs_create` | `path`, `dir` | Empty file or directory. Errors if anything is there or the parent is missing. |
 | `fs_rename` | `from`, `to` | Rename or move. Errors if `to` exists, except a case-only rename of the same entry. |
 | `fs_trash` | `paths` | Moves to the system trash. A symlink is trashed, not its target. |
+| `fs_find_files` | `root`, `limit` | `{ paths, truncated }`: every file under `root` (relative, `/`-separated, sorted), hidden and ignored entries skipped, symlinks not followed. For the palette (`find.rs`). |
 | `git_status` | `path` | `{ root, branch, entries }` or `null` outside a work tree (or bare). |
 | `fs_watch_start` | `onEvent` | Returns a watcher id. Events arrive as `{ dirs }`. |
 | `fs_watch_set` | `id`, `dirs` | Replaces the watched set. Errors on an unknown id. |

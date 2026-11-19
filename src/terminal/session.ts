@@ -42,7 +42,7 @@ const FOREGROUND_POLL_MS = 2000;
 const QUICK_EXIT_MS = 1500;
 
 /**
- * - `idle`: no shell yet (never shown).
+ * - `idle`: no shell yet (never shown); input is queued.
  * - `starting`: spawn requested; input is queued.
  * - `running`: input goes to the shell.
  * - `ended`: the shell exited or never started; input is dropped.
@@ -265,7 +265,8 @@ export class TerminalSession {
 
   private send(input: Input): void {
     if (this.phase === "running" && this.pty) this.write(this.pty, input);
-    else if (this.phase === "starting") this.queuedInput.push(input);
+    // Before the shell runs (not yet shown, or starting) input waits for it.
+    else if (this.phase === "idle" || this.phase === "starting") this.queuedInput.push(input);
     // Otherwise there is no shell to receive it.
   }
 

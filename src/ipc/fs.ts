@@ -88,6 +88,22 @@ export function trash(paths: string[]): Promise<void> {
   return invoke("fs_trash", { paths });
 }
 
+export type FoundFiles = {
+  /** `/`-separated paths relative to the root. */
+  paths: string[];
+  /** There were more than `limit` files. */
+  truncated: boolean;
+};
+
+/**
+ * Every file under `root` (no directories), skipping hidden entries and
+ * those excluded by ignore rules, up to `limit`.
+ */
+export function findFiles(root: string, limit: number): Promise<FoundFiles> {
+  if (!isTauri()) return mock.findFiles(root, limit);
+  return invoke<FoundFiles>("fs_find_files", { root, limit });
+}
+
 /** Git status of the work tree containing `path`, or `null` if it is not in one. */
 export function gitStatus(path: string): Promise<GitStatus | null> {
   if (!isTauri()) return mock.gitStatus(path);

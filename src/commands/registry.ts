@@ -166,16 +166,30 @@ export function runCommand(id: string): boolean {
 
 const RECENT_LIMIT = 20;
 const recent: string[] = [];
+const runListeners = new Set<(id: string) => void>();
 
 function noteRun(id: string): void {
   const index = recent.indexOf(id);
   if (index !== -1) recent.splice(index, 1);
   recent.unshift(id);
   if (recent.length > RECENT_LIMIT) recent.length = RECENT_LIMIT;
+  for (const listener of runListeners) listener(id);
 }
 
+/** Command ids, most recently run first. */
 export function recentCommandIds(): readonly string[] {
   return recent;
+}
+
+/** Restores the recent list (e.g. from disk), most recent first. */
+export function seedRecentCommands(ids: readonly string[]): void {
+  recent.splice(0, recent.length, ...ids.slice(0, RECENT_LIMIT));
+}
+
+/** Calls `listener` after each command runs. Returns a function that stops. */
+export function onCommandRun(listener: (id: string) => void): () => void {
+  runListeners.add(listener);
+  return () => runListeners.delete(listener);
 }
 
 /*

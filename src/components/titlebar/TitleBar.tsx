@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { newTab, newWorkspace, splitPane } from "../../actions";
 import { shortcutLabel } from "../../commands/registry";
 import { watchFullscreen } from "../../ipc/window";
+import { openPalette } from "../../palette/state";
 import { DotsIcon } from "../ui/icons";
 import {
   ContextMenu,
@@ -75,16 +76,15 @@ export function TitleBar() {
           <TabStrip />
           <div data-tauri-drag-region className="min-w-4 flex-1" aria-hidden="true" />
           <div data-tauri-drag-region className="flex min-w-0 items-center gap-1 pr-2.5">
-            {/* Opens the command palette once that exists (see docs/roadmap.md). */}
             <button
               type="button"
-              disabled
-              title="Command palette — not available yet"
-              className="flex h-6 w-[260px] min-w-24 shrink cursor-default items-center gap-2 rounded-md bg-field px-2 text-fg-dim shadow-[inset_0_0_0_1px_var(--color-line)]"
+              onClick={() => openPalette("all")}
+              title="Command palette"
+              className="flex h-6 w-[260px] min-w-24 shrink items-center gap-2 rounded-md bg-field px-2 text-fg-dim shadow-[inset_0_0_0_1px_var(--color-line)] outline-none hover:text-fg-mid"
             >
               <Search size={13} strokeWidth={2} aria-hidden="true" />
               <span className="flex-1 truncate text-left">Run a command or open a file</span>
-              <span className="font-mono text-micro text-fg-muted">⌘K</span>
+              <span className="font-mono text-micro text-fg-muted">{shortcutLabel("palette.open")}</span>
             </button>
             <AppMenu />
           </div>

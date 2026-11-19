@@ -3,6 +3,7 @@ import { dropPaneOnTab, focusActivePane } from "./actions";
 import { PaneLayout } from "./components/layout/PaneLayout";
 import { TitleBar } from "./components/titlebar/TitleBar";
 import { ConfirmHost } from "./components/ui/ConfirmDialog";
+import { Palette } from "./palette/Palette";
 import { installCloseGuards } from "./ipc/window";
 import { mayCloseEverything } from "./closing";
 import { flushSavedState } from "./state/persistence";
@@ -62,6 +63,7 @@ export default function App() {
         {/* Only the active tab's layout is mounted; see PaneLayout for the key. */}
         <PaneLayout key={`${tab.id}:${tab.layoutRev}`} tab={tab} />
       </main>
+      <Palette />
       <ConfirmHost />
     </div>
   );

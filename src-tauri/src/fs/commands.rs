@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{State, Window};
 
+use super::find::{self, FoundFiles};
 use super::git::{self, GitStatus};
 use super::list::{self, FsEntry};
 use super::ops;
@@ -60,6 +61,12 @@ pub async fn fs_rename(from: String, to: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn fs_trash(paths: Vec<String>) -> Result<(), String> {
     blocking(move || ops::trash(&paths)).await
+}
+
+/// Files under `root` (relative paths), up to `limit`; see [`find::find_files`].
+#[tauri::command]
+pub async fn fs_find_files(root: String, limit: usize) -> Result<FoundFiles, String> {
+    blocking(move || find::find_files(&PathBuf::from(root), limit)).await
 }
 
 /// Status of the work tree containing `path`, or `null` outside one.
