@@ -1,5 +1,7 @@
+mod menu;
 mod pty;
 
+use tauri::webview::PageLoadEvent;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use pty::PtyManager;
@@ -9,6 +11,18 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(PtyManager::default())
+        .menu(menu::build)
+        // A page that (re)loads has lost the channels its terminals were
+        // streaming to, so their shells can never be reached again: end them
+        // rather than leave them stalled until the window closes. This is a
+        // no-op for a window's first load.
+        .on_page_load(|webview, payload| {
+            if payload.event() == PageLoadEvent::Started {
+                webview
+                    .state::<PtyManager>()
+                    .kill_owned_by(webview.window().label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             pty::commands::pty_spawn,
             pty::commands::pty_write,
