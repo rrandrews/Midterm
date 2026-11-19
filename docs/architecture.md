@@ -5,6 +5,7 @@ React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
 [explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
+[ai.md](ai.md) ·
 [design-tokens.md](design-tokens.md) · [roadmap.md](roadmap.md)
 
 ## Concepts
@@ -46,6 +47,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/dev/` | Development aids (not in production builds). |
 | `src-tauri/src/pty/` | PTY sessions and the commands that drive them. |
 | `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer; whole-file reads and atomic writes for editors and viewers. |
+| `src-tauri/src/ai/` | AI providers: HTTP adapters (OpenAI-compatible, Anthropic), CLI providers, keys in the OS keychain, the `ai_*` commands; see [ai.md](ai.md). The only code that makes outbound network requests. |
 | `src-tauri/src/menu.rs` | Native menu. Has no "Close Window", so ⌘W reaches the app. |
 | `src-tauri/src/traffic_lights.rs` | Centres the macOS traffic lights in the web title bar; re-applied on resize and focus. |
 
@@ -157,6 +159,11 @@ Set in `src-tauri/tauri.conf.json` (`app.security`):
 `http://127.0.0.1:*` for the self-test's report.
 Rendered Markdown is sanitized (DOMPurify) and never loads anything by
 itself, so it does not rely on the CSP alone.
+
+The Rust backend does make outbound requests: AI providers
+(`src-tauri/src/ai/`, see [ai.md](ai.md)). The webview's policy is
+unchanged by that: the webview asks through IPC, the backend calls the
+provider with a key the webview never sees, and `connect-src` stays local.
 
 To check a production build against the policy without Tauri, serve
 `dist/` with the policy as a `Content-Security-Policy` header and watch the
