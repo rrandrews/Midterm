@@ -1,3 +1,4 @@
+mod ai;
 mod fs;
 mod menu;
 mod pty;
@@ -49,6 +50,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PtyManager::default())
         .manage(WatchManager::default())
+        .manage(ai::AiManager::default())
         .menu(menu::build)
         .setup(|app| {
             quit_guard::install(app.handle());
@@ -117,6 +119,14 @@ pub fn run() {
             fs::commands::fs_watch_start,
             fs::commands::fs_watch_set,
             fs::commands::fs_watch_stop,
+            ai::commands::ai_suggest,
+            ai::commands::ai_cancel,
+            ai::commands::ai_models,
+            ai::commands::ai_test,
+            ai::commands::ai_key_set,
+            ai::commands::ai_key_delete,
+            ai::commands::ai_key_status,
+            ai::commands::ai_cli_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
