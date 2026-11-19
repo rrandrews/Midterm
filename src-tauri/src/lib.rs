@@ -1,14 +1,33 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+mod pty;
+
+use tauri::{Manager, RunEvent, WindowEvent};
+
+use pty::PtyManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .manage(PtyManager::default())
+        .invoke_handler(tauri::generate_handler![
+            pty::commands::pty_spawn,
+            pty::commands::pty_write,
+            pty::commands::pty_resize,
+            pty::commands::pty_ack,
+            pty::commands::pty_kill,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| match event {
+        // A closed window takes its terminals with it.
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Destroyed,
+            ..
+        } => app.state::<PtyManager>().kill_owned_by(&label),
+        // Last chance to make sure no shell outlives the app.
+        RunEvent::Exit => app.state::<PtyManager>().kill_all(),
+        _ => {}
+    });
 }
