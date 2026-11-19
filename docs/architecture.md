@@ -5,7 +5,7 @@ React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
 [explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
-[design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [roadmap.md](roadmap.md)
+[design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [roadmap.md](roadmap.md)
 
 ## Concepts
 
@@ -35,6 +35,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src/components/titlebar/` | Title bar = tab bar: workspace switcher, tabs, app menu. |
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
 | `src/plugins/` | The pane plugin contract, registry, API, pane host, skills and the imported-plugin loader; built-in plugins in `builtin/`. See [plugins.md](plugins.md). |
+| `src/theme/` | Themes: model, resolution, bundled themes, importers, applying the theme, the Appearance section and the theme editor pane. See [themes.md](themes.md). |
 | `src/components/panes/` | The built-in panes' components. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
 | `src/terminal/` | xterm.js sessions and their registry; blocks mode model, rendering and history ([terminal.md](terminal.md)); file links in output. |

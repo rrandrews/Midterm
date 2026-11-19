@@ -61,8 +61,9 @@ render and saved 200 ms after each change. Dev runs with `?mockup` or
 ## Settings dialog
 
 `src/settings/SettingsDialog.tsx` (⌘, or the app menu). Sections come from
-a registry (`src/settings/sections.ts`): General (accent, font family and
-size, what new tabs and splits open), Plugins (`PluginSettings.tsx`:
+a registry (`src/settings/sections.ts`): General (font family and size, what
+new tabs and splits open), Appearance (themes and the accent; see
+[themes.md](themes.md#settings-and-gallery)), Plugins (`PluginSettings.tsx`:
 installed plugins, enable/disable, import, remove) and Keyboard (click a
 shortcut and press the new keys; ✕ unbinds, ↺ restores the default;
 conflicts are flagged). Below them, one section per pane plugin: Terminal
@@ -71,9 +72,9 @@ and arguments), Explorer (follow the terminal, hidden files), Editor (word
 wrap, tab size, line numbers), Viewer (Markdown rendered or as source),
 each with its skills. Controls are shared from `src/settings/controls.tsx`,
 which also renders plugins' declarative fields. Changes apply and save at once; text
-fields commit on Enter or blur. `src/settings/apply.ts` applies the
-accent by overriding `--color-accent` (and the derived `--color-accent-fg`)
-on `<html>`.
+fields commit on Enter or blur. `src/settings/apply.ts` applies the fonts
+as CSS variables; colors (the accent included) come from the theme
+(`src/theme/apply.ts`).
 
 A custom shell (`shell`, `shellArgs`) is run as given by `pty_spawn`
 (`shell_command` in `src-tauri/src/pty/shell.rs`), with the terminal

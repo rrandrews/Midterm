@@ -19,6 +19,7 @@ import { type PaneState, type PaneStateOptions, createPaneState } from "./paneSt
 import { directoryOf } from "./panes";
 import { pluginSettings } from "./settings";
 import { refreshTabTitles } from "./tabTitles";
+import { subscribeThemeApplied } from "../theme/state";
 
 /*
  * The API a plugin is given (`activate(api)`, `ctx.api`, skill tools). One
@@ -117,19 +118,6 @@ export type MidtermApi = {
   };
 };
 
-const themeListeners = new Set<() => void>();
-
-/** Tells plugins the theme changed (called by the theme layer). */
-export function notifyThemeChange(): void {
-  for (const listener of themeListeners) {
-    try {
-      listener();
-    } catch (error) {
-      console.error("A theme listener failed:", error);
-    }
-  }
-}
-
 export function createApi(pluginId: string): MidtermApi {
   let storage: ReturnType<typeof openJsonFile> | null = null;
   const store = () => (storage ??= openJsonFile(`plugin-${pluginId}.json`));
@@ -194,10 +182,14 @@ export function createApi(pluginId: string): MidtermApi {
     },
     theme: {
       token: (name) => getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim(),
-      onChange: (listener) => {
-        themeListeners.add(listener);
-        return () => themeListeners.delete(listener);
-      },
+      onChange: (listener) =>
+        subscribeThemeApplied(() => {
+          try {
+            listener();
+          } catch (error) {
+            console.error(`A theme listener of ${pluginId} failed:`, error);
+          }
+        }),
     },
     ui: { confirm, MenuItems },
   };

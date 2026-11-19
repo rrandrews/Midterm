@@ -17,6 +17,8 @@ import { refreshInstalled } from "../plugins/loader";
 import { getPlugin, loadErrorOf } from "../plugins/registry";
 import { getSkill, invokeSkillTool } from "../plugins/skills";
 import { runCommand } from "../commands/registry";
+import { bundledTheme } from "../theme/bundled";
+import { editTheme } from "../theme/commands";
 
 /*
  * Development aid: exercises the real app (real webview, real PTY) and posts
@@ -354,6 +356,30 @@ async function featureChecks(checks: Check[]): Promise<void> {
   });
 }
 
+/** Switching theme reaches CSS variables, a live terminal's palette, and the editor pane plugin opens. */
+async function themeChecks(checks: Check[]): Promise<void> {
+  const paneId = listPanes(selectActiveTab(useAppStore.getState()).layout)[0]?.id;
+  const session = paneId ? peekSession(paneId) : undefined;
+  const css = () => getComputedStyle(document.documentElement).getPropertyValue("--color-app").trim();
+  const before = { css: css(), red: session?.theme.red };
+  useSettings.getState().updateSettings({ theme: "solarized-light" });
+  await sleep(200);
+  const light = bundledTheme("solarized-light");
+  const after = { css: css(), red: session?.theme.red, scheme: document.documentElement.style.colorScheme };
+  checks.push({
+    name: "themes: switching updates CSS variables and a live terminal's palette",
+    ok: !!light && after.css === light.background && after.red === light.ansi.red && after.scheme === "light" && before.css !== after.css,
+    detail: { before, after },
+  });
+  editTheme("solarized-light");
+  const editor = await waitFor(() => document.querySelector('[data-pane-kind="theme-editor"] [data-token="fg"]') !== null, 3000);
+  checks.push({ name: "themes: the theme editor pane opens", ok: editor });
+  const editorPane = (document.querySelector('[data-pane-kind="theme-editor"]') as HTMLElement | null)?.dataset.paneId;
+  if (editorPane) closePaneNow(editorPane);
+  useSettings.getState().updateSettings({ theme: "midterm-dark" });
+  await sleep(100);
+}
+
 /** The example plugin imported, opened from the palette, disabled (placeholder) and removed again. */
 async function pluginChecks(checks: Check[]): Promise<void> {
   const id = "scratchpad";
@@ -414,6 +440,7 @@ export async function runSelfTest(port: string): Promise<void> {
   try {
     await sleep(1500);
     await pluginChecks(checks);
+    await themeChecks(checks);
     await integrationChecks(checks);
     await featureChecks(checks);
     await uiChecks(checks);

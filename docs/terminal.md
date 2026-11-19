@@ -363,7 +363,8 @@ editor file writes with the stale-save check, and fuzzy file listing; and
 plugins (M8): the example plugin imported and loaded through `plugin://`,
 its pane opened from a generated command, its stylesheet, skills (code,
 `SKILL.md`, built in, a refused write, invalid input), the placeholder when
-disabled, and removal.
+disabled, and removal; themes (M9): switching theme updates a CSS variable
+and a live terminal's palette, and the theme editor pane opens.
 
 Known failure when the window is not frontmost: "closing a pane ends its
 session" reports focus on `<body>` (also on M7).

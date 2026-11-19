@@ -1,7 +1,9 @@
 # Themes
 
-Code: `src/theme/` (pure, no UI; import from `src/theme/index.ts`). Roadmap: M9
-in `docs/roadmap.md`.
+Code: `src/theme/`. The model, resolution, bundled themes and importers are
+pure (import them from `src/theme/index.ts`). The runtime parts are in
+`state.ts`, `apply.ts`, `files.ts`, `commands.ts`, `AppearanceSection.tsx`
+and `editor/`.
 
 A theme is a small base palette plus optional overrides. `resolveTheme()`
 derives every color the app uses from it, and that one resolved theme feeds
@@ -16,6 +18,12 @@ the CSS variables, xterm, blocks rendering, CodeMirror and the window.
 | `validate.ts` | `validateTheme(unknown)` → `{ ok, theme }` or `{ ok: false, errors }`; `parseTheme` throws; `slugify` |
 | `resolve.ts` | `resolveTheme`, `cssVariables`, `cssVariableName`, `paneBackground`, `paneGradient`, `contrastRatio` |
 | `bundled/` | One file per bundled theme, `BUNDLED_THEMES`, `bundledTheme(id)`, `DEFAULT_THEME_ID`, `DEFAULT_LIGHT_THEME_ID` |
+| `state.ts` | Which theme is showing: settings, custom themes (`themes.json`), the palette's preview, the editor's draft; `currentResolvedTheme`, `withAccent`, theme management; `subscribeThemeApplied` / `useThemeRevision` |
+| `apply.ts` | `applyTheme`, `installThemes`, `appliedTheme` |
+| `files.ts` | Import and export through file dialogs |
+| `commands.ts` | Palette commands, the Appearance section and the theme editor plugin, registered by `installThemeCommands` |
+| `AppearanceSection.tsx` | Settings → Appearance |
+| `editor/` | The theme editor pane: `draft.ts` (draft, undo, save), `ThemeEditorPane.tsx`, `plugin.tsx` |
 | `importers/` | `importItermColors`, `importVSCodeTheme`, `importBase16`, `importMidtermTheme` / `exportTheme`, `detectThemeFormat`, `importThemeFile`; fixtures in `importers/fixtures/` |
 
 ## The model
@@ -292,15 +300,91 @@ periwinkle accent as Midterm Dark, darkened for a light background.
 
 ## Applying a theme
 
-_Stub: to be written with `applyTheme` (CSS variables on `<html>`,
-`color-scheme`, live xterm sessions, blocks re-render, CodeMirror's dark flag,
-native window theme and background, no flash at startup)._
+`installThemes()` (from `main.tsx`, before the first render, so nothing
+flashes in the wrong colors) applies `currentResolvedTheme()` and applies it
+again whenever the settings or the theme state change. `applyTheme(resolved)`
+does the following:
+
+- Sets every `cssVariables(resolved)` entry on `<html>`, removes variables
+  the previous theme set and this one does not, and sets `color-scheme` and
+  `data-theme`. Tailwind's utilities read the variables, so CSS follows
+  without any work.
+- Updates the native window when the kind or background changes:
+  `setTheme("dark" | "light")` (the traffic lights) and
+  `setBackgroundColor` (what shows while resizing). This needs the
+  `core:window:allow-set-theme` and `allow-set-background-color` permissions.
+- Calls `noteThemeApplied()`, which reaches everyone who draws theme colors
+  outside CSS:
+  - **Terminal sessions** (`sessions.ts`): `terminalConfig()` carries the
+    theme's xterm colors, the solid background and the find highlights.
+    Live sessions get new options.
+  - **Blocks**: the finished-block memo depends on `useThemeRevision()`,
+    so old output is redrawn in the new colors.
+  - **CodeMirror**: `EditorModel.setDark` reconfigures the light/dark flag
+    (the token colors themselves are CSS).
+  - **Plugins**: `api.theme.onChange`.
+
+The accent override is applied before resolving (`withAccent`), so every
+accent-derived token (soft, fg, cursor, selection, find) follows it.
 
 ## Settings and gallery
 
-_Stub: to be written with the `theme` setting, follow-system, the accent as an
-override, custom themes in `themes.json`, and the Appearance gallery._
+| Setting | Meaning |
+|---|---|
+| `theme` | The theme's id (bundled or custom). An unknown id shows Midterm Dark. |
+| `themeFollowSystem`, `themeLight`, `themeDark` | Follow macOS's appearance (`prefers-color-scheme`) with a light and a dark pick. |
+| `accent` | An override of the theme's accent; empty for the theme's own. Settings version 3 turned the old default (`#8B9CFF`, Midterm Dark's accent) into "the theme's own" and kept any other choice. |
+
+Custom themes (imported, duplicated or saved from the editor) are kept in
+`themes.json` and validated on load. A custom theme never takes a bundled
+theme's id.
+
+Settings → Appearance has the following:
+
+- Follow the system, with the light and dark picks.
+- The accent: "Theme's", the presets, or a custom color.
+- The gallery: swatches drawn from each resolved theme. Click one to apply
+  it; while following the system, that sets the light or dark pick for its
+  kind.
+- Actions on the selected theme: Edit, Duplicate, Export… (Midterm JSON),
+  Delete and rename (custom themes only).
+- Import… (Midterm JSON, `.itermcolors`, VS Code JSON, Base16/Base24 YAML).
+  The imported theme gets a free id and name, and is shown.
+
+Palette commands:
+
+- **Theme: Select…** opens a palette picker (`openPicker` in
+  `src/palette/state.ts`) and previews each theme as it is highlighted
+  (`useThemeState.preview`). Escape restores the previous theme.
+- **Theme: Edit current**.
+- **Theme: Toggle light/dark**: switches to the light or dark pick and turns
+  off following the system.
 
 ## Theme editor pane
 
-_Stub: to be written with the theme editor pane plugin._
+A built-in pane plugin (`theme-editor`, `src/theme/editor/`), so edits
+preview on the real terminals and files beside it. Its pane data is
+`{ themeId }`.
+
+- **Draft** (`draft.ts`): a copy of the edited theme with undo and redo.
+  Steps from a color drag are merged. While the draft differs from the
+  saved theme it is shown everywhere (`useThemeState.draft`).
+  - **Save** writes a custom theme. For a bundled theme it saves as a new
+    one, "Name (custom)", and shows it.
+  - **Discard** goes back to the saved theme, and can be undone.
+  - Closing the last editor pane drops the draft; closing with unsaved edits
+    asks first (`closeBlockers`).
+- **Layout:**
+  - At the top: the theme picker, light/dark, name, undo/redo,
+    discard/save and a filter.
+  - A sample strip: the ANSI colors, a code sample in the syntax colors,
+    and the UI states.
+  - The groups: base palette, the token groups, terminal ANSI colors, and
+    pane backgrounds for every built-in key and enabled plugin.
+- **Each token row**:
+  - It shows "derived" or "set", with a reset to derived.
+  - A swatch opens a picker with alpha (`react-colorful`) and a hex field.
+  - Text, status and syntax tokens warn when their WCAG contrast against
+    the window background is below 4.5:1 (body text) or 3:1.
+- **Keys:** ⌘Z / ⇧⌘Z undo and redo while focus is outside a text field. ⌘S
+  saves (the pane's `save` action).

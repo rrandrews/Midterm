@@ -1,6 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { notifyThemeChange } from "../plugins/api";
 import { useSettings } from "../settings/settings";
 import { cssVariables } from "./resolve";
 import { currentResolvedTheme, noteThemeApplied, useThemeState } from "./state";
@@ -10,7 +9,7 @@ import type { ResolvedTheme } from "./types";
  * Applying the showing theme everywhere: CSS variables and `color-scheme`
  * on <html>, then everyone who draws with theme colors outside CSS (xterm
  * sessions, blocks, CodeMirror's light/dark flag, plugins) through
- * `noteThemeApplied` / `notifyThemeChange`, and the native window (its
+ * `noteThemeApplied` (`subscribeThemeApplied`), and the native window (its
  * appearance and background, so resizing shows no wrong color).
  */
 
@@ -43,7 +42,6 @@ export function applyTheme(theme: ResolvedTheme): void {
   root.dataset.theme = theme.kind;
   if (!previous || previous.dark !== theme.dark || previous.tokens.app !== theme.tokens.app) applyNative(theme);
   noteThemeApplied();
-  notifyThemeChange();
 }
 
 let installed = false;
