@@ -34,7 +34,11 @@ pub fn find_files(root: &Path, limit: usize) -> Result<FoundFiles, String> {
     for entry in walk {
         // Unreadable directories are skipped, not fatal.
         let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_some_and(|t| t.is_file() || t.is_symlink()) {
+        let Some(file_type) = entry.file_type() else { continue };
+        // A symlink counts only if it leads to a regular file.
+        let is_file = file_type.is_file()
+            || (file_type.is_symlink() && std::fs::metadata(entry.path()).is_ok_and(|m| m.is_file()));
+        if !is_file {
             continue;
         }
         let Ok(relative) = entry.path().strip_prefix(root) else {
@@ -70,12 +74,21 @@ mod tests {
         fs::write(root.join(".hidden/x"), "").unwrap();
         fs::write(root.join("README.md"), "").unwrap();
         fs::write(root.join(".ignore"), "build/\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("src"), root.join("dirlink")).unwrap();
+            std::os::unix::fs::symlink(root.join("missing"), root.join("broken")).unwrap();
+            std::os::unix::fs::symlink(root.join("README.md"), root.join("readme-link")).unwrap();
+        }
 
         let found = find_files(root, 100).unwrap();
-        assert_eq!(found.paths, vec!["README.md", "src/a.ts", "src/deep/b.ts"]);
+        #[cfg(unix)]
+        assert_eq!(found.paths, vec!["README.md", "readme-link", "src/a.ts", "src/deep/b.ts"]);
         assert!(!found.truncated);
 
         let limited = find_files(root, 2).unwrap();
+        #[cfg(not(unix))]
+        let _ = &found;
         assert_eq!(limited.paths.len(), 2);
         assert!(limited.truncated);
     }

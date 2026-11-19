@@ -2,7 +2,8 @@ import { Command } from "cmdk";
 import { FileText, Layers, PanelsTopLeft, Play, Search, SquareChevronRight } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
-import { allCommands, isEnabled, recentCommandIds, shortcutLabel } from "../commands/registry";
+import { chordFromEvent, parseChord, sameChord } from "../commands/keys";
+import { allCommands, bindingsOf, isEnabled, recentCommandIds, shortcutLabel } from "../commands/registry";
 import { homeDirectory } from "../ipc/system";
 import { refocusPane } from "../layout/dock";
 import { useAppStore } from "../state/store";
@@ -106,9 +107,19 @@ function PaletteBody() {
   }, []);
 
   const items = useMemo(
-    () => paletteItems(query, mode, { ...base, root, files }),
-    [query, mode, base, root, files],
+    () =>
+      paletteItems(query, mode, { ...base, root, files }).filter(
+        // Until the files are in, a file name would otherwise only match
+        // "Run …", and Enter would send it to a shell.
+        (item) => !(loadingFiles && item.action.kind === "run" && !query.startsWith("$")),
+      ),
+    [query, mode, base, root, files, loadingFiles],
   );
+
+  // The best item is selected whenever the list changes (cmdk would keep a
+  // stale selection when results arrive late).
+  const [selected, setSelected] = useState("");
+  useEffect(() => setSelected(items[0]?.key ?? ""), [items]);
 
   const groups = useMemo(() => {
     const byGroup = new Map<string, PaletteItem[]>();
@@ -134,9 +145,15 @@ function PaletteBody() {
       loop
       label="Command palette"
       className="flex max-h-[min(460px,calc(100vh-80px))] flex-col"
+      value={selected}
+      onValueChange={setSelected}
       onKeyDown={(event) => {
         // The palette's own shortcut closes it again.
-        if (event.metaKey && !event.shiftKey && event.code === "KeyK") {
+        const chord = chordFromEvent(event.nativeEvent);
+        if (chord && bindingsOf("palette.open").some((spec) => {
+          const bound = parseChord(spec);
+          return bound !== null && sameChord(bound, chord);
+        })) {
           event.preventDefault();
           closePalette();
         }

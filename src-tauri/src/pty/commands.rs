@@ -27,6 +27,8 @@ use super::shell::{CustomShell, shell_command};
 /// numbers instead). `on_event` receives [`PtyEvent`]s as JSON.
 ///
 /// Output may start arriving before this command's result does.
+// Each argument is a field of the webview's call; a struct would only rename them.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn pty_spawn(
     window: Window,

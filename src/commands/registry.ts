@@ -61,7 +61,10 @@ function changed(): void {
   for (const listener of listeners) listener();
 }
 
-/** Calls `listener` when commands or their bindings change. Returns a function that stops. */
+/**
+ * Calls `listener` when commands, their bindings or the panes' actions
+ * change. Returns a function that stops.
+ */
 export function subscribeCommands(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -211,8 +214,11 @@ const paneActions = new Map<string, PaneActions>();
 
 export function registerPaneActions(paneId: string, actions: PaneActions): () => void {
   paneActions.set(paneId, actions);
+  changed();
   return () => {
-    if (paneActions.get(paneId) === actions) paneActions.delete(paneId);
+    if (paneActions.get(paneId) !== actions) return;
+    paneActions.delete(paneId);
+    changed();
   };
 }
 

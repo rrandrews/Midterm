@@ -1,8 +1,8 @@
 import { closeTab } from "../../closing";
 import { Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { newTab, newWorkspace, splitPane } from "../../actions";
-import { shortcutLabel } from "../../commands/registry";
+import { commandsVersion, shortcutLabel, subscribeCommands } from "../../commands/registry";
 import { watchFullscreen } from "../../ipc/window";
 import { openPalette } from "../../palette/state";
 import { openSettings } from "../../settings/SettingsDialog";
@@ -21,6 +21,7 @@ import { TabStrip } from "./TabStrip";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 function AppMenu() {
+  useSyncExternalStore(subscribeCommands, commandsVersion);
   return (
     <Menu>
       <MenuTrigger
@@ -66,6 +67,8 @@ function AppMenu() {
  */
 export function TitleBar() {
   const [fullscreen, setFullscreen] = useState(false);
+  // Shortcut hints follow rebinding.
+  useSyncExternalStore(subscribeCommands, commandsVersion);
   useEffect(() => watchFullscreen(setFullscreen), []);
 
   return (

@@ -274,6 +274,7 @@ function KeyRecorder({ onRecord, onCancel }: { onRecord: (binding: string) => vo
       autoFocus
       readOnly
       aria-label="Press the new shortcut"
+      data-key-recorder
       placeholder="Press keys…"
       className={`${FIELD} w-32 text-center font-mono text-micro`}
       onBlur={onCancel}
@@ -396,6 +397,13 @@ export function SettingsDialog() {
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             refocusPane();
+          }}
+          onEscapeKeyDown={(event) => {
+            // Escape cancels recording a shortcut, not the dialog.
+            if (document.activeElement?.hasAttribute("data-key-recorder")) {
+              event.preventDefault();
+              (document.activeElement as HTMLElement).blur();
+            }
           }}
           className="fixed top-1/2 left-1/2 z-50 flex h-[min(560px,calc(100vh-64px))] w-[min(720px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg bg-popover shadow-menu outline-none"
         >

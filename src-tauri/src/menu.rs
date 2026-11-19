@@ -35,11 +35,18 @@ pub enum MenuEntry {
         /// Tauri accelerator syntax, e.g. `CmdOrCtrl+Shift+D`. One that
         /// does not parse is dropped (the item stays).
         accelerator: Option<String>,
+        /// A disabled item cannot be chosen and does not take its keys.
+        #[serde(default = "enabled_by_default")]
+        enabled: bool,
     },
     Separator,
     /// A native item: `undo`, `redo`, `cut`, `copy`, `paste`, `selectAll`,
     /// `minimize`, `maximize`, `fullscreen`.
     Predefined { item: String },
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 /// A generated submenu. The one titled "Window" becomes the system's
@@ -156,12 +163,12 @@ fn entries<R: Runtime>(
     let mut built: Vec<Box<dyn IsMenuItem<R>>> = Vec::new();
     for entry in items {
         match entry {
-            MenuEntry::Command { id, title, accelerator } => {
+            MenuEntry::Command { id, title, accelerator, enabled } => {
                 let id = format!("{COMMAND_PREFIX}{id}");
-                let item = match MenuItem::with_id(app, &id, title, true, accelerator.as_deref()) {
+                let item = match MenuItem::with_id(app, &id, title, *enabled, accelerator.as_deref()) {
                     Ok(item) => item,
                     // An accelerator the platform cannot express.
-                    Err(_) => MenuItem::with_id(app, &id, title, true, None::<&str>)?,
+                    Err(_) => MenuItem::with_id(app, &id, title, *enabled, None::<&str>)?,
                 };
                 built.push(Box::new(item));
             }
@@ -260,12 +267,13 @@ mod tests {
                 {"type":"command","id":"pane.splitRight","title":"Split right","accelerator":"CmdOrCtrl+D"},
                 {"type":"separator"},
                 {"type":"predefined","item":"copy"},
-                {"type":"command","id":"x","title":"X","accelerator":null}
+                {"type":"command","id":"x","title":"X","accelerator":null,"enabled":false}
             ]}]"#,
         )
         .unwrap();
         assert_eq!(specs[0].title, "Pane");
-        assert!(matches!(&specs[0].items[0], MenuEntry::Command { id, .. } if id == "pane.splitRight"));
+        assert!(matches!(&specs[0].items[0], MenuEntry::Command { id, enabled: true, .. } if id == "pane.splitRight"));
+        assert!(matches!(&specs[0].items[3], MenuEntry::Command { enabled: false, .. }));
         assert!(matches!(specs[0].items[1], MenuEntry::Separator));
         assert!(matches!(&specs[0].items[2], MenuEntry::Predefined { item } if item == "copy"));
     }

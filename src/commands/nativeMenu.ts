@@ -1,7 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { chordToAccelerator, parseChord } from "./keys";
-import { bindingsOf, getCommand, runCommand, subscribeCommands } from "./registry";
+import { useAppStore } from "../state/store";
+import { bindingsOf, getCommand, isEnabled, runCommand, subscribeCommands } from "./registry";
 
 /*
  * The native menu bar, generated from the command registry: titles come
@@ -16,7 +17,7 @@ import { bindingsOf, getCommand, runCommand, subscribeCommands } from "./registr
  */
 
 type Entry =
-  | { type: "command"; id: string; title: string; accelerator: string | null }
+  | { type: "command"; id: string; title: string; accelerator: string | null; enabled: boolean }
   | { type: "separator" }
   | { type: "predefined"; item: string };
 
@@ -90,7 +91,16 @@ export function menuSpecs(): Spec[] {
         entries.push({ type: "predefined", item: item.slice("native:".length) });
       } else {
         const command = getCommand(item);
-        if (command) entries.push({ type: "command", id: command.id, title: command.title, accelerator: accelerator(command.id) });
+        if (command) {
+          entries.push({
+            type: "command",
+            id: command.id,
+            title: command.title,
+            accelerator: accelerator(command.id),
+            // A disabled item does not take its key equivalent from the page.
+            enabled: isEnabled(command),
+          });
+        }
       }
     }
     while (entries.length && entries[entries.length - 1].type === "separator") entries.pop();
@@ -111,7 +121,8 @@ function ranJustNow(id: string): boolean {
 }
 
 /**
- * Keeps the native menu in sync with the registry and runs the commands
+ * Keeps the native menu in sync with the registry (titles, accelerators,
+ * and which items apply to the active pane) and runs the commands
  * chosen from it. `suspended` says when the keyboard belongs to something
  * else (a rename field, a dialog). Returns a function that stops.
  */
@@ -131,6 +142,8 @@ export function installNativeMenu(suspended: () => boolean): () => void {
   };
   sync();
   const unsubscribe = subscribeCommands(sync);
+  // Which commands apply depends on the active pane.
+  const unsubscribeStore = useAppStore.subscribe(sync);
   const unlisten = listen<string>("menu-command", ({ payload: id }) => {
     if (ranJustNow(id) || suspended()) return;
     runCommand(id);
@@ -138,6 +151,7 @@ export function installNativeMenu(suspended: () => boolean): () => void {
   return () => {
     clearTimeout(timer);
     unsubscribe();
+    unsubscribeStore();
     void unlisten.then((stop) => stop());
   };
 }

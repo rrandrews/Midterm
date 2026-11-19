@@ -144,5 +144,11 @@ export function splitArgs(line: string): string[] {
 
 /** The inverse of `splitArgs`, quoting arguments that need it. */
 export function joinArgs(args: string[]): string {
-  return args.map((arg) => (arg === "" || /\s/.test(arg) ? (arg.includes('"') ? `'${arg}'` : `"${arg}"`) : arg)).join(" ");
+  return args
+    .map((arg) => {
+      if (arg !== "" && !/[\s"']/.test(arg)) return arg;
+      // No escapes in `splitArgs`: an argument with both kinds of quote cannot round-trip.
+      return arg.includes('"') ? `'${arg}'` : `"${arg}"`;
+    })
+    .join(" ");
 }

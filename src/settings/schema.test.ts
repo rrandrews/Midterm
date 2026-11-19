@@ -49,7 +49,7 @@ describe("splitArgs / joinArgs", () => {
     expect(splitArgs("")).toEqual([]);
   });
   it("round-trips", () => {
-    const args = ["-l", "a b", 'say "x"', ""];
+    const args = ["-l", "a b", 'say "x"', "", 'x"y', "it's"];
     expect(splitArgs(joinArgs(args))).toEqual(args);
   });
 });

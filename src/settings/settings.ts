@@ -64,14 +64,26 @@ export async function loadSettings({ persist }: { persist: boolean }): Promise<v
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastSaved = JSON.stringify(getSettings());
+  const save = async () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const settings = getSettings();
+    const json = JSON.stringify(settings);
+    if (json === lastSaved) return;
+    lastSaved = json;
+    await file?.set(KEY, settings).catch((error) => console.error("Could not save the settings:", error));
+  };
+  flushPending = save;
   useSettings.subscribe(() => {
     clearTimeout(timer);
-    timer = setTimeout(() => {
-      const settings = getSettings();
-      const json = JSON.stringify(settings);
-      if (json === lastSaved) return;
-      lastSaved = json;
-      void file?.set(KEY, settings).catch((error) => console.error("Could not save the settings:", error));
-    }, SAVE_DELAY_MS);
+    timer = setTimeout(() => void save(), SAVE_DELAY_MS);
   });
+  window.addEventListener("pagehide", () => void save());
+}
+
+let flushPending: (() => Promise<void>) | null = null;
+
+/** Writes a pending change now, e.g. before quitting. */
+export async function flushSettings(): Promise<void> {
+  await flushPending?.();
 }

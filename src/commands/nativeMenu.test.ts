@@ -11,11 +11,13 @@ describe("menuSpecs", () => {
       id: "pane.splitRight",
       title: "Split right",
       accelerator: "CmdOrCtrl+D",
+      enabled: true,
     });
     const edit = specs.find((spec) => spec.title === "Edit");
     const goToLine = edit?.items.find((item) => item.type === "command" && item.id === "pane.goToLine");
     // ⌃G must keep reaching terminals.
-    expect(goToLine).toMatchObject({ accelerator: null });
+    // ⌃G must keep reaching terminals; and nothing provides it here.
+    expect(goToLine).toMatchObject({ accelerator: null, enabled: false });
   });
 
   it("leaves out unregistered commands without doubled separators", () => {
