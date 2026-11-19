@@ -1,4 +1,4 @@
-import { closeTab } from "../../closing";
+import { closeOtherTabs, closeTab, closeTabsToTheRight } from "../../closing";
 import {
   DndContext,
   type DragEndEvent,
@@ -18,12 +18,21 @@ import { countPanes } from "../../state/layout";
 import { selectActiveWorkspace, useAppStore } from "../../state/store";
 import type { Tab } from "../../state/types";
 import { InlineEdit } from "../ui/InlineEdit";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+  MenuItem,
+  MenuSeparator,
+} from "../ui/Menu";
 
 /** Tabs only slide along the strip. */
 const horizontalOnly: Modifier = ({ transform }) => ({ ...transform, y: 0 });
 const MODIFIERS = [horizontalOnly];
 
-function TabItem({ tab, active }: { tab: Tab; active: boolean }) {
+type TabItemProps = { tab: Tab; active: boolean; index: number; count: number };
+
+function TabItem({ tab, active, index, count }: TabItemProps) {
   const renameTab = useAppStore((state) => state.renameTab);
   const [renaming, setRenaming] = useState(false);
   const panes = countPanes(tab.layout);
@@ -33,74 +42,90 @@ function TabItem({ tab, active }: { tab: Tab; active: boolean }) {
   });
 
   return (
-    <div
-      ref={setNodeRef}
-      role="tab"
-      aria-selected={active}
-      tabIndex={active ? 0 : -1}
-      data-tab-id={tab.id}
-      data-pane-drop={tab.id}
-      title={tab.titleLocked ? undefined : `${tab.title} — double-click to rename`}
-      style={{
-        transform: DndCSS.Translate.toString(transform),
-        transition,
-        zIndex: isDragging ? 1 : undefined,
-      }}
-      className={
-        active
-          ? "tab group flex flex-none items-center gap-2 bg-(image:--tab-active) pr-2.5 pl-3.5 text-fg-bright shadow-[inset_1px_0_0_var(--color-line),inset_-1px_0_0_var(--color-line)] outline-none"
-          : "tab group flex flex-none items-center gap-2 px-3.5 text-fg-muted outline-none hover:text-fg-soft"
-      }
-      {...listeners}
-      onClick={() => selectTab(tab.id)}
-      onDoubleClick={() => setRenaming(true)}
-      onAuxClick={(event) => {
-        // Middle click closes, like browser tabs.
-        if (event.button === 1) closeTab(tab.id);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") selectTab(tab.id);
-      }}
-    >
-      {renaming ? (
-        <InlineEdit
-          label="Tab name (empty to name it automatically)"
-          allowEmpty
-          value={tab.title}
-          onCommit={(title) => renameTab(tab.id, title)}
-          onDone={() => {
-            setRenaming(false);
-            refocusPane();
+    <ContextMenu>
+      <ContextMenuTrigger asChild disabled={renaming}>
+        <div
+          ref={setNodeRef}
+          role="tab"
+          aria-selected={active}
+          tabIndex={active ? 0 : -1}
+          data-tab-id={tab.id}
+          data-pane-drop={tab.id}
+          title={tab.titleLocked ? undefined : `${tab.title} — double-click to rename`}
+          style={{
+            transform: DndCSS.Translate.toString(transform),
+            transition,
+            zIndex: isDragging ? 1 : undefined,
           }}
-        />
-      ) : (
-        <span className="max-w-48 truncate">{tab.title}</span>
-      )}
-      {active && panes > 1 && (
-        <span className="text-micro text-fg-dim" title={`${panes} panes`}>
-          {panes}
-        </span>
-      )}
-      {!active && tab.activity && (
-        <span className="size-[5px] flex-none rounded-full bg-warn" role="img" aria-label="New output" />
-      )}
-      {active && (
-        <button
-          type="button"
-          aria-label={`Close tab ${tab.title}`}
-          className="ml-1 flex text-fg-dim hover:text-fg-bright"
-          // Not a drag handle.
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            closeTab(tab.id);
+          className={
+            active
+              ? "tab group flex flex-none items-center gap-2 bg-(image:--tab-active) pr-2.5 pl-3.5 text-fg-bright shadow-[inset_1px_0_0_var(--color-line),inset_-1px_0_0_var(--color-line)] outline-none"
+              : "tab group flex flex-none items-center gap-2 px-3.5 text-fg-muted outline-none hover:text-fg-soft"
+          }
+          {...listeners}
+          onClick={() => selectTab(tab.id)}
+          onDoubleClick={() => setRenaming(true)}
+          onAuxClick={(event) => {
+            // Middle click closes, like browser tabs.
+            if (event.button === 1) closeTab(tab.id);
           }}
-          onDoubleClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") selectTab(tab.id);
+          }}
         >
-          <X size={12} strokeWidth={2} aria-hidden="true" />
-        </button>
-      )}
-    </div>
+          {renaming ? (
+            <InlineEdit
+              label="Tab name (empty to name it automatically)"
+              allowEmpty
+              value={tab.title}
+              onCommit={(title) => renameTab(tab.id, title)}
+              onDone={() => {
+                setRenaming(false);
+                refocusPane();
+              }}
+            />
+          ) : (
+            <span className="max-w-48 truncate">{tab.title}</span>
+          )}
+          {active && panes > 1 && (
+            <span className="text-micro text-fg-dim" title={`${panes} panes`}>
+              {panes}
+            </span>
+          )}
+          {!active && tab.activity && (
+            <span className="size-[5px] flex-none rounded-full bg-warn" role="img" aria-label="New output" />
+          )}
+          {active && (
+            <button
+              type="button"
+              aria-label={`Close tab ${tab.title}`}
+              className="ml-1 flex text-fg-dim hover:text-fg-bright"
+              // Not a drag handle.
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                closeTab(tab.id);
+              }}
+              onDoubleClick={(event) => event.stopPropagation()}
+            >
+              <X size={12} strokeWidth={2} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent aria-label={`Tab ${tab.title}`}>
+        <MenuItem onSelect={() => setRenaming(true)}>Rename tab</MenuItem>
+        <MenuItem onSelect={newTab}>New tab</MenuItem>
+        <MenuSeparator />
+        <MenuItem onSelect={() => void closeTab(tab.id)}>Close tab</MenuItem>
+        <MenuItem disabled={count <= 1} onSelect={() => void closeOtherTabs(tab.id)}>
+          Close other tabs
+        </MenuItem>
+        <MenuItem disabled={index >= count - 1} onSelect={() => void closeTabsToTheRight(tab.id)}>
+          Close tabs to the right
+        </MenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -147,8 +172,14 @@ export function TabStrip() {
               }
             }}
           >
-            {workspace.tabs.map((tab) => (
-              <TabItem key={tab.id} tab={tab} active={tab.id === workspace.activeTabId} />
+            {workspace.tabs.map((tab, index) => (
+              <TabItem
+                key={tab.id}
+                tab={tab}
+                active={tab.id === workspace.activeTabId}
+                index={index}
+                count={workspace.tabs.length}
+              />
             ))}
           </div>
         </SortableContext>

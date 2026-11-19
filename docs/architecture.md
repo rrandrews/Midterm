@@ -30,7 +30,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer)
 | `src/components/titlebar/` | Title bar = tab bar: workspace switcher, tabs, app menu. |
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
 | `src/components/panes/` | Pane content by kind. |
-| `src/components/ui/` | Menu, inline edit, icons. |
+| `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
 | `src/terminal/` | xterm.js sessions and their registry. |
 | `src/ipc/` | Typed wrappers over Tauri commands. The only place that calls `invoke`. |
 | `src/styles/` | Tailwind entry + design tokens, and CSS for the layout and terminal. |
@@ -94,6 +94,35 @@ attach to that state on mount and detach on unmount.
   `refocusPane()` when they close, and a focus keeper returns focus after
   clicks on app chrome. While a rename field is open it owns the keyboard:
   pane focus requests wait and app shortcuts are ignored.
+
+## Menus
+
+`src/components/ui/Menu.tsx` wraps Radix's dropdown and context menus with
+one set of items (`MenuItem`, `MenuSub`, `MenuSeparator`…) that work in
+either. Menu content mounts only while open, so items can read the store
+directly. Closing a menu returns focus to the wanted pane unless the
+content is given its own `onCloseAutoFocus`.
+
+Right-click menus:
+
+| Area | Items | Where |
+|---|---|---|
+| Any pane | kind-specific items, then split, change type, maximize, move to tab, close | `PaneContent.tsx`, `PaneMenuItems.tsx` (shared with the pane toolbar's ⋯ menu) |
+| Terminal (on top of the above) | copy, paste, select all, clear | `TerminalMenuItems.tsx` |
+| Tab | rename, new tab, close, close others, close to the right | `TabStrip.tsx` |
+| Workspace switcher | new, rename, delete | `WorkspaceSwitcher.tsx` |
+| Empty title bar | new tab, new workspace | `TitleBar.tsx` |
+
+- A terminal whose program reads the mouse (vim, htop) gets right clicks
+  instead; ⇧-right-click opens the menu anyway.
+- The webview's own menu (Reload, Inspect Element) is suppressed everywhere
+  except text fields (`suppressNativeContextMenu` in `App.tsx`). In dev
+  builds ⌥-right-click still shows it.
+- Clipboard access goes through `src/ipc/clipboard.ts`
+  (tauri-plugin-clipboard-manager; WebKit's own `readText` shows a system
+  "Paste" prompt).
+- New pane kinds add their own items the way terminals do, in
+  `PaneContent.tsx`.
 
 ## Running
 

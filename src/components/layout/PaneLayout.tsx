@@ -41,6 +41,11 @@ function rejectStacking({ target }: DisableDropArgs<PaneData>): boolean {
 
 const renderContent = (pane: PaneNode) => <PaneContent pane={pane} />;
 
+const renderToolbar = (frame: Frame) => {
+  const pane = paneOf(frame);
+  return pane ? <PaneToolbar pane={pane} /> : null;
+};
+
 const renderSeparator = () => <Separator className="pane-separator" />;
 
 const renderDragPreview = (frame: Frame) => {
@@ -63,7 +68,6 @@ export function PaneLayout({ tab }: { tab: Tab }) {
   // The revision this instance was mounted for; a newer one means the store
   // has moved on and this instance is about to be replaced.
   const [layoutRev] = useState(tab.layoutRev);
-  const alone = countPanes(tab.layout) <= 1;
 
   const dockRef = useCallback(
     (handle: DockHandle | null) =>
@@ -85,14 +89,6 @@ export function PaneLayout({ tab }: { tab: Tab }) {
       restoreFocusAfterLayoutChange();
     },
     [tabId, layoutRev],
-  );
-
-  const renderToolbar = useCallback(
-    (frame: Frame) => {
-      const pane = paneOf(frame);
-      return pane ? <PaneToolbar pane={pane} alone={alone} /> : null;
-    },
-    [alone],
   );
 
   return (

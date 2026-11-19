@@ -1,8 +1,8 @@
-import { activePaneId, closePaneNow, closeTabNow, removeWorkspaceNow, setPaneKind } from "./actions";
+import { activePaneId, closePaneNow, focusActivePane, closeTabNow, removeWorkspaceNow, setPaneKind } from "./actions";
 import type { PaneKind } from "./state/types";
 import { confirm } from "./components/ui/ConfirmDialog";
 import { findPane, listPanes } from "./state/layout";
-import { findTab, findTabOfPane, selectActiveTab, useAppStore } from "./state/store";
+import { findTab, findTabOfPane, selectActiveTab, selectActiveWorkspace, useAppStore } from "./state/store";
 import { peekSession } from "./terminal/sessions";
 
 /*
@@ -66,6 +66,30 @@ export async function closeTab(tabId: string = selectActiveTab(store()).id): Pro
   if (!tab) return;
   const panes = terminalPanesOf(listPanes(tab.layout).map((pane) => pane.id));
   if (await mayClose(panes, "this tab", "Close tab")) closeTabNow(tabId);
+}
+
+/** Closes several tabs of the active workspace, asking once for all of them. */
+async function closeTabs(tabIds: string[], what: string, show?: string): Promise<void> {
+  const tabs = tabIds.map((tabId) => findTab(store(), tabId)).filter((tab) => tab !== undefined);
+  if (tabs.length === 0) return;
+  const panes = terminalPanesOf(tabs.flatMap((tab) => listPanes(tab.layout).map((pane) => pane.id)));
+  if (!(await mayClose(panes, what, "Close tabs"))) return;
+  if (show) store().setActiveTab(show);
+  for (const tab of tabs) store().closeTab(tab.id);
+  focusActivePane();
+}
+
+/** Closes every other tab in the workspace and shows the one kept. */
+export async function closeOtherTabs(tabId: string): Promise<void> {
+  const others = selectActiveWorkspace(store()).tabs.filter((tab) => tab.id !== tabId);
+  await closeTabs(others.map((tab) => tab.id), "the other tabs", tabId);
+}
+
+export async function closeTabsToTheRight(tabId: string): Promise<void> {
+  const { tabs } = selectActiveWorkspace(store());
+  const index = tabs.findIndex((tab) => tab.id === tabId);
+  if (index === -1) return;
+  await closeTabs(tabs.slice(index + 1).map((tab) => tab.id), "the tabs to the right");
 }
 
 export async function removeWorkspace(workspaceId: string): Promise<void> {

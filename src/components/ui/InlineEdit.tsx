@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 type InlineEditProps = {
   value: string;
@@ -23,6 +23,16 @@ export function InlineEdit({
 }: InlineEditProps) {
   // Escape blurs the field; this keeps that blur from committing.
   const cancelled = useRef(false);
+  const input = useRef<HTMLInputElement>(null);
+
+  // Opened from a menu, `autoFocus` loses to the menu's focus trap, which
+  // lets go only once the menu has closed; so take focus again after that.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (document.activeElement !== input.current) input.current?.focus();
+    });
+    return () => clearTimeout(timer);
+  }, []);
 
   const finish = (input: HTMLInputElement) => {
     const next = input.value.trim();
@@ -32,6 +42,7 @@ export function InlineEdit({
 
   return (
     <input
+      ref={input}
       aria-label={label}
       defaultValue={value}
       autoFocus

@@ -181,6 +181,33 @@ export class TerminalSession {
     this.term.focus();
   }
 
+  /** The selected text, or `""`. */
+  get selection(): string {
+    return this.term.getSelection();
+  }
+
+  /**
+   * Whether the program in the terminal asked for mouse events. Right clicks
+   * then belong to it rather than to the app's context menu.
+   */
+  get wantsMouse(): boolean {
+    return this.term.modes.mouseTrackingMode !== "none";
+  }
+
+  /** Pastes text as the user would (bracketed if the program asked for it). */
+  paste(text: string): void {
+    if (text) this.term.paste(text);
+  }
+
+  selectAll(): void {
+    this.term.selectAll();
+  }
+
+  /** Clears the scrollback and screen, keeping the line the cursor is on. */
+  clear(): void {
+    this.term.clear();
+  }
+
   /** Sends text to the shell as if typed (used by the self-test). */
   input(data: string): void {
     this.send({ binary: false, data });
