@@ -20,6 +20,8 @@ import { suggestNow, useAiSuggestions } from "../ai/engine";
 import { runCommand } from "../commands/registry";
 import { bundledTheme } from "../theme/bundled";
 import { editTheme } from "../theme/commands";
+import { svgDataUrl, sanitizeSvg } from "../icons/sanitize";
+import { loadIconSet } from "../icons/state";
 
 /*
  * Development aid: exercises the real app (real webview, real PTY) and posts
@@ -381,6 +383,33 @@ async function themeChecks(checks: Check[]): Promise<void> {
   await sleep(100);
 }
 
+/** File icons in the real WebView: the default set's assets load, and hostile SVG is defused. */
+async function iconChecks(checks: Check[]): Promise<void> {
+  const decodedWidth = async (url: string) => {
+    const img = new Image();
+    img.src = url;
+    await img.decode().catch(() => {});
+    return img.naturalWidth;
+  };
+  const material = await loadIconSet("material");
+  const image = material?.icon({ name: "package.json", kind: "file", expanded: false, light: false });
+  const width = image && "url" in image ? await decodedWidth(image.url) : 0;
+  checks.push({ name: "icons: the Material set loads and its icons decode", ok: width > 0, detail: { image, width } });
+
+  const flag = window as unknown as { __midtermIconXss?: boolean };
+  flag.__midtermIconXss = false;
+  const clean = sanitizeSvg(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" onload="window.__midtermIconXss=true"><script>window.__midtermIconXss=true</script><circle cx="8" cy="8" r="6"/></svg>',
+  );
+  const cleanWidth = clean ? await decodedWidth(svgDataUrl(clean)) : 0;
+  await sleep(50);
+  checks.push({
+    name: "icons: hostile SVG is sanitized, still draws, and runs nothing",
+    ok: !!clean && !/script|onload/i.test(clean) && cleanWidth > 0 && !flag.__midtermIconXss,
+    detail: { clean, cleanWidth },
+  });
+}
+
 /** The example plugin imported, opened from the palette, disabled (placeholder) and removed again. */
 async function pluginChecks(checks: Check[]): Promise<void> {
   const id = "scratchpad";
@@ -489,6 +518,7 @@ export async function runSelfTest(port: string): Promise<void> {
     await sleep(1500);
     await pluginChecks(checks);
     await themeChecks(checks);
+    await iconChecks(checks);
     await integrationChecks(checks);
     await featureChecks(checks);
     const stubPort = new URLSearchParams(location.search).get("aistub");

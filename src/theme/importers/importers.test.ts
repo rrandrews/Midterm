@@ -4,7 +4,7 @@ import { midtermDark } from "../bundled/midtermDark";
 import { resolveTheme } from "../resolve";
 import { importBase16 } from "./base16";
 import { detectThemeFormat, importThemeFile } from "./index";
-import { exportTheme, importMidtermTheme } from "./midterm";
+import { embeddedIconSet, exportTheme, importMidtermTheme } from "./midterm";
 import { importVSCodeTheme } from "./vscode";
 import fixture0 from "./fixtures/night-owl-color-theme.json?raw";
 import fixture1 from "./fixtures/gruvbox-dark-medium.yaml?raw";
@@ -23,6 +23,16 @@ const fixture = (name: string) => FIXTURES[name];
 describe("Midterm JSON", () => {
   it("round-trips every bundled theme", () => {
     for (const theme of BUNDLED_THEMES) expect(importMidtermTheme(exportTheme(theme))).toEqual(theme);
+  });
+
+  it("embeds a custom icon set, which theme import ignores", () => {
+    const theme = { ...midtermDark, icons: { set: "my-icons" } };
+    const iconSet = { id: "my-icons", name: "My Icons", definitions: {} };
+    const text = exportTheme(theme, iconSet);
+    expect(embeddedIconSet(text)).toEqual(iconSet);
+    expect(importMidtermTheme(text)).toEqual(theme);
+    expect(embeddedIconSet(exportTheme(midtermDark))).toBeUndefined();
+    expect(embeddedIconSet("{nope")).toBeUndefined();
   });
 
   it("marks the file format", () => {

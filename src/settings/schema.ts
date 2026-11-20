@@ -68,6 +68,8 @@ export type Settings = {
   themeFollowSystem: boolean;
   themeLight: string;
   themeDark: string;
+  /** Id of the file icon set (bundled or custom); a theme with its own set wins. */
+  iconSet: string;
   /**
    * Keyboard shortcut overrides by command id. Each value replaces that
    * command's default bindings; an empty list unbinds it.
@@ -99,6 +101,7 @@ export const DEFAULT_SETTINGS: Settings = {
   themeFollowSystem: false,
   themeLight: "midterm-light",
   themeDark: "midterm-dark",
+  iconSet: "material",
   keybindings: {},
   defaultPaneKind: "terminal",
   defaultTerminal: "terminal",
@@ -244,6 +247,7 @@ export function validateSettings(raw: unknown): Settings {
     themeFollowSystem: typeof data.themeFollowSystem === "boolean" ? data.themeFollowSystem : d.themeFollowSystem,
     themeLight: nonEmpty(data.themeLight) ? data.themeLight : d.themeLight,
     themeDark: nonEmpty(data.themeDark) ? data.themeDark : d.themeDark,
+    iconSet: nonEmpty(data.iconSet) ? data.iconSet : d.iconSet,
     keybindings,
     defaultPaneKind:
       typeof data.defaultPaneKind === "string" && data.defaultPaneKind ? data.defaultPaneKind : d.defaultPaneKind,

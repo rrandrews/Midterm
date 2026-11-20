@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { confirm } from "../components/ui/ConfirmDialog";
+import { exportIconSetInteractively, importIconSetInteractively } from "../icons/files";
+import { allIconSets, deleteIconSet, knownIconSet, useIconState } from "../icons/state";
 import { BUTTON, CommitField, Row, SectionHeading, Select, Toggle } from "../settings/controls";
 import { ACCENT_PRESETS, isHexColor } from "../settings/schema";
 import { useSettings } from "../settings/settings";
@@ -8,6 +10,7 @@ import { editTheme } from "./commands";
 import { exportThemeInteractively, importThemeInteractively } from "./files";
 import { resolveTheme } from "./resolve";
 import {
+  currentTheme,
   deleteTheme,
   duplicateTheme,
   findTheme,
@@ -100,6 +103,59 @@ function AccentRow() {
   );
 }
 
+/** The file icon set (docs/icons.md), and importing, exporting and deleting custom sets. */
+function IconSetRow({ run }: { run: (task: Promise<unknown>) => void }) {
+  const iconSet = useSettings((state) => state.iconSet);
+  const update = useSettings((state) => state.updateSettings);
+  useIconState((state) => state.custom);
+  const sets = allIconSets();
+  const chosen = sets.find((set) => set.id === iconSet) ?? sets[0];
+  const themed = currentTheme().icons?.set;
+  const themedName = knownIconSet(themed) ? sets.find((set) => set.id === themed)?.name : undefined;
+  const credit = [chosen.author && `by ${chosen.author}`, chosen.license && `(${chosen.license})`].filter(Boolean).join(" ");
+  return (
+    <Row
+      label="File icons"
+      hint={
+        themedName
+          ? `The current theme uses its own set, “${themedName}”`
+          : `${credit ? `${chosen.name} ${credit}. ` : ""}A theme with its own icon set uses that instead`
+      }
+    >
+      <Select
+        label="File icon set"
+        value={chosen.id}
+        options={sets.map((set) => set.id)}
+        labels={Object.fromEntries(sets.map((set) => [set.id, set.name]))}
+        onChange={(id) => update({ iconSet: id })}
+      />
+      <button type="button" className={BUTTON} onClick={() => run(importIconSetInteractively().then((set) => set && update({ iconSet: set.id })))}>
+        Import…
+      </button>
+      {!chosen.bundled && (
+        <>
+          <button type="button" className={BUTTON} onClick={() => run(exportIconSetInteractively(chosen.id))}>
+            Export…
+          </button>
+          <button
+            type="button"
+            className={BUTTON}
+            onClick={() =>
+              run(
+                confirm({ title: `Delete “${chosen.name}”?`, message: "Themes that use it fall back to your choice here.", action: "Delete" }).then(
+                  (ok) => ok && deleteIconSet(chosen.id),
+                ),
+              )
+            }
+          >
+            Delete
+          </button>
+        </>
+      )}
+    </Row>
+  );
+}
+
 export function AppearanceSection() {
   const settings = useSettings();
   const { custom, systemDark } = useThemeState();
@@ -141,6 +197,7 @@ export function AppearanceSection() {
         </Row>
       )}
       <AccentRow />
+      <IconSetRow run={run} />
 
       <SectionHeading>Themes</SectionHeading>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-1 pb-2">

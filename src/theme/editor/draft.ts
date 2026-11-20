@@ -166,6 +166,14 @@ export function setPane(key: string, part: keyof PaneBackground, value: string |
   }, `pane:${key}:${part}`);
 }
 
+/** Sets the theme's icon set, or removes it (the settings' choice) with `undefined`. */
+export function setIconSet(id: string | undefined): void {
+  editDraft((theme) => {
+    if (id === undefined) delete theme.icons;
+    else theme.icons = { set: id };
+  });
+}
+
 export function renameDraft(name: string): void {
   const trimmed = name.trim();
   if (trimmed) editDraft((theme) => void (theme.name = trimmed));

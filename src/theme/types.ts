@@ -123,6 +123,8 @@ export interface Theme {
   overrides?: Partial<Record<TokenName, string>>;
   /** Pane backgrounds by pane plugin id (see `BUILTIN_PANES`); missing fields are derived. */
   panes?: Record<string, Partial<PaneBackground>>;
+  /** File icons: the id of an icon set (bundled or custom, see docs/icons.md); the settings' choice when unset. */
+  icons?: { set: string };
   author?: string;
   /** Where the palette comes from (URL). */
   source?: string;

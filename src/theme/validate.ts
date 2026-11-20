@@ -121,6 +121,17 @@ export function validateTheme(data: unknown): ValidationResult {
     }
   }
 
+  let icons: Theme["icons"];
+  if (data.icons !== undefined) {
+    if (!isObject(data.icons)) errors.push('icons: expected an object like { "set": "material" }');
+    else {
+      for (const field of Object.keys(data.icons)) if (field !== "set") errors.push(`icons.${field}: unknown field`);
+      const set = data.icons.set;
+      if (typeof set !== "string" || !ID.test(set)) errors.push("icons.set: expected an icon set id (lowercase letters, digits and dashes)");
+      else icons = { set };
+    }
+  }
+
   const author = text("author", false);
   const source = text("source", false);
   const license = text("license", false);
@@ -140,6 +151,7 @@ export function validateTheme(data: unknown): ValidationResult {
   if (selection) theme.selection = selection;
   if (overrides && Object.keys(overrides).length) theme.overrides = overrides;
   if (panes && Object.keys(panes).length) theme.panes = panes;
+  if (icons) theme.icons = icons;
   if (author) theme.author = author;
   if (source) theme.source = source;
   if (license) theme.license = license;

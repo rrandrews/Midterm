@@ -134,7 +134,7 @@ Status never writes the index (no `update_index`): a write would wake the
 | `src/explorer/model.ts` | `ExplorerModel`: one pane's root, expanded directories, listings, selection, inline edit, git status and watcher. |
 | `src/explorer/explorers.ts` | Models keyed by pane id (a shared pane state), and root following: unpinned explorers follow the `directory` of the last focused pane whose plugin sets `explorerFollows` (terminals). |
 | `src/plugins/builtin/explorer.tsx` | The explorer plugin: data validation, menu, settings (follow the terminal, hidden files by default). |
-| `ExplorerPane.tsx` | Header, virtualized tree (`@tanstack/react-virtual`), keyboard, inline rename/create. |
+| `ExplorerPane.tsx` | Header, virtualized tree (`@tanstack/react-virtual`), keyboard, inline rename/create. A row is: indent, chevron, 16px file icon (`FileIcon`, see [icons.md](icons.md)), name, git badge. |
 | `ExplorerMenus.tsx` | Right-click items for entries and for the explorer as a whole; trash confirmation. |
 
 ### State outside React
