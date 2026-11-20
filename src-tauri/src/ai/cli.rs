@@ -14,6 +14,8 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::sync::OnceCell;
 
+use super::Reply;
+use super::effort::{self, Effort, Resolved};
 use super::error::{AiError, ErrorKind, truncate};
 use super::process::{self, Output, Run};
 use super::provider::CliKind;
@@ -189,31 +191,57 @@ impl Discovery {
         model: &str,
         system: &str,
         prompt: &str,
-    ) -> Result<String, AiError> {
+        resolved: &Resolved,
+    ) -> Result<Reply, AiError> {
         let program = self.locate(kind, path_override).await?;
         let dir = tempfile::Builder::new()
             .prefix("midterm-ai-")
             .tempdir()
             .map_err(|e| AiError::other(format!("could not create a temporary directory: {e}")))?;
         let out_file = dir.path().join("last-message.txt");
-        let (args, stdin) = match kind {
-            CliKind::ClaudeCode => (claude_args(model, system), Some(prompt.to_string())),
-            CliKind::Codex => {
-                let system_file = dir.path().join("instructions.md");
-                std::fs::write(&system_file, system_or_default(system)).map_err(|e| {
-                    AiError::other(format!("could not write the instructions file: {e}"))
-                })?;
-                (
-                    codex_args(model, dir.path(), &out_file, &system_file),
+        let system_file = dir.path().join("instructions.md");
+        if kind == CliKind::Codex {
+            std::fs::write(&system_file, system_or_default(system)).map_err(|e| {
+                AiError::other(format!("could not write the instructions file: {e}"))
+            })?;
+        }
+        let level = effort::cli_level(kind, model, resolved.level);
+        let timeout = effort::scaled(SUGGEST_TIMEOUT, resolved);
+        let attempt = |level: Option<Effort>| {
+            let program = program.clone();
+            let cwd = dir.path().to_path_buf();
+            let (args, stdin) = match kind {
+                CliKind::ClaudeCode => {
+                    (claude_args(model, system, level), Some(prompt.to_string()))
+                }
+                CliKind::Codex => (
+                    codex_args(model, dir.path(), &out_file, &system_file, level),
                     Some(prompt.to_string()),
-                )
+                ),
+                CliKind::Antigravity => (
+                    agy_args(model, &combined_prompt(system, prompt), level),
+                    None,
+                ),
+            };
+            async move {
+                let mut run = self.base_run(program, args, timeout).await;
+                run.cwd = Some(cwd);
+                run.stdin = stdin;
+                // The environment variable outranks `--effort`.
+                if kind == CliKind::ClaudeCode && level.is_some() {
+                    run.env_remove.push("CLAUDE_CODE_EFFORT_LEVEL");
+                }
+                process::run(run).await
             }
-            CliKind::Antigravity => (agy_args(model, &combined_prompt(system, prompt)), None),
         };
-        let mut run = self.base_run(program, args, SUGGEST_TIMEOUT).await;
-        run.cwd = Some(dir.path().to_path_buf());
-        run.stdin = stdin;
-        let output = process::run(run).await?;
+        let mut effort_dropped = false;
+        let mut output = attempt(level).await?;
+        // Codex says which config value it rejected; run once more without it.
+        if !output.success && kind == CliKind::Codex && level.is_some() && mentions_effort(&output)
+        {
+            effort_dropped = true;
+            output = attempt(None).await?;
+        }
         if !output.success {
             return Err(failure_error(kind, &output));
         }
@@ -228,8 +256,17 @@ impl Discovery {
                 format!("`{}` printed no reply", kind.binary()),
             ));
         }
-        Ok(text)
+        Ok(Reply {
+            text,
+            effort_dropped,
+        })
     }
+}
+
+/// Whether a failed run's output blames the effort setting.
+fn mentions_effort(output: &Output) -> bool {
+    let said = format!("{}\n{}", output.stdout, output.stderr).to_ascii_lowercase();
+    said.contains("reasoning_effort") || said.contains("reasoning effort")
 }
 
 /// Sent as the system prompt when the caller has none, so a CLI's own
@@ -267,7 +304,8 @@ fn toml_string(value: &str) -> String {
 /// `--strict-mcp-config` with no config loads no MCP servers,
 /// `--permission-mode dontAsk` denies anything that would ask, and
 /// `--no-session-persistence` keeps these runs out of the user's history.
-pub fn claude_args(model: &str, system: &str) -> Vec<OsString> {
+/// `--effort` is passed when there is a level (none: the CLI's default).
+pub fn claude_args(model: &str, system: &str, effort: Option<Effort>) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-p".into(),
         "--safe-mode".into(),
@@ -280,9 +318,11 @@ pub fn claude_args(model: &str, system: &str) -> Vec<OsString> {
         "--permission-mode".into(),
         "dontAsk".into(),
         "--no-session-persistence".into(),
-        "--effort".into(),
-        "low".into(),
     ];
+    if let Some(level) = effort {
+        args.push("--effort".into());
+        args.push(level.as_str().into());
+    }
     args.push("--system-prompt".into());
     args.push(system_or_default(system).into());
     if !model.trim().is_empty() {
@@ -300,9 +340,16 @@ pub fn claude_args(model: &str, system: &str) -> Vec<OsString> {
 /// sign-in still comes from `CODEX_HOME`), so MCP servers and other tools
 /// configured there are not available to a run fed with terminal output;
 /// `mcp_servers={}` makes sure of it. Read-only sandbox, no session files,
-/// allowed outside a git repository, low reasoning effort, final message
-/// written to `out_file` (stdout also carries progress).
-pub fn codex_args(model: &str, cwd: &Path, out_file: &Path, system_file: &Path) -> Vec<OsString> {
+/// allowed outside a git repository, final message written to `out_file`
+/// (stdout also carries progress). `model_reasoning_effort` is set when
+/// there is a level.
+pub fn codex_args(
+    model: &str,
+    cwd: &Path,
+    out_file: &Path,
+    system_file: &Path,
+    effort: Option<Effort>,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "exec".into(),
         "--ignore-user-config".into(),
@@ -315,14 +362,16 @@ pub fn codex_args(model: &str, cwd: &Path, out_file: &Path, system_file: &Path) 
         "--color".into(),
         "never".into(),
         "-c".into(),
-        "model_reasoning_effort=\"low\"".into(),
-        "-c".into(),
         format!(
             "model_instructions_file={}",
             toml_string(&system_file.to_string_lossy())
         )
         .into(),
     ];
+    if let Some(level) = effort {
+        args.push("-c".into());
+        args.push(format!("model_reasoning_effort=\"{}\"", level.as_str()).into());
+    }
     for key in [
         "include_permissions_instructions",
         "include_apps_instructions",
@@ -352,19 +401,21 @@ pub fn codex_args(model: &str, cwd: &Path, out_file: &Path, system_file: &Path) 
 /// stdin form and no system flag). `--sandbox` restricts terminal access,
 /// `--disable-slash-commands` keeps a prompt starting with `/` literal;
 /// without `--dangerously-skip-permissions` tool permission requests are not
-/// granted. Antigravity's model ids carry their effort (`…-low`), so
-/// `--effort low` is passed only when no model is chosen.
-pub fn agy_args(model: &str, prompt: &str) -> Vec<OsString> {
+/// granted. `--effort` is passed when there is a level; Antigravity's model
+/// ids can carry their own (`…-low`), and then none is given (see
+/// `effort::cli_level`).
+pub fn agy_args(model: &str, prompt: &str, effort: Option<Effort>) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "--sandbox".into(),
         "--disable-slash-commands".into(),
         "--output-format".into(),
         "text".into(),
     ];
-    if model.trim().is_empty() {
+    if let Some(level) = effort {
         args.push("--effort".into());
-        args.push("low".into());
-    } else {
+        args.push(level.as_str().into());
+    }
+    if !model.trim().is_empty() {
         args.push("--model".into());
         args.push(model.trim().into());
     }
@@ -493,6 +544,13 @@ pub fn strip_ansi(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Midterm's own pick: today's requests.
+    const LOW: Resolved = Resolved {
+        level: Some(Effort::Low),
+        explicit: false,
+        provider_default: false,
+    };
+
     fn strings(args: &[OsString]) -> Vec<String> {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -501,7 +559,8 @@ mod tests {
 
     #[test]
     fn claude_flags() {
-        let args = strings(&claude_args("sonnet", "be terse"));
+        let args = strings(&claude_args("sonnet", "be terse", Some(Effort::Low)));
+        assert!(args.windows(2).any(|w| w == ["--effort", "low"]));
         assert_eq!(args[0], "-p");
         let tools = args.iter().position(|a| a == "--tools").unwrap();
         assert_eq!(args[tools + 1], "");
@@ -515,8 +574,11 @@ mod tests {
                 .any(|w| w == ["--permission-mode", "dontAsk"])
         );
         assert!(args.contains(&"--safe-mode".to_string()));
-        let args = strings(&claude_args(" ", ""));
+        let args = strings(&claude_args(" ", "", None));
         assert!(!args.contains(&"--model".to_string()));
+        assert!(!args.contains(&"--effort".to_string()));
+        let args = strings(&claude_args("", "", Some(Effort::Xhigh)));
+        assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
         // Claude Code's own system prompt is never used.
         assert!(
             args.windows(2)
@@ -531,7 +593,12 @@ mod tests {
             Path::new("/tmp/d"),
             Path::new("/tmp/d/o.txt"),
             Path::new("/tmp/d/i.md"),
+            Some(Effort::High),
         ));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-c", "model_reasoning_effort=\"high\""])
+        );
         assert!(
             args.windows(2)
                 .any(|w| w == ["-c", "model_instructions_file=\"/tmp/d/i.md\""])
@@ -557,18 +624,20 @@ mod tests {
                 "",
                 Path::new("/a"),
                 Path::new("/a/o"),
-                Path::new("/a/i")
+                Path::new("/a/i"),
+                None
             ))
-            .contains(&"-m".to_string())
+            .iter()
+            .any(|a| a == "-m" || a.starts_with("model_reasoning_effort"))
         );
     }
 
     #[test]
     fn agy_flags() {
-        let args = strings(&agy_args("", "hi"));
+        let args = strings(&agy_args("", "hi", Some(Effort::Low)));
         assert!(args.windows(2).any(|w| w == ["--effort", "low"]));
         assert_eq!(args[args.len() - 2..], ["-p", "hi"]);
-        let args = strings(&agy_args("gemini-x-low", "hi"));
+        let args = strings(&agy_args("gemini-x-low", "hi", None));
         assert!(args.windows(2).any(|w| w == ["--model", "gemini-x-low"]));
         assert!(!args.contains(&"--effort".to_string()));
         assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
@@ -582,6 +651,30 @@ mod tests {
         assert!(outdated_note(CliKind::ClaudeCode, Some("2.1.169 (Claude Code)")).is_none());
         assert!(outdated_note(CliKind::ClaudeCode, Some("garbled")).is_none());
         assert!(outdated_note(CliKind::Codex, Some("codex-cli 0.1.0")).is_none());
+    }
+
+    #[test]
+    fn cli_levels() {
+        use super::effort::cli_level;
+        assert_eq!(
+            cli_level(CliKind::Antigravity, "gemini-x-low", Some(Effort::High)),
+            None
+        );
+        assert_eq!(
+            cli_level(CliKind::Antigravity, "gemini-x", Some(Effort::High)),
+            Some(Effort::High)
+        );
+        assert_eq!(cli_level(CliKind::Codex, "", None), None);
+        let out = |stderr: &str| Output {
+            success: false,
+            code: Some(1),
+            stdout: String::new(),
+            stderr: stderr.into(),
+        };
+        assert!(mentions_effort(&out(
+            "error: unknown variant `max` for model_reasoning_effort"
+        )));
+        assert!(!mentions_effort(&out("not logged in")));
     }
 
     #[test]
@@ -660,9 +753,10 @@ mod tests {
         let discovery = Discovery::with_path_var("/usr/bin:/bin");
         let fake = fake.to_string_lossy().into_owned();
         let text = discovery
-            .complete(CliKind::ClaudeCode, Some(&fake), "", "sys", "hello")
+            .complete(CliKind::ClaudeCode, Some(&fake), "", "sys", "hello", &LOW)
             .await
-            .unwrap();
+            .unwrap()
+            .text;
         assert_eq!(text, "echo hello");
 
         let status = discovery
@@ -676,6 +770,7 @@ mod tests {
                 "",
                 "",
                 "x",
+                &LOW,
             )
             .await
             .unwrap_err();
@@ -692,17 +787,25 @@ mod tests {
         for kind in [CliKind::ClaudeCode, CliKind::Codex, CliKind::Antigravity] {
             println!("{:?}: {:?}", kind, discovery.status(kind, None).await);
         }
+        let medium = Resolved {
+            level: Some(Effort::Medium),
+            explicit: true,
+            provider_default: false,
+        };
         for kind in [CliKind::ClaudeCode, CliKind::Codex, CliKind::Antigravity] {
-            let reply = discovery
-                .complete(
-                    kind,
-                    None,
-                    "",
-                    "Answer with one shell command only.",
-                    "List files, long format.",
-                )
-                .await;
-            println!("{kind:?} reply: {reply:?}");
+            for resolved in [&LOW, &medium] {
+                let reply = discovery
+                    .complete(
+                        kind,
+                        None,
+                        "",
+                        "Answer with one shell command only.",
+                        "List files, long format.",
+                        resolved,
+                    )
+                    .await;
+                println!("{kind:?} {:?} reply: {reply:?}", resolved.level);
+            }
         }
         println!(
             "agy models: {:?}",

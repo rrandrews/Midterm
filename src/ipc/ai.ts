@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { EffortLevel } from "../settings/schema";
 
 /*
  * Typed wrapper around the AI commands (src-tauri/src/ai/, docs/ai.md).
@@ -76,6 +77,20 @@ export type SuggestRequest = {
   system: string;
   prompt: string;
   maxTokens?: number;
+  /** The stored reasoning effort setting; absent: Midterm's pick. */
+  effort?: EffortLevel;
+};
+
+/** A level the backend sends (`default` is not one: it sends nothing). */
+export type Effort = Exclude<EffortLevel, "default">;
+
+/** What Settings → AI offers for reasoning effort. */
+export type EffortOptions = {
+  /** Offered levels, lowest first; "Provider default" is always offered too. */
+  levels: Effort[];
+  /** What the stored setting sends for this model; null: nothing. */
+  effective: Effort | null;
+  note: string | null;
 };
 
 export type CliStatus = { found: boolean; path?: string; version?: string; outdated?: string };
@@ -120,9 +135,20 @@ export function aiModels(provider: ProviderConfig): Promise<string[]> {
   return invoke<string[]>("ai_models", { provider });
 }
 
-export function aiTest(provider: ProviderConfig, model: string): Promise<{ ok: boolean; message: string }> {
+export function aiTest(provider: ProviderConfig, model: string, effort?: EffortLevel): Promise<{ ok: boolean; message: string }> {
   if (!isTauri()) return Promise.resolve({ ok: true, message: "OK (browser mock)" });
-  return invoke<{ ok: boolean; message: string }>("ai_test", { provider, model });
+  return invoke<{ ok: boolean; message: string }>("ai_test", { provider, model, effort });
+}
+
+const MOCK_LEVELS: Effort[] = ["low", "medium", "high"];
+
+export function aiEffortOptions(provider: ProviderConfig, model: string, effort?: EffortLevel): Promise<EffortOptions> {
+  if (!isTauri()) {
+    const requested = effort === undefined ? "low" : effort === "default" ? null : effort;
+    const effective = requested === null ? null : MOCK_LEVELS.includes(requested) ? requested : requested === "none" || requested === "minimal" ? "low" : "high";
+    return Promise.resolve({ levels: MOCK_LEVELS, effective, note: null });
+  }
+  return invoke<EffortOptions>("ai_effort_options", { provider, model, effort });
 }
 
 /** The keychain entry a key is kept under: per provider, and for `custom` per base URL (a key only ever goes to the endpoint it was set for). */

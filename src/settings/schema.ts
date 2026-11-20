@@ -36,7 +36,21 @@ export type AiSettings = {
   cliPaths: Record<string, string>;
   /** Finished blocks sent as context. */
   contextBlocks: number;
+  /**
+   * Reasoning effort by provider id. Missing: Midterm's pick (low, or
+   * nothing for a custom server); `default`: nothing is sent and the
+   * provider decides. The backend clamps a level to what the model offers.
+   */
+  effort: Record<string, EffortLevel>;
 };
+
+/** Reasoning effort levels, lowest first, plus `default` (send nothing). */
+export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = "default" | (typeof EFFORT_LEVELS)[number];
+
+function isEffortLevel(value: unknown): value is EffortLevel {
+  return value === "default" || (EFFORT_LEVELS as readonly unknown[]).includes(value);
+}
 
 export const AI_CONTEXT_RANGE = { min: 0, max: 20 } as const;
 
@@ -89,7 +103,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultPaneKind: "terminal",
   defaultTerminal: "terminal",
   plugins: {},
-  ai: { suggestions: true, provider: "", model: "", baseUrl: "", cliPaths: {}, contextBlocks: 5 },
+  ai: { suggestions: true, provider: "", model: "", baseUrl: "", cliPaths: {}, contextBlocks: 5, effort: {} },
 };
 
 export const FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
@@ -169,9 +183,11 @@ export function migrateSettings(raw: unknown): Record<string, unknown> {
 
 function validateAi(raw: unknown): AiSettings {
   const d = DEFAULT_SETTINGS.ai;
-  if (!isRecord(raw)) return { ...d, cliPaths: {} };
+  if (!isRecord(raw)) return { ...d, cliPaths: {}, effort: {} };
   const cliPaths: Record<string, string> = {};
   if (isRecord(raw.cliPaths)) for (const [id, path] of Object.entries(raw.cliPaths)) if (nonEmpty(path)) cliPaths[id] = path;
+  const effort: Record<string, EffortLevel> = {};
+  if (isRecord(raw.effort)) for (const [id, level] of Object.entries(raw.effort)) if (isEffortLevel(level)) effort[id] = level;
   return {
     suggestions: typeof raw.suggestions === "boolean" ? raw.suggestions : d.suggestions,
     provider: typeof raw.provider === "string" ? raw.provider : d.provider,
@@ -179,6 +195,7 @@ function validateAi(raw: unknown): AiSettings {
     baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl.trim() : d.baseUrl,
     cliPaths,
     contextBlocks: Math.round(clampNumber(raw.contextBlocks, AI_CONTEXT_RANGE, d.contextBlocks)),
+    effort,
   };
 }
 

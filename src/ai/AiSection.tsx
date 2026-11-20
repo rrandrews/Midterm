@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   type CliStatus,
+  type Effort,
+  type EffortOptions,
   PROVIDERS,
   aiCliStatus,
+  aiEffortOptions,
   aiKeyDelete,
   aiKeySet,
   aiKeyStatus,
@@ -13,7 +16,7 @@ import {
 } from "../ipc/ai";
 import { BUTTON, CommitField, FIELD, Row, SectionHeading, Toggle } from "../settings/controls";
 import { useSettings } from "../settings/settings";
-import { AI_CONTEXT_RANGE } from "../settings/schema";
+import { AI_CONTEXT_RANGE, EFFORT_LEVELS, type EffortLevel } from "../settings/schema";
 import { activeTerminal } from "../terminal/blockMode";
 import { aiConfigured, clearBackoff, contextFor, providerConfig } from "./engine";
 
@@ -141,6 +144,79 @@ function ModelPicker({ provider, model, ready }: { provider: string; model: stri
   );
 }
 
+const EFFORT_LABELS: Record<Effort, string> = {
+  none: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+/** The effort shown for `provider`, from `ai_effort_options` for the current model. */
+function useEffortOptions(provider: string, model: string, stored: EffortLevel | undefined, ready: boolean) {
+  const [options, setOptions] = useState<EffortOptions | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const configKey = JSON.stringify(providerConfig(useSettings.getState()));
+  useSettings((s) => s.ai);
+  useEffect(() => {
+    const config = providerConfig();
+    setOptions(null);
+    setError(null);
+    if (!ready || !config) return;
+    let live = true;
+    void aiEffortOptions(config, model, stored).then(
+      (next) => live && setOptions(next),
+      (raw: unknown) => live && setError(toAiError(raw).message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [provider, model, stored, ready, configKey]);
+  return { options, error };
+}
+
+function EffortPicker({ provider, model, ready }: { provider: string; model: string; ready: boolean }) {
+  const ai = useSettings((s) => s.ai);
+  const updateAi = useSettings((s) => s.updateAi);
+  const stored = ai.effort[provider];
+  const { options, error } = useEffortOptions(provider, model, stored, ready);
+  const set = (value: string) => {
+    const effort = { ...ai.effort };
+    if (value) effort[provider] = value as EffortLevel;
+    else delete effort[provider];
+    updateAi({ effort });
+  };
+  const levels = options?.levels ?? [];
+  // A stored level the model does not offer stays selectable, so the select shows it.
+  const listed: Effort[] = stored && stored !== "default" && !levels.includes(stored) ? [...levels, stored] : levels;
+  const ordered = EFFORT_LEVELS.filter((level) => listed.includes(level));
+  let hint: ReactNode = "How long the model may think before it answers. Higher is slower and costs more.";
+  if (error) hint = <span className="text-err">{error}</span>;
+  else if (options) {
+    const effective = options.effective ? EFFORT_LABELS[options.effective] : null;
+    if (stored === undefined) hint = effective ? `Midterm’s pick: ${effective}.` : "Midterm’s pick: nothing is sent.";
+    else if (stored !== "default" && options.effective !== stored)
+      hint = effective ? `This model does not offer ${EFFORT_LABELS[stored]}; ${effective} is sent.` : "This model takes no effort setting; nothing is sent.";
+    if (options.note) hint = <>{hint} {options.note}</>;
+  }
+  return (
+    <Row label="Reasoning effort" hint={hint}>
+      <select aria-label="Reasoning effort" className={`${FIELD} w-56 pr-6`} value={stored ?? ""} disabled={!ready} onChange={(event) => set(event.target.value)}>
+        <option value="">Automatic</option>
+        <option value="default">Provider default</option>
+        {ordered.map((level) => (
+          <option key={level} value={level}>
+            {EFFORT_LABELS[level]}
+            {levels.includes(level) ? "" : " (not offered)"}
+          </option>
+        ))}
+      </select>
+    </Row>
+  );
+}
+
 export function AiSection() {
   const ai = useSettings((s) => s.ai);
   const updateAi = useSettings((s) => s.updateAi);
@@ -183,7 +259,7 @@ export function AiSection() {
     const config = providerConfig();
     if (!config) return;
     setTest("running");
-    setTest(await aiTest(config, ai.model).catch((error: unknown) => ({ ok: false, message: toAiError(error).message })));
+    setTest(await aiTest(config, ai.model, ai.effort[ai.provider]).catch((error: unknown) => ({ ok: false, message: toAiError(error).message })));
   };
   const showPreview = async () => {
     const paneId = activeTerminal();
@@ -295,6 +371,8 @@ export function AiSection() {
           <ModelPicker provider={ai.provider} model={ai.model} ready={reachable} />
         </Row>
       )}
+
+      {info && <EffortPicker provider={ai.provider} model={ai.model} ready={reachable} />}
 
       {info && (
         <Row
