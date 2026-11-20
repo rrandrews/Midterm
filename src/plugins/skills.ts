@@ -8,11 +8,12 @@ import type { Skill, SkillTool } from "./types";
  * ids (`<plugin>.<skill>`), each with its own on/off switch
  * (`settings.plugins[id].skills[skill]`, on unless set to false).
  *
- * Nothing in the app calls a skill yet. `invokeSkillTool` is the single
- * entry point a future agent will use: it validates the input against the
- * tool's JSON Schema, honours the switch, asks for confirmation before
- * `write` tools, and turns failures into an error result instead of
- * throwing into the host. Skills that do not pass validation at
+ * The agent (src/ai/agent/) calls them. `invokeSkillTool` is the single
+ * entry point: it validates the input against the tool's JSON Schema,
+ * honours the switch, asks for confirmation before `write` tools (the
+ * caller's `confirm`, else the hook set with `setWriteConfirmation`, else
+ * refused), and turns failures into an error result instead of throwing
+ * into the host. Skills that do not pass validation at
  * registration are left out and reported (`skillProblems`).
  */
 
@@ -183,22 +184,29 @@ export function setSkillEnabled(pluginId: string, skillId: string, enabled: bool
   updatePluginEntry(pluginId, { skills: { ...plugins[pluginId]?.skills, [skillId]: enabled } });
 }
 
-/**
- * Asked before a `write` tool runs; the agent UI will install one. Without
- * one, write tools are refused.
- */
-let confirmWrite: ((request: { skill: RegisteredSkill; tool: SkillTool; input: unknown }) => Promise<boolean>) | null = null;
+export type WriteConfirmation = (request: { skill: RegisteredSkill; tool: SkillTool; input: unknown }) => Promise<boolean>;
 
-export function setWriteConfirmation(handler: typeof confirmWrite): void {
+/**
+ * Asked before a `write` tool runs when the caller passes no `confirm` of
+ * its own. None is installed by default, so such calls are refused.
+ */
+let confirmWrite: WriteConfirmation | null = null;
+
+export function setWriteConfirmation(handler: WriteConfirmation | null): void {
   confirmWrite = handler;
 }
 
-/** Runs a skill's tool: the only way anything should call one. Never throws. */
+/**
+ * Runs a skill's tool: the only way anything should call one. Never throws.
+ * `confirm` asks the user before a `write` tool and takes precedence over
+ * the hook set with `setWriteConfirmation`; with neither, write tools are
+ * refused.
+ */
 export async function invokeSkillTool(
   skillId: string,
   toolName: string,
   input: unknown,
-  options: { paneId?: string; signal?: AbortSignal } = {},
+  options: { paneId?: string; signal?: AbortSignal; confirm?: WriteConfirmation } = {},
 ): Promise<ToolResult> {
   const skill = skills.get(skillId);
   if (!skill) return { ok: false, error: `No skill "${skillId}" (its plugin may be disabled)` };
@@ -213,9 +221,11 @@ export async function invokeSkillTool(
   }
   if (invalid.length) return { ok: false, error: `Invalid input: ${invalid.join("; ")}` };
   if (tool.effect === "write") {
-    const allowed = confirmWrite ? await confirmWrite({ skill, tool, input }).catch(() => false) : false;
+    const ask = options.confirm ?? confirmWrite;
+    const allowed = ask ? await ask({ skill, tool, input }).catch(() => false) : false;
     if (!allowed) return { ok: false, error: "The user did not allow this action" };
   }
+  if (options.signal?.aborted) return { ok: false, error: "Cancelled" };
   const api = apiOf(skill.pluginId);
   if (!api) return { ok: false, error: "The plugin host is not ready" };
   try {

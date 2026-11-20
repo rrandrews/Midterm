@@ -121,6 +121,25 @@ describe("invokeSkillTool", () => {
     expect((await invokeSkillTool("eko.echo", "shout", {})).ok).toBe(false);
   });
 
+  it("takes the caller's confirm over the hook, and never asks for read tools", async () => {
+    withSkills("eko", [echo]);
+    setWriteConfirmation(async () => false);
+    const asked: string[] = [];
+    const confirm = async ({ skill, tool, input }: { skill: { id: string }; tool: { name: string }; input: unknown }) => {
+      asked.push(`${skill.id}/${tool.name}/${JSON.stringify(input)}`);
+      return true;
+    };
+    expect(await invokeSkillTool("eko.echo", "shout", { a: 1 }, { confirm })).toEqual({ ok: true, result: "ok" });
+    expect(asked).toEqual(['eko.echo/shout/{"a":1}']);
+    expect(await invokeSkillTool("eko.echo", "say", { text: "hi" }, { confirm })).toEqual({ ok: true, result: { said: "hi" } });
+    expect(asked).toHaveLength(1);
+    expect((await invokeSkillTool("eko.echo", "shout", {}, { confirm: async () => false })).ok).toBe(false);
+    // A confirm that throws counts as a no.
+    expect((await invokeSkillTool("eko.echo", "shout", {}, { confirm: () => Promise.reject(new Error("x")) })).ok).toBe(false);
+    setWriteConfirmation(null);
+    expect((await invokeSkillTool("eko.echo", "shout", {})).ok).toBe(false);
+  });
+
   it("turns failures and non-JSON results into errors", async () => {
     withSkills("eko", [echo]);
     expect(await invokeSkillTool("eko.echo", "fail", {})).toEqual({ ok: false, error: "nope" });

@@ -162,6 +162,88 @@ function mockStream(request: SuggestRequest, onDelta: (text: string) => void): P
   });
 }
 
+/* ---- Agent turns (ai_agent_turn) ---- */
+
+/** A tool the model may call, under its wire name (see `ai/agent/tools.ts`). */
+export type ToolDef = { name: string; description: string; inputSchema: Record<string, unknown> };
+
+/** One message of an agent conversation. Assistant turns are replayed verbatim (`raw`, exactly what a turn returned). */
+export type AgentMessage =
+  | { role: "user"; text: string }
+  | { role: "assistant"; raw: string }
+  | { role: "tool"; results: { id: string; content: string; isError?: boolean }[] };
+
+/** A message on `ai_agent_turn`'s channel. */
+export type AgentEvent = { type: "text"; text: string } | { type: "toolCall"; id: string; name: string };
+
+/** A tool call in a turn. `input` is null and `invalid` holds the raw text when the arguments were not JSON. */
+export type AgentToolCall = { id: string; name: string; input: unknown; invalid?: string };
+
+/** One model turn. `text` and `toolCalls` are authoritative over the events; `raw` goes back unchanged in the history. */
+export type AgentTurn = {
+  text: string;
+  toolCalls: AgentToolCall[];
+  raw: string;
+  stop: "end" | "tools" | "length";
+  effortDropped: boolean;
+};
+
+export type AgentTurnRequest = {
+  requestId: string;
+  target: AiTarget;
+  system: string;
+  tools: ToolDef[];
+  messages: AgentMessage[];
+  maxTokens?: number;
+};
+
+/**
+ * The browser mock's agent: a `recent_blocks` call when that tool is
+ * offered and nothing has been called since the last user message, then a
+ * short Markdown answer in a few chunks.
+ */
+function mockAgentTurn(request: AgentTurnRequest, onEvent: (event: AgentEvent) => void): Promise<AgentTurn> {
+  const lastUser = request.messages.map((message) => message.role).lastIndexOf("user");
+  const called = request.messages.slice(lastUser + 1).some((message) => message.role === "tool");
+  const tool = request.tools.find((candidate) => candidate.name.endsWith("__recent_blocks"));
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    mockPending.set(request.requestId, () => {
+      clearTimeout(timer);
+      reject({ kind: "cancelled", message: "Cancelled" } satisfies AiError);
+    });
+    const done = (turn: AgentTurn) => {
+      mockPending.delete(request.requestId);
+      resolve(turn);
+    };
+    if (tool && !called) {
+      timer = setTimeout(() => {
+        const call = { id: `mock-${Date.now()}`, name: tool.name, input: { count: 3 } };
+        onEvent({ type: "toolCall", id: call.id, name: call.name });
+        const raw = JSON.stringify({
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.input) } }],
+        });
+        done({ text: "", toolCalls: [call], raw, stop: "tools", effortDropped: false });
+      }, 300);
+      return;
+    }
+    const parts = ["The **browser mock** agent", " read the recent blocks.", "\n\nNothing else to do."];
+    let at = 0;
+    const next = () => {
+      if (at < parts.length) {
+        onEvent({ type: "text", text: parts[at++] });
+        timer = setTimeout(next, 60);
+        return;
+      }
+      const text = parts.join("");
+      done({ text, toolCalls: [], raw: JSON.stringify({ role: "assistant", content: text }), stop: "end", effortDropped: false });
+    };
+    timer = setTimeout(next, 200);
+  });
+}
+
 /* ---- Commands ---- */
 
 export function aiSuggest(request: SuggestRequest): Promise<{ text: string }> {
@@ -187,6 +269,27 @@ export async function aiStream(request: SuggestRequest, onDelta: (text: string) 
       if (event.type === "delta") forward(event.text);
     };
     return await invoke<StreamReply>("ai_stream", { ...request, onEvent });
+  } finally {
+    settled = true;
+  }
+}
+
+/**
+ * One model turn of an agent conversation: reply text and tool calls
+ * arrive on `onEvent` as they stream (events after the promise settled are
+ * dropped). Rejects like `aiStream`; a CLI target rejects with `other`.
+ * Cancel with `aiCancel(requestId)`.
+ */
+export async function aiAgentTurn(request: AgentTurnRequest, onEvent: (event: AgentEvent) => void): Promise<AgentTurn> {
+  let settled = false;
+  const forward = (event: AgentEvent) => {
+    if (!settled) onEvent(event);
+  };
+  try {
+    if (!isTauri()) return await mockAgentTurn(request, forward);
+    const channel = new Channel<AgentEvent>();
+    channel.onmessage = forward;
+    return await invoke<AgentTurn>("ai_agent_turn", { ...request, onEvent: channel });
   } finally {
     settled = true;
   }
