@@ -1,7 +1,10 @@
 # AI providers
 
-Next-command suggestions in blocks mode come from a model the user picks: an
-HTTP API (with a key) or a coding CLI they already have installed. The
+Next-command suggestions in blocks mode and `/cmd` come from a model the
+user picks: an HTTP API (with a key) or a coding CLI they already have
+installed. Models are saved as **model profiles** (provider, model, effort,
+extra request JSON, under a name), and each feature uses the default profile
+or one of its own (see [Settings](#settings)). The
 webview never talks to a provider and never sees a key. It calls the `ai_*`
 commands, and the Rust backend (`src-tauri/src/ai/`) makes the request or
 runs the CLI. The webview's CSP stays "nothing remote"
@@ -15,8 +18,9 @@ runs the CLI. The webview's CSP stays "nothing remote"
 |---|---|
 | `mod.rs` | `AiManager` (Tauri state): dispatch by provider, the `max_tokens` budget, cancellation registry, lazy HTTP client. |
 | `commands.rs` | The Tauri commands below. Thin. |
+| `extra.rs` | Extra request JSON: protected keys, size check, the JSON Merge Patch into a request body. |
 | `effort.rs` | Reasoning effort: levels offered per provider and model, Midterm's pick, clamping, token headroom, timeout scaling. |
-| `provider.rs` | `ProviderId`, `ProviderConfig`, default base URLs, which backend each provider uses. |
+| `provider.rs` | `ProviderId`, `ProviderConfig`, `Target` (what a request goes to), default base URLs, which backend each provider uses. |
 | `openai.rs` | OpenAI-compatible chat completions adapter. |
 | `anthropic.rs` | Anthropic Messages adapter (raw HTTP). |
 | `http.rs` | Shared HTTP: client, send, HTTP-status → error mapping, error-body parsing. |
@@ -56,6 +60,57 @@ characters, so a key straddling the cut cannot leak half of itself. A
 `custom` key is bound to its base URL (see [Keys](#keys)), so editing the
 URL never sends the old key to the new host. No model ids are
 hard-coded anywhere: the UI lists them with `ai_models`.
+
+### Models
+
+`ai_models` returns the provider's live list, sorted and deduplicated, with
+a `models/` prefix (Gemini's native form) stripped. For every
+OpenAI-compatible provider it keeps **text → text models only**
+(`openai::parse_models`), per entry of `data[]`:
+
+1. If `architecture.output_modalities` is an array (OpenRouter): kept only
+   if it is exactly `["text"]` and `architecture.input_modalities` (when
+   present) contains `"text"`.
+2. Else if `architecture.modality` is a string `"in->out"`: kept only if
+   `out` is `text` and `in` contains `text`.
+3. Else by id (`is_text_model`): lowercased; dropped if it contains
+   `dall-e` or `stable-diffusion`, or if any segment (split on every
+   character outside `[a-z0-9]`) is one of `tts stt asr speech whisper
+   transcribe transcription audio realtime live image images imagen video
+   sora veo lyria embedding embeddings embed rerank reranker moderation
+   aqa`.
+
+`vision`, `instruct`, `search` and `computer-use` models stay (their
+output is text). Anthropic's list and `agy models` are not filtered. Any id
+can still be typed in Settings.
+
+### Extra request JSON
+
+A profile of an API provider can carry a JSON object (`Target.extra`) that
+`extra.rs` merges into the request body as a **JSON Merge Patch (RFC
+7386)**, after the adapter built it (`openai::build_body`,
+`anthropic::build_body`): objects merge recursively, `null` removes a key,
+anything else replaces. The user's values win, so it can add provider
+options (`provider` routing on OpenRouter, `metadata`, …) or override
+Midterm's own fields (`max_tokens`, the effort field).
+
+- **Protected keys** are rejected: `model`, `messages`, `system`, `stream`,
+  `tools`, `tool_choice`, `functions`, `function_call`, `n` (one list for
+  both adapters, `extra::PROTECTED`, mirrored as `PROTECTED_EXTRA_KEYS` in
+  `ipc/ai.ts`). Only top-level keys are checked.
+- At most 16 KB serialized.
+- `extra::check` runs in `AiManager::complete` before the key lookup and
+  fails with `other` ("extra request JSON cannot set `model`"). CLI
+  backends ignore `extra`, and `ai_effort_options` ignores it.
+- It is applied on both attempts of the retry without effort. A rejected
+  effort level is **not** remembered (`Rejections`) when `extra` sets
+  `reasoning_effort`, `reasoning`, `thinking` or `output_config`: the
+  rejection may be about the user's field.
+- It cannot change the URL or headers, so a key still only goes to its
+  provider.
+
+Sampling parameters set this way are rejected by current Anthropic models;
+the editor's hint says so.
 
 ### Request shapes
 
@@ -259,13 +314,16 @@ camelCase.
 type ProviderId = "openai" | "anthropic" | "deepseek" | "openrouter" | "gemini" | "custom"
                | "claude-code" | "codex" | "antigravity";
 type ProviderConfig = { id: ProviderId; baseUrl?: string; cliPath?: string };
+// What a request goes to: a model profile resolved for a feature (Rust `Target`).
+type AiTarget = { provider: ProviderConfig; model: string; effort?: EffortLevel;
+                  extra?: Record<string, unknown> };
 
-ai_suggest({ requestId: string, provider: ProviderConfig, model: string, system: string,
-             prompt: string, maxTokens?: number, effort?: EffortLevel }) -> { text: string }
+ai_suggest({ requestId: string, target: AiTarget, system: string, prompt: string,
+             maxTokens?: number }) -> { text: string }
 ai_cancel({ requestId: string }) -> void
-ai_models({ provider: ProviderConfig }) -> string[]
-ai_test({ provider: ProviderConfig, model: string, effort?: EffortLevel }) -> { ok: boolean, message: string }
-ai_effort_options({ provider: ProviderConfig, model: string, effort?: EffortLevel })
+ai_models({ provider: ProviderConfig }) -> string[]         // text -> text only (see Models)
+ai_test({ target: AiTarget }) -> { ok: boolean, message: string }
+ai_effort_options({ target: AiTarget })                      // extra ignored
     -> { levels: Effort[], effective: Effort | null, note: string | null }
 ai_key_set({ provider: ProviderConfig, key: string }) -> void
 ai_key_delete({ provider: ProviderConfig }) -> void
@@ -273,9 +331,11 @@ ai_key_status({ provider: ProviderConfig }) -> boolean
 ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, version?: string }
 ```
 
-- `ai_suggest`: `model` is required for HTTP providers and optional for CLIs
-  (empty = the CLI's default). `maxTokens` is the reply budget; headroom for
-  reasoning is added. `effort` is the stored setting (absent: Midterm's pick).
+- `ai_suggest`: `target.model` is required for HTTP providers and optional
+  for CLIs (empty = the CLI's default). `maxTokens` is the reply budget;
+  headroom for reasoning is added. `target.effort` is the profile's setting
+  (absent: Midterm's pick). `target.extra` is merged into the body (see
+  [Extra request JSON](#extra-request-json)).
 - `ai_cancel`: aborts the HTTP request or kills the CLI; the pending
   `ai_suggest` rejects with `cancelled`. A cancel that arrives before its
   `ai_suggest` registered is remembered (the last 64), so the request is
@@ -289,9 +349,11 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
   same critical section. So a request cancelled or replaced at any point
   before it finalizes, even after its result was ready, rejects with
   `cancelled`.
-- `ai_models`: the provider's live list; `[]` for Claude Code and Codex.
-  Needs a key (except `custom`).
-- `ai_test`: a tiny request ("Reply with OK", 16 reply tokens). Never
+- `ai_models`: the provider's live list, filtered to text models for
+  OpenAI-compatible providers (see [Models](#models)); `[]` for Claude Code
+  and Codex. Needs a key (except `custom`).
+- `ai_test`: a tiny request ("Reply with OK", 16 reply tokens) to the
+  target, extra JSON included (Settings sends the unsaved draft). Never
   rejects for provider failures: they come back as `{ ok: false, message }`.
   The message names the effort sent, or says it was rejected.
 - `ai_effort_options`: the levels offered for the model (lowest first; the
@@ -330,7 +392,11 @@ Every command rejects with `{ kind, message }`:
 hand-rolled HTTP server on `127.0.0.1:0` serving canned responses and
 recording requests): success, request shape (no sampling fields, effort
 fields per level, Anthropic adaptive and budget shapes), retry without effort
-(400 and 422) and its memo per level, Anthropic capabilities parsing and
+(400 and 422) and its memo per level (not memoized when extra JSON sets a
+reasoning field), extra JSON (merge patch, protected keys, size, body shapes
+for both adapters, kept on the retry, checked before the key lookup),
+`Target` deserialization, the text-model filter (ids and OpenRouter
+modalities), Anthropic capabilities parsing and
 the budget invariant, refusal, empty, 401/5xx, unreachable
 server, model listing and pagination, cancel mid-request, a cancel or
 replacement landing after the result is ready, redaction before
@@ -351,12 +417,15 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 
 | File | What |
 |---|---|
-| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `PROVIDERS` (names, API or CLI, key needed); `toAiError`. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, cancellable. |
+| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, cancellable, and a model list of ~40 ids for API providers (none for CLIs). |
+| `profiles.ts` | Pure apart from the settings store: which profile a feature uses (`profileFor`), `providerConfigOf`, `profileReady` / `profileProblem`, `featureReady` / `featureProblem`, `targetFor(feature)` (omits `extra` for CLIs), `FEATURES` (the rows under Features), `parseExtra`, and the mutations (`saveProfile`, `deleteProfile`, `duplicateProfile`, `setDefaultProfile`, `setFeatureProfile`). Unit-tested in `profiles.test.ts`. |
 | `context.ts` | Pure: `buildContext` (system prompt and prompt), `redact`, `trimOutput`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
-| `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `providerReady`, `providerConfig`, `localPrediction`. |
+| `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `localPrediction`. Requests go to `targetFor("suggestions")`. |
 | `slash.ts` | Slash commands for the blocks editor: the registry, `parseSlash`, `slashCompletion`, and `/cmd`'s request (`writeCommand`, `buildCmdRequest`). Unit-tested in `slash.test.ts`. |
 | `predict.ts` | Pure: local next-command prediction from the command log (`predictNext`, `tokenize`). Unit-tested in `predict.test.ts`. |
-| `AiSection.tsx` | Settings → AI. |
+| `AiSection.tsx` | Settings → AI: suggestions switches, Models, Features. |
+| `settings/ProfileList.tsx`, `settings/ProfileEditor.tsx` | Settings → AI → Models: the profile rows and the inline draft editor (key and CLI status, model list, effort options). |
+| `src/components/ui/Combobox.tsx` | The model field: a text field with a fuzzy-filtered list (Radix `Popover` + `cmdk` + `fuzzysort`). `comboItems` is the pure row logic, tested in `Combobox.test.ts`. |
 | `commands.ts` | Commands, the terminal menu's per-pane switch, registration. |
 
 ### Settings
@@ -365,21 +434,49 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 
 | Field | Meaning |
 |---|---|
-| `suggestions` | On by default. Local predictions work right away; model requests wait until a provider is chosen (and a model, for APIs; a base URL for `custom`). |
-| `provider` | A provider id, or empty for none. |
-| `model` | The model id. Empty means the CLI's default, for CLI providers only. |
-| `baseUrl` | For `custom`. |
-| `cliPaths` | Executable overrides, by provider id. |
+| `suggestions` | On by default. Local predictions work right away; model requests wait until the suggestions feature resolves to a ready profile. |
 | `contextBlocks` | Finished blocks sent as context (0–20, default 5). |
-| `effort` | Reasoning effort by provider id: missing (Midterm's pick), `default` (send nothing) or a level. See "Reasoning effort". |
+| `profiles` | Model profiles, in display order (at most 50). |
+| `defaultProfile` | The profile id every feature without an override uses; `""` for none. |
+| `features` | Per-feature overrides, feature → profile id. Features: `AI_FEATURES` = `suggestions`, `cmd`, `explain`, `agent` (only the first two are listed in Settings yet). |
+
+A profile (`AiProfile`):
+
+| Field | Meaning |
+|---|---|
+| `id` | Stable generated id, `p-` + 8 base36 chars (`default` for a migrated profile). Features reference ids, so renaming is one field. |
+| `name` | The alias; 1–40 chars, unique case-insensitively. |
+| `provider` | A provider id; an unknown id makes the profile "not ready". |
+| `model` | The model id. Empty means the CLI's default (CLI providers only). |
+| `baseUrl` | `custom` only (cleared for other providers). |
+| `cliPath` | Executable override (CLI providers). |
+| `effort` | Missing (Midterm's pick), `default` (send nothing) or a level. See "Reasoning effort". |
+| `extra` | Extra request JSON (API providers only). See [Extra request JSON](#extra-request-json). |
+
+A profile is **ready** when its provider is known, it has a model (API
+providers) and a base URL (`custom`); whether a key is stored is checked by
+the backend. `validateAi` drops profiles without a valid id
+(`/^[a-z0-9-]{1,40}$/`) or with a duplicate one, trims strings, names an
+empty name `Profile N` and suffixes a duplicate name, drops an invalid
+`effort` or `extra`, points `defaultProfile` at an existing profile (else
+the first, else `""`), and keeps only known features pointing at existing
+profiles. Deleting a profile removes its `features` entries; if it was the
+default, the first remaining profile becomes the default.
+
+Settings version 5 replaced the flat `provider`, `model`, `baseUrl`,
+`cliPaths` and `effort` fields: a chosen provider became one profile
+(`id: "default"`, named after the model or the provider, with that
+provider's CLI path and effort) used by every feature. Effort and CLI paths
+remembered for other providers were dropped.
 
 A pane's own switch is `aiSuggestions: false` in the terminal pane's data
 (terminal menu → "Suggestions in this pane", shown while suggestions are
 on). It turns off local predictions too.
 
 Keys never pass through the settings. The key field is write-only: Save
-sends it to `ai_key_set`, and the UI only ever learns `ai_key_status`. A
-`custom` key is kept per base URL.
+sends it to `ai_key_set`, and the UI only ever learns `ai_key_status`. Keys
+stay per provider (a `custom` key per base URL), so all profiles of one
+provider share one key.
 
 ### Context
 
@@ -536,7 +633,8 @@ line, never run**: edit it or press ⏎ (a held, auto-repeating ⏎ does not
 run it). While the request runs, other keys are swallowed (⌃D does not
 reach the shell) and focusing the editor asks for no suggestion. On failure the error shows next to
 the line and the line goes back in the editor, so ⏎ tries again. `/cmd`
-needs a provider (`providerReady`) but not the suggestions switch. Slash
+needs a ready profile (`targetFor("cmd")`; else "Choose a model for /cmd in
+Settings → AI.") but not the suggestions switch. Slash
 lines are not added to the history or the command log.
 
 ### Commands
@@ -549,17 +647,38 @@ lines are not added to the history or the command log.
 ### Settings → AI
 
 - A note on what leaves the machine.
-- The suggestions toggle and the context size.
-- The provider, grouped into APIs and CLIs, with its status (key saved, or
-  the CLI found with its path and version).
-- The base URL (custom), the key field with Save and Remove (APIs), or the
-  executable path (CLIs).
-- The model: free text, plus the provider's live list (`ai_models`) with a
-  refresh.
-- Reasoning effort: Automatic, Provider default, and the levels
-  `ai_effort_options` returns for the model. The hint says what is sent when
-  a level is clamped, or when nothing is.
-- Test (`ai_test`) and "Preview what is sent".
+- **Suggestions**: the toggle, the context size, and "Preview what is sent".
+- **Models**: one row per profile (name, `provider · model`, status:
+  `text-ok` Ready or `text-warn` with the problem) with Edit, Duplicate and
+  Delete, and "Add model". Deleting a profile a feature uses asks first
+  (`confirm()`), naming the features that fall back. Edit opens the editor
+  inline under the row, one at a time; a new profile is edited under the
+  list and only added on Add.
+- The **editor** works on a draft with explicit Save / Cancel (keys are the
+  exception: saved and removed at once). Rows: Name; Provider, grouped into
+  APIs and CLIs, with its status (key saved, or the CLI found with its path
+  and version); Base URL (custom), API key with Save and Remove (APIs; the
+  hint says the key is shared by every profile of the provider), or
+  Executable (CLIs); Model; Reasoning effort (Automatic, Provider default,
+  and the levels `ai_effort_options` returns; the hint says what is sent
+  when a level is clamped, or when nothing is); Extra request JSON (API
+  providers: a monospace textarea validated by `parseExtra` on blur and on
+  Save; the error shows under it and disables Save); Test (`ai_test` on the
+  draft). Changing the provider clears model, effort and extra.
+- The **Model** field is a `Combobox`: it opens on focus, click, typing or
+  ↓ and shows the provider's list (`ai_models`) fuzzy-filtered with the
+  matched characters in `text-accent-fg`; with an empty query every option
+  shows (at most 200, plus the current value), the current one selected.
+  When the text is not exactly an option the first row is `Use "<text>"`.
+  ⏎ commits the selected row; ⇥ or blur commits the typed text. Esc closes
+  the list first, then reverts the text (the field marks itself
+  `data-escape-local` so the dialog does not close). A footer shows
+  Loading…, the error with Retry, or "N models" with a refresh. The list is
+  portaled; its wheel and touchmove events stop propagating so the modal
+  dialog's scroll lock does not eat them.
+- **Features**: "Default model" (a select of profiles), then one row per
+  `FEATURES` entry with "Default (<name>)" plus every profile; the hint
+  shows `featureProblem`. Without profiles, one line pointing at Add model.
 
 ### Self-test
 
@@ -567,8 +686,8 @@ With `aistub=PORT` in the self-test URL, and `bun scripts/ai-stub.ts PORT`
 running (a stand-in OpenAI-compatible server), the self-test:
 
 1. runs a command that exports a fake password;
-2. checks that nothing is asked while no provider is chosen;
-3. points `custom` at the stub and asks;
+2. checks that nothing is asked while no profile is chosen;
+3. sets a `custom` profile pointed at the stub as the default and asks;
 4. checks that the ghost text shows the stub's answer. The stub only gives
    that answer when the prompt contains the command and not the secret.
-5. checks that ⇥ accepts it.
+5. checks that ⇥ accepts it, then puts the profiles back.

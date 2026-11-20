@@ -148,7 +148,9 @@ Plugin entries live in `settings.plugins[id]`:
   upgrades older files; version 1's top-level terminal fields moved to
   `plugins.terminal.settings`, and version 4 turned the terminal's
   `terminalMode` setting into `defaultTerminal` (`"blocks"` →
-  `block-terminal`).
+  `block-terminal`), and version 5 turned the flat AI provider fields into
+  model profiles (`ai.profiles`, `ai.defaultProfile`, `ai.features`; see
+  [ai.md](ai.md#settings)).
 
 The dialog's sections come from a registry (`registerSettingsSection` in
 `src/settings/sections.ts`), plus one section per plugin: enable/disable,
