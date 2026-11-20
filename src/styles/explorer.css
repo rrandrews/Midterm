@@ -11,3 +11,27 @@
 .explorer-tree:focus-within .explorer-row.is-selected {
   background: color-mix(in srgb, var(--color-selected) 85%, transparent);
 }
+
+/* File icons (src/icons/FileIcon.tsx): 16px between the chevron and the name. */
+.file-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.file-icon.is-lucide {
+  padding: 1px;
+  width: 16px;
+  height: 16px;
+  color: var(--color-fg-dim);
+}
+.file-icon.is-mono {
+  background: currentColor;
+  mask-size: 16px 16px;
+  -webkit-mask-size: 16px 16px;
+  mask-repeat: no-repeat;
+  -webkit-mask-repeat: no-repeat;
+}
+/* Hidden and ignored entries. */
+.explorer-row.is-dim .file-icon {
+  opacity: 0.55;
+}

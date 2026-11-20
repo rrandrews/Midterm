@@ -14,6 +14,9 @@ import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuSeparator } fr
 import { MenuItems } from "../../plugins/MenuItems";
 import { usePluginSettings } from "../../plugins/settings";
 import { EntryMenuItems, confirmTrash, explorerMenu } from "./ExplorerMenus";
+import { FileIcon, drawsIcons } from "../../icons/FileIcon";
+import { useActiveIconSet } from "../../icons/state";
+import type { LoadedIconSet } from "../../icons/types";
 
 const ROW_HEIGHT = 24;
 /** Indent per level, and the left padding of the top level (from the mockup). */
@@ -61,6 +64,7 @@ export function ExplorerPane({ paneId }: { paneId: string }) {
 }
 
 function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel }) {
+  const icons = useActiveIconSet();
   const snap = useSyncExternalStore(model.subscribe, model.snapshot);
   const treeRef = useRef<HTMLDivElement>(null);
   const typeahead = useRef({ text: "", at: 0 });
@@ -215,6 +219,7 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
                     model={model}
                     snap={snap}
                     row={row}
+                    icons={icons}
                     top={item.start}
                     onActivate={(newPane) => activate(row, newPane)}
                   />
@@ -286,11 +291,15 @@ type TreeRowProps = {
   model: ExplorerModel;
   snap: ExplorerSnapshot;
   row: Row;
+  icons: { set: LoadedIconSet | null; light: boolean };
   top: number;
   onActivate: (newPane: boolean) => void;
 };
 
-function TreeRow({ paneId, model, snap, row, top, onActivate }: TreeRowProps) {
+/** Width the icon and its gap take, when the set draws icons. */
+const ICON_SPACE = 16 + 6;
+
+function TreeRow({ paneId, model, snap, row, icons, top, onActivate }: TreeRowProps) {
   const indent = PAD_LEFT + row.depth * INDENT;
   const style = { top, height: ROW_HEIGHT, paddingLeft: indent };
   const base = "absolute inset-x-0 flex items-center gap-1.5 pr-3 whitespace-nowrap";
@@ -301,7 +310,7 @@ function TreeRow({ paneId, model, snap, row, top, onActivate }: TreeRowProps) {
 
   if (row.type === "status") {
     return (
-      <div className={`${base} text-meta text-fg-dim`} style={{ ...style, paddingLeft: indent + 16 }}>
+      <div className={`${base} text-meta text-fg-dim`} style={{ ...style, paddingLeft: indent + 16 + (drawsIcons(icons.set) ? ICON_SPACE : 0) }}>
         <span className="truncate">{row.text}</span>
       </div>
     );
@@ -311,6 +320,7 @@ function TreeRow({ paneId, model, snap, row, top, onActivate }: TreeRowProps) {
     return (
       <div className={base} style={style}>
         <Chevron dir={row.kind === "dir"} expanded={false} />
+        <FileIcon set={icons.set} light={icons.light} name="" kind={row.kind} />
         <InlineEdit
           label={row.kind === "dir" ? "New folder name" : "New file name"}
           value=""
@@ -342,7 +352,7 @@ function TreeRow({ paneId, model, snap, row, top, onActivate }: TreeRowProps) {
       title={entry.symlink ? `${entry.name} (symbolic link)` : undefined}
       className={`${base} explorer-row cursor-default text-ui ${
         selected ? "is-selected text-fg-bright" : dim ? "text-fg-faint" : "text-fg-mid"
-      }`}
+      } ${dim ? "is-dim" : ""}`}
       style={style}
       onClick={(event) => {
         model.select(entry.path);
@@ -357,6 +367,14 @@ function TreeRow({ paneId, model, snap, row, top, onActivate }: TreeRowProps) {
       }}
     >
       <Chevron dir={entry.kind === "dir"} expanded={expanded} />
+      <FileIcon
+        set={icons.set}
+        light={icons.light}
+        name={entry.name}
+        path={entry.path}
+        kind={entry.kind}
+        expanded={expanded}
+      />
       {renaming ? (
         <InlineEdit
           label={`Rename ${entry.name}`}
