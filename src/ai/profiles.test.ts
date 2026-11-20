@@ -120,10 +120,10 @@ describe("mutations", () => {
     deleteProfile("b");
     expect(getSettings().ai.features).toEqual({});
     expect(profileFor("cmd")?.id).toBe("a");
-    expect(deleteWarning("a")).toBe("Next-command suggestions, /cmd will use c instead.");
+    expect(deleteWarning("a")).toBe("Next-command suggestions, /cmd, Explain and fix will use c instead.");
     deleteProfile("a");
     expect(getSettings().ai.defaultProfile).toBe("c");
-    expect(deleteWarning("c")).toBe("Next-command suggestions, /cmd will have no model.");
+    expect(deleteWarning("c")).toBe("Next-command suggestions, /cmd, Explain and fix will have no model.");
     deleteProfile("c");
     expect(getSettings().ai.defaultProfile).toBe("");
   });

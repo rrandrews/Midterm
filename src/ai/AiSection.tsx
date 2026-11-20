@@ -67,9 +67,9 @@ export function AiSection() {
   return (
     <div>
       <div className="mb-3 rounded-[5px] bg-raised px-3 py-2 text-meta text-fg-mid">
-        Suggestions and /cmd send the current terminal’s own recent commands (never other terminals’), their output (cut to its start and end), the
+        Suggestions, /cmd, and Explain and fix send the current terminal’s own recent commands (never other terminals’), their output (cut to its start and end), the
         directory, git branch, shell and OS to the model you choose. Values that look like secrets are replaced with [redacted] first. Nothing is sent
-        until you add a model, and a suggestion is only ever placed in the input editor, never run.
+        until you add a model, and a suggested or fixed command is only ever placed in the input editor, never run.
       </div>
 
       <SectionHeading>Suggestions</SectionHeading>

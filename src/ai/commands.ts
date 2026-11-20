@@ -4,8 +4,13 @@ import type { MenuItemSpec } from "../plugins/types";
 import { openSettings } from "../settings/SettingsDialog";
 import { registerSettingsSection } from "../settings/sections";
 import { getSettings, useSettings } from "../settings/settings";
-import { activeTerminal } from "../terminal/blockMode";
+import { activeTerminal, requestedMode } from "../terminal/blockMode";
+import type { Block } from "../terminal/blocks";
+import { onSessionDisposed, peekSession } from "../terminal/sessions";
 import { AiSection } from "./AiSection";
+import { canFix, fixBlock } from "./blockAi";
+import { dropPaneNotes, explainBlock } from "./blockNotes";
+import { featureReady } from "./profiles";
 import { aiConfigured, installAiEngine, paneAllows, paneSwitchedOff, suggestNow } from "./engine";
 
 /*
@@ -34,12 +39,48 @@ export function aiMenuItems(paneId: string): MenuItemSpec[] {
   ];
 }
 
+/** Explain and Fix in the right-click menu of a block (when the `explain` feature has a model). */
+export function blockAiMenuItems(paneId: string, block: Block): MenuItemSpec[] {
+  if (!featureReady("explain")) return [];
+  const failed = block.exitCode !== undefined && block.exitCode !== 0;
+  return [
+    {
+      label: failed ? "Explain this error" : "Explain this output",
+      disabled: !block.end || !block.command.trim(),
+      run: () => explainBlock(paneId, block),
+    },
+    { label: "Fix this command", disabled: !block.end || !canFix(paneId, block), run: () => fixBlock(paneId, block) },
+  ];
+}
+
+/** The active block terminal's last finished block with a command. */
+function lastFinishedBlock(): { paneId: string; block: Block } | undefined {
+  const paneId = activeTerminal();
+  if (!paneId || requestedMode(paneId) !== "blocks") return undefined;
+  const blocks = peekSession(paneId)?.blocks.snapshot().blocks ?? [];
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i].end !== undefined && blocks[i].command.trim()) return { paneId, block: blocks[i] };
+  }
+  return undefined;
+}
+
+/** Runs `act` on the last finished block, or opens Settings → AI when Explain and fix has no model. */
+function onLastBlock(act: (paneId: string, block: Block) => void): void {
+  if (!featureReady("explain")) {
+    openSettings("ai");
+    return;
+  }
+  const last = lastFinishedBlock();
+  if (last) act(last.paneId, last.block);
+}
+
 let installed = false;
 
 export function installAi(): void {
   if (installed) return;
   installed = true;
   installAiEngine();
+  onSessionDisposed(dropPaneNotes);
   registerSettingsSection({ id: "ai", label: "AI", order: 700, component: AiSection });
   registerCommands([
     { id: "ai.toggleSuggestions", title: "AI: Toggle suggestions", category: "AI", run: toggleSuggestions },
@@ -52,6 +93,18 @@ export function installAi(): void {
         if (!paneId) return;
         if (!suggestNow(paneId) && !aiConfigured()) openSettings("ai");
       },
+    },
+    {
+      id: "ai.explainLastCommand",
+      title: "AI: Explain the last command",
+      category: "AI",
+      run: () => onLastBlock(explainBlock),
+    },
+    {
+      id: "ai.fixLastCommand",
+      title: "AI: Fix the last command",
+      category: "AI",
+      run: () => onLastBlock(fixBlock),
     },
     { id: "ai.openSettings", title: "AI: Settings…", category: "AI", run: () => openSettings("ai") },
   ]);

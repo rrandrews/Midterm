@@ -1,4 +1,8 @@
-import { ClipboardCopy, Copy, RotateCw } from "lucide-react";
+import { ClipboardCopy, Copy, RotateCw, Sparkles, Wrench } from "lucide-react";
+import { fixBlock } from "../../ai/blockAi";
+import { explainBlock, pruneNotes } from "../../ai/blockNotes";
+import { featureReady } from "../../ai/profiles";
+import { useSettings } from "../../settings/settings";
 import { useThemeRevision } from "../../theme/state";
 import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { homeDirectory } from "../../ipc/system";
@@ -14,6 +18,7 @@ import { type Block, type BlocksSnapshot, outputRows, scopeOf } from "../../term
 import { branchOf } from "../../terminal/gitBranch";
 import type { TerminalSession } from "../../terminal/session";
 import { BlockInput } from "./BlockInput";
+import { BlockNote } from "./BlockNote";
 
 /** Output lines a finished block shows before "Show earlier lines". */
 const INITIAL_LINES = 300;
@@ -78,6 +83,15 @@ export function BlocksView({
   // Never looked up here for a nested shell: even reporting this host, it may be another machine.
   const branch = useBranch(snapshot.nested ? undefined : where.cwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
   const promptScope = scopeOf(snapshot.nested, snapshot.location);
+  const aiReady = useSettings((state) => featureReady("explain", state));
+
+  // AI notes of blocks that are gone (cleared, out of the scrollback) go too.
+  useEffect(() => {
+    pruneNotes(
+      session.paneId,
+      snapshot.blocks.map((block) => block.id),
+    );
+  }, [session, snapshot]);
 
   return (
     <div
@@ -108,6 +122,7 @@ export function BlocksView({
                 branch={block.branch}
                 // Only at a prompt of the same shell: "Run again" must not run a remote command here.
                 runnable={atPrompt && canReplay(session, block)}
+                aiReady={aiReady}
               />
             ) : (
               <RunningBlock key={block.id} session={session} block={block} branch={block.branch} />
@@ -144,11 +159,14 @@ const FinishedBlock = memo(function FinishedBlock({
   block,
   branch,
   runnable,
+  aiReady,
 }: {
   session: TerminalSession;
   block: Block;
   branch: string | null | undefined;
   runnable: boolean;
+  /** The `explain` feature has a ready model: Explain and Fix show. */
+  aiReady: boolean;
 }) {
   const [limit, setLimit] = useState(INITIAL_LINES);
   // Output is drawn with the theme's colors.
@@ -188,6 +206,24 @@ const FinishedBlock = memo(function FinishedBlock({
           >
             <RotateCw size={12} />
           </ActionButton>
+          {aiReady && (
+            <>
+              <ActionButton
+                label={failed ? "Explain this error" : "Explain this output"}
+                disabled={!block.command}
+                onClick={() => explainBlock(session.paneId, block)}
+              >
+                <Sparkles size={12} />
+              </ActionButton>
+              <ActionButton
+                label="Fix this command"
+                disabled={!runnable || !failed}
+                onClick={() => fixBlock(session.paneId, block)}
+              >
+                <Wrench size={12} />
+              </ActionButton>
+            </>
+          )}
         </span>
         <span className={`shrink-0${failed ? " text-err" : ""}`}>{status}</span>
       </BlockHeader>
@@ -200,6 +236,7 @@ const FinishedBlock = memo(function FinishedBlock({
       )}
       {block.truncated && hidden === 0 && <div className="block-note">Earlier output is no longer in the scrollback.</div>}
       <Output lines={lines} />
+      <BlockNote paneId={session.paneId} block={block} />
     </div>
   );
 });

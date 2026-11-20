@@ -23,10 +23,20 @@ import { activePlugin } from "../plugins/registry";
 
 // Kept while the pane is either terminal kind, so switching between the
 // classic and block terminal keeps the shell.
+const disposeListeners = new Set<(paneId: string) => void>();
 const sessions = createPaneState<TerminalSession>({
   isLive: (pane) => isSessionKind(pane.data.kind),
-  dispose: (session) => session.dispose(),
+  dispose: (session) => {
+    session.dispose();
+    for (const listener of disposeListeners) listener(session.paneId);
+  },
 });
+
+/** Calls `listener` with the pane id whenever a session ends (e.g. to drop what was kept for it). */
+export function onSessionDisposed(listener: (paneId: string) => void): () => void {
+  disposeListeners.add(listener);
+  return () => disposeListeners.delete(listener);
+}
 /** Input to type into a pane's shell as soon as its session exists (e.g. a command to run). */
 const startupInput = new Map<string, string>();
 

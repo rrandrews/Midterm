@@ -22,6 +22,7 @@ import { getSettings, useSettings } from "../settings/settings";
 export const FEATURES: readonly { id: AiFeature; label: string; hint: string }[] = [
   { id: "suggestions", label: "Next-command suggestions", hint: "Ghost text at an empty prompt of the block terminal." },
   { id: "cmd", label: "/cmd", hint: "Writes a command for a task described in the blocks editor." },
+  { id: "explain", label: "Explain and fix", hint: "Explains a block's output, and fixes a failed command into the blocks editor." },
 ];
 
 const featureLabel = (feature: AiFeature) => FEATURES.find((f) => f.id === feature)?.label ?? feature;

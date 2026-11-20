@@ -1,4 +1,4 @@
-import { aiMenuItems } from "../ai/commands";
+import { aiMenuItems, blockAiMenuItems } from "../ai/commands";
 import { copyText, pasteText } from "../ipc/clipboard";
 import type { MenuItemSpec } from "../plugins/types";
 import {
@@ -41,6 +41,7 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
       { label: "Copy command", disabled: !block.command, run: () => copyBlockCommand(block) },
       { label: "Copy output", disabled: !block.end, run: () => copyBlockOutput(session, block) },
       { label: "Run again", disabled: !canReplay(session, block), run: () => replayBlock(session, block) },
+      ...blockAiMenuItems(paneId, block),
       { type: "separator" },
     );
   }
