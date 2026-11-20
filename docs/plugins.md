@@ -33,7 +33,8 @@ type PanePlugin = {
   id: string;            // the pane kind: [a-z0-9][a-z0-9-]*
   name: string;
   version?: string; description?: string; icon?: string;
-  required?: boolean;    // cannot be disabled (the terminal)
+  required?: boolean;    // cannot be disabled (the classic terminal)
+  terminal?: boolean;    // a terminal: offered as Settings → General → Default terminal
   pane: PaneSpec;
   commands?: Command[];  // registered while the plugin is enabled
   settings?: { fields?: SettingField[]; section?: ComponentType<{ pluginId }> };
@@ -49,7 +50,8 @@ All `PaneSpec` members are optional:
 | `component` / `mount(el, ctx)` | Rendering. A React component gets `{ paneId, data, active, ctx }`. `mount` is framework-free: render into `el` and return a cleanup function. |
 | `validateData(raw)` | Restoring saved pane data. Return the fields to keep, or `null` to start the pane afresh. |
 | `createData(from?)` | Data for a new pane opened from `from`. The terminal inherits `directoryOf(from)`. |
-| `convertData(previous)` | "Change pane type". Editor ↔ viewer keep `path`. Without it, the pane gets `createData(pane)`. |
+| `convertData(previous)` | "Change pane type". Editor ↔ viewer keep `path`; classic ↔ block terminal keep `cwd` and `aiSuggestions`. Without it (or when it returns `undefined`), the pane gets `createData(pane)`. |
+| `keepsStateOnChangeTo(kind)` | Whether changing a pane of this kind to `kind` keeps what it runs, so "Change pane type" does not ask like closing. The two built-in terminals say yes to each other. |
 | `isDirty(paneId)` | Unsaved work right now, synchronously. `openFile` only reuses a pane for another file when this is false; a plugin with `closeBlockers` and no `isDirty` never has its panes reused. |
 | `closeBlockers(paneId)` | What closing would lose: `{ type: "running" \| "unsaved" \| "other", name }`. Every close, quit and type change asks once for all of them. |
 | `directory(pane)` | The directory a pane is in. Used for the palette's project root and for new terminals. |
@@ -113,8 +115,18 @@ all use this helper; plugins get it as `api.panes.createState`.
 - For every enabled plugin, the palette gets "New X pane",
   "New X in new tab" and "Change pane to X". Their ids are stable and their
   shortcuts can be rebound.
-- The `defaultPaneKind` setting (General) sets what ⌘T and splits open. It
-  falls back to the terminal when that plugin is disabled.
+- The `defaultTerminal` setting (General → Default terminal) is the
+  terminal new terminals open in: any enabled plugin with `terminal: true`
+  (`terminalPlugins()`, `defaultTerminalKind()` in `src/plugins/panes.ts`),
+  falling back to the classic terminal.
+- The `defaultPaneKind` setting (General → New tabs and splits open) sets
+  what ⌘T and splits open: a non-terminal plugin, or a terminal kind
+  (stored as `terminal`) meaning "the default terminal". It falls back to
+  the default terminal when that plugin is unavailable.
+- "Open in new terminal" and other built-in ways to open a terminal use the
+  default terminal. Commands sent to a new terminal (palette, `api.terminals.run`)
+  use it only if it is one of the built-in terminals (`commandTerminalKind`),
+  since only those have a session to type into.
 
 ## Settings
 
@@ -134,7 +146,9 @@ Plugin entries live in `settings.plugins[id]`:
   custom component below them.
 - The settings file has a `version` (`SETTINGS_VERSION`). `migrateSettings`
   upgrades older files; version 1's top-level terminal fields moved to
-  `plugins.terminal.settings`.
+  `plugins.terminal.settings`, and version 4 turned the terminal's
+  `terminalMode` setting into `defaultTerminal` (`"blocks"` →
+  `block-terminal`).
 
 The dialog's sections come from a registry (`registerSettingsSection` in
 `src/settings/sections.ts`), plus one section per plugin: enable/disable,

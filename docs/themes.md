@@ -142,7 +142,9 @@ app's CSS uses them: `default`, `terminal`, `terminal-active` (focused
 terminal), `explorer`, `editor`, `viewer`. A theme may add keys for other
 plugins (`panes: { "acme.notes": { from: "#…" } }`); missing fields come from
 `default`. `paneBackground(resolved, pluginId)` falls back to `default` for a
-plugin the theme does not mention.
+plugin the theme does not mention. The block terminal uses
+`--pane-block-terminal` / `--pane-block-terminal-active` when a theme sets
+them, else the terminal's.
 
 Derived pane colors are "lifted": lighter than the background in both kinds
 (content sits above the chrome; in a light theme that means toward white).
