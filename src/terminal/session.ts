@@ -4,6 +4,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITerminalOptions, type ITheme, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { effectiveSolid, oscColor } from "./solidBackground";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
 import { copyText } from "../ipc/clipboard";
 import { openExternal } from "../ipc/shell";
@@ -105,6 +106,8 @@ export class TerminalSession {
   private firstHost: string | undefined;
 
   private lastForeground: PtyForeground | null = null;
+  /** Whether the terminal currently renders a solid background (see `effectiveSolid`). */
+  private solid = false;
   private foregroundTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -117,7 +120,8 @@ export class TerminalSession {
     this.host.className = "terminal-host";
 
     this.term.loadAddon(this.search);
-    this.host.classList.toggle("is-solid", terminalSettings().terminalBackground === "solid");
+    this.solid = this.computeSolid(terminalConfig());
+    this.host.classList.toggle("is-solid", this.solid);
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11";
     this.term.loadAddon(
@@ -145,6 +149,10 @@ export class TerminalSession {
       this.handleCwdReport(data);
       return true;
     });
+    // Apps (codex) ask for the default background to blend against; a
+    // transparent theme would answer black, so answer with the solid color.
+    this.term.parser.registerOscHandler(11, (data) => this.answerBackgroundQuery(data));
+    this.term.buffer.onBufferChange(() => this.refreshSolid());
     this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
     this.term.onBell(() => this.ring());
     // Copy on select: only selections made with the mouse (the search addon
@@ -166,20 +174,50 @@ export class TerminalSession {
   /** Applies changed settings to the live terminal (fonts, cursor, colors, scrollback). */
   applySettings(settings: TerminalConfig): void {
     if (this.disposed) return;
-    const next = terminalOptions(settings);
+    this.solid = this.computeSolid(settings);
+    const next = terminalOptions(settings, this.solid);
     const current = this.term.options;
     const transparencyChanged = next.allowTransparency !== current.allowTransparency;
     const metricsChanged = next.fontFamily !== current.fontFamily || next.fontSize !== current.fontSize;
     for (const [key, value] of Object.entries(next) as [keyof ITerminalOptions, unknown][]) {
       if (key === "theme" || current[key] !== value) (this.term.options as Record<string, unknown>)[key] = value;
     }
-    this.host.classList.toggle("is-solid", settings.terminalBackground === "solid");
+    this.host.classList.toggle("is-solid", this.solid);
     // The WebGL renderer picks up transparency when it is created.
     if (transparencyChanged && this.webgl) {
       this.disableWebgl();
       this.enableWebgl();
     }
     if (metricsChanged) this.scheduleFit();
+  }
+
+  private computeSolid(settings: TerminalConfig): boolean {
+    return effectiveSolid({
+      terminalBackground: settings.terminalBackground,
+      solidForFullscreen: settings.solidForFullscreen,
+      solidBackgroundCommands: settings.solidBackgroundCommands,
+      alternateScreen: this.term.buffer.active.type === "alternate",
+      foregroundName: this.lastForeground?.name,
+    });
+  }
+
+  /** Re-evaluates the effective background; touches xterm only when it flips. */
+  private refreshSolid(): void {
+    if (this.disposed) return;
+    const config = terminalConfig();
+    if (this.computeSolid(config) !== this.solid) this.applySettings(config);
+  }
+
+  /** Replies to `OSC 11 ; ?` with the solid color when the theme is transparent. */
+  private answerBackgroundQuery(data: string): boolean {
+    if (data !== "?" || this.disposed) return false;
+    const background = this.term.options.theme?.background;
+    // An opaque theme background is reported by xterm itself.
+    if (background && !/^#[0-9a-f]{6}00$/i.test(background) && background !== "transparent") return false;
+    const color = oscColor(terminalConfig().solidBackground);
+    if (!color) return false;
+    this.send({ binary: false, data: `\x1b]11;${color}\x1b\\` });
+    return true;
   }
 
   /*
@@ -477,6 +515,7 @@ export class TerminalSession {
     const last = this.lastForeground;
     this.lastForeground = current;
     if (last?.pid !== current?.pid || last?.name !== current?.name) {
+      this.refreshSolid();
       this.events.onForegroundChange(this);
     }
   }

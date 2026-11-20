@@ -31,6 +31,10 @@ export type TerminalSettings = {
    * some rendering speed); `solid` paints a flat background.
    */
   terminalBackground: TerminalBackground;
+  /** With a transparent background: solid while the alternate screen is active (vim, htop, less). */
+  solidForFullscreen: boolean;
+  /** With a transparent background: programs that get a solid one while in the foreground. */
+  solidBackgroundCommands: string[];
   /** Program to run in new terminals; the login shell when empty. */
   shell: string;
   /** Arguments for `shell` (ignored when `shell` is empty). */
@@ -73,6 +77,21 @@ export const TERMINAL_FIELDS: SettingField[] = [
     hint: "Transparent shows the pane gradient; solid renders faster",
     options: ["transparent", "solid"],
     default: "transparent",
+  },
+  {
+    key: "solidForFullscreen",
+    type: "toggle",
+    label: "Solid for fullscreen apps",
+    hint: "With a transparent background: solid while a fullscreen app (vim, htop, less) is running",
+    default: true,
+  },
+  {
+    key: "solidBackgroundCommands",
+    type: "list",
+    label: "Solid for programs",
+    hint: "With a transparent background: programs that get a solid one while running, because they paint their own background colors. Matched by program name.",
+    placeholder: "codex",
+    default: ["codex"],
   },
   {
     key: "shell",

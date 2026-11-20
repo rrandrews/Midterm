@@ -68,6 +68,19 @@ before the PTY handle is known are acknowledged as soon as it is.
   background, and blending costs a little per frame). The `solid` setting
   paints `SOLID_BACKGROUND` (`--terminal-solid`) in both xterm and the pane,
   for the crispest text and the cheapest frames.
+  With a transparent background, the terminal still goes solid while
+  `solidForFullscreen` (default on) and the alternate screen is active
+  (vim, htop, less), or while the foreground program is in
+  `solidBackgroundCommands` (default `codex`), because TUIs that paint their
+  own background colors clash with the gradient. The pure decision is in
+  `solidBackground.ts` (`effectiveSolid`; names match case-insensitively by
+  basename, also `name-…` like `codex-aarch64-apple-darwin`).
+  `TerminalSession` re-evaluates it on buffer changes, foreground changes
+  and `applySettings`, and only touches xterm (theme, `allowTransparency`,
+  WebGL renderer, the `is-solid` class) when it flips. `OSC 11 ; ?` is
+  answered with the solid color while the theme is transparent (xterm would
+  say black), because apps query it at startup, before the foreground
+  program is detected, and blend against it.
 - Fonts are preloaded in `main.tsx` before any terminal opens, because xterm
   measures its cell size from the font when it opens.
 - `fitTerminal` (`src/terminal/fit.ts`) refits on a `ResizeObserver`, at
