@@ -41,6 +41,15 @@ describe("validateTheme", () => {
     expect(parseTheme(data).id).toBe("rose-pine-dawn");
   });
 
+  it("validates the icon set reference", () => {
+    expect(parseTheme({ ...json(), icons: { set: "my-icons" } }).icons).toEqual({ set: "my-icons" });
+    const bad = validateTheme({ ...json(), icons: { set: "Bad Id", size: 2 } });
+    expect(bad.ok).toBe(false);
+    if (bad.ok) return;
+    expect(bad.errors).toEqual(expect.arrayContaining(["icons.size: unknown field", expect.stringMatching(/^icons\.set:/)]));
+    expect(validateTheme({ ...json(), icons: "material" }).ok).toBe(false);
+  });
+
   it("ignores unknown top-level keys", () => {
     expect(validateTheme({ ...json(), midtermTheme: 1, extra: true }).ok).toBe(true);
   });
