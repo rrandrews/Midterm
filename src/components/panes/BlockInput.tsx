@@ -180,12 +180,20 @@ export function BlockInput({
     const { selectionStart, selectionEnd } = input;
     const collapsed = selectionStart === selectionEnd;
 
-    if (slash?.status === "loading" && (event.key === "Escape" || (event.ctrlKey && event.key.toLowerCase() === "c"))) {
+    if (slash?.status === "loading") {
+      // Nothing reaches the editor or the shell (⌃D would send EOF) until the request settles.
+      if (event.key === "Escape" || (event.ctrlKey && event.key.toLowerCase() === "c")) {
+        event.preventDefault();
+        cancelSlash();
+      } else if (event.key === "Enter" || event.key === "Tab" || event.ctrlKey || event.metaKey) {
+        if (!event.metaKey) event.preventDefault();
+      }
+      return;
+    }
+    if (event.key === "Enter" && plain && !event.shiftKey) {
       event.preventDefault();
-      cancelSlash();
-    } else if (event.key === "Enter" && plain && !event.shiftKey) {
-      event.preventDefault();
-      if (slash?.status !== "loading") run();
+      // A held ⏎ must not run what /cmd just put in the editor.
+      if (!event.repeat) run();
     } else if (event.key === "Tab" && plain && !event.shiftKey) {
       // There is no completion here; Tab never leaves the editor.
       event.preventDefault();
@@ -248,7 +256,7 @@ export function BlockInput({
           autoComplete="off"
           aria-label="Command"
           onFocus={() => {
-            if (!value) atPrompt(paneId);
+            if (!value && slash?.status !== "loading") atPrompt(paneId);
           }}
           onChange={(event) => {
             if (slash?.status === "loading") return;

@@ -4,12 +4,12 @@ import { type CommandPair, predictNext, tokenize } from "./predict";
 describe("tokenize", () => {
   it("splits words, groups quotes and marks them", () => {
     expect(tokenize(`git commit -m "fix it" 'a b' c\\ d`)).toEqual([
-      { text: "git", quoted: false },
-      { text: "commit", quoted: false },
-      { text: "-m", quoted: false },
-      { text: "fix it", quoted: true },
-      { text: "a b", quoted: true },
-      { text: "c d", quoted: false },
+      { text: "git", quoted: false, raw: "git" },
+      { text: "commit", quoted: false, raw: "commit" },
+      { text: "-m", quoted: false, raw: "-m" },
+      { text: "fix it", quoted: true, raw: '"fix it"' },
+      { text: "a b", quoted: true, raw: "'a b'" },
+      { text: "c d", quoted: false, raw: "c\\ d" },
     ]);
   });
 });
@@ -53,6 +53,14 @@ describe("predictNext", () => {
       ["git clone url other", "cd other/src"],
     ];
     expect(predictNext(pairs, "git clone url my\\ dir")?.command).toBe("cd 'my dir/src'");
+  });
+
+  it("keeps untouched words as written", () => {
+    const pairs: CommandPair[] = [
+      ["mkdir foo", 'cp "$HOME/config" foo/'],
+      ["mkdir bar", 'cp "$HOME/config" bar/'],
+    ];
+    expect(predictNext(pairs, "mkdir baz")?.command).toBe('cp "$HOME/config" baz/');
   });
 
   it("generalizes on the last argument across shapes", () => {

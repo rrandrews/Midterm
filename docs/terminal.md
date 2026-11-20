@@ -80,7 +80,10 @@ before the PTY handle is known are acknowledged as soon as it is.
   WebGL renderer, the `is-solid` class) when it flips. `OSC 11 ; ?` is
   answered with the solid color while the theme is transparent (xterm would
   say black), because apps query it at startup, before the foreground
-  program is detected, and blend against it.
+  program is detected, and blend against it. Once a program sets the
+  background itself (`OSC 11 ; color`, until `OSC 111` or the theme is
+  reassigned), xterm answers instead. A flip reassigns the whole theme, so
+  palette colors a program set with OSC 4/10/12 are reset with it.
 - Fonts are preloaded in `main.tsx` before any terminal opens, because xterm
   measures its cell size from the font when it opens.
 - `fitTerminal` (`src/terminal/fit.ts`) refits on a `ResizeObserver`, at

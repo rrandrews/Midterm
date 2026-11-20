@@ -62,9 +62,14 @@ export function recordPair(previous: string | undefined, next: string): void {
   pairs = [...pairs, [prev, command] as const].slice(-MAX_PAIRS);
   // Commands can come in quick bursts: save once they settle.
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    void open().then((opened) =>
-      opened?.set(KEY, pairs).catch((error: unknown) => console.error("Could not save the command log:", error)),
-    );
-  }, 1000);
+  saveTimer = setTimeout(() => void flushCommandLog(), 1000);
+}
+
+/** Saves pending pairs now (on quit). */
+export async function flushCommandLog(): Promise<void> {
+  if (saveTimer === undefined) return;
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  const opened = await open();
+  await opened?.set(KEY, pairs).catch((error: unknown) => console.error("Could not save the command log:", error));
 }

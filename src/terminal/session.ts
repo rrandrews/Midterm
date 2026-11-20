@@ -108,6 +108,8 @@ export class TerminalSession {
   private lastForeground: PtyForeground | null = null;
   /** Whether the terminal currently renders a solid background (see `effectiveSolid`). */
   private solid = false;
+  /** A program set the background itself (OSC 11); xterm reports that color, not us. */
+  private backgroundSet = false;
   private foregroundTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -152,6 +154,10 @@ export class TerminalSession {
     // Apps (codex) ask for the default background to blend against; a
     // transparent theme would answer black, so answer with the solid color.
     this.term.parser.registerOscHandler(11, (data) => this.answerBackgroundQuery(data));
+    this.term.parser.registerOscHandler(111, () => {
+      this.backgroundSet = false;
+      return false;
+    });
     this.term.buffer.onBufferChange(() => this.refreshSolid());
     this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
     this.term.onBell(() => this.ring());
@@ -175,6 +181,8 @@ export class TerminalSession {
   applySettings(settings: TerminalConfig): void {
     if (this.disposed) return;
     this.solid = this.computeSolid(settings);
+    // Assigning the theme drops colors a program set (OSC 11 included).
+    this.backgroundSet = false;
     const next = terminalOptions(settings, this.solid);
     const current = this.term.options;
     const transparencyChanged = next.allowTransparency !== current.allowTransparency;
@@ -210,7 +218,11 @@ export class TerminalSession {
 
   /** Replies to `OSC 11 ; ?` with the solid color when the theme is transparent. */
   private answerBackgroundQuery(data: string): boolean {
-    if (data !== "?" || this.disposed) return false;
+    if (data !== "?") {
+      this.backgroundSet = true;
+      return false;
+    }
+    if (this.disposed || this.backgroundSet) return false;
     const background = this.term.options.theme?.background;
     // An opaque theme background is reported by xterm itself.
     if (background && !/^#[0-9a-f]{6}00$/i.test(background) && background !== "transparent") return false;

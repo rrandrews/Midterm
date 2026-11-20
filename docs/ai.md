@@ -440,7 +440,9 @@ command, at three levels:
 | template | 0.8 | same program and word count; every word that differs is quoted free text, or an argument (not a flag) the next command reused, as a word or a path prefix | `mkdir foo` → `cd foo` gives `cd bar` after `mkdir bar`; `git commit -m "…"` → `git push` |
 | last argument | 0.5 | same program, and the logged command's last argument was reused | `mkdir -p a` → `cd a` gives `cd c` after `mkdir c` |
 
-Reused arguments are substituted (and shell-quoted if needed). A pair of
+Reused arguments are substituted (and shell-quoted if needed); every
+other word keeps its text as written, so `"$HOME/x"` stays an expansion.
+Pending pairs are saved on quit. A pair of
 the same program that teaches nothing still counts against the candidates
 at a quarter weight. Each pair's weight halves every 1000 pairs back. The
 best candidate is used only with **at least 2 supporting pairs and at
@@ -530,7 +532,9 @@ out with the same context as a suggestion (`contextFor`), with
 `CMD_SYSTEM_PROMPT` and `Task: <task>` (redacted) in place of "Next
 command:". The reply budget is 400 tokens, and the reply goes through
 `parseSuggestion`. The command lands in the editor, **under the request
-line, never run**: edit it or press ⏎. On failure the error shows next to
+line, never run**: edit it or press ⏎ (a held, auto-repeating ⏎ does not
+run it). While the request runs, other keys are swallowed (⌃D does not
+reach the shell) and focusing the editor asks for no suggestion. On failure the error shows next to
 the line and the line goes back in the editor, so ⏎ tries again. `/cmd`
 needs a provider (`providerReady`) but not the suggestions switch. Slash
 lines are not added to the history or the command log.

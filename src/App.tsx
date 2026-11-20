@@ -9,6 +9,7 @@ import { installCloseGuards } from "./ipc/window";
 import { mayCloseEverything } from "./closing";
 import { flushSavedState } from "./state/persistence";
 import { flushSettings } from "./settings/settings";
+import { flushCommandLog } from "./terminal/commandLog";
 import { installFocusKeeper } from "./layout/dock";
 import { installPaneDropTargets } from "./layout/paneDrag";
 import { installShortcuts } from "./shortcuts";
@@ -46,10 +47,10 @@ export default function App() {
       async (what) => {
         const ok = await mayCloseEverything(what);
         // Nothing may be lost to the save debounce.
-        if (ok) await Promise.all([flushSavedState(), flushSettings()]);
+        if (ok) await Promise.all([flushSavedState(), flushSettings(), flushCommandLog()]);
         return ok;
       },
-      () => void Promise.all([flushSavedState(), flushSettings()]),
+      () => void Promise.all([flushSavedState(), flushSettings(), flushCommandLog()]),
     );
     focusActivePane();
     return () => {

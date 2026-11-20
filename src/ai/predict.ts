@@ -43,7 +43,8 @@ export const HALF_LIFE = 1000;
 /** How much each level counts. */
 const LEVEL_WEIGHT = { exact: 1, template: 0.8, lastArg: 0.5 } as const;
 
-export type Token = { text: string; quoted: boolean };
+/** A word: its value (quotes and escapes removed), whether it was quoted, and its text as written. */
+export type Token = { text: string; quoted: boolean; raw: string };
 
 /**
  * Splits a command line into words, shell-like: whitespace separates,
@@ -56,8 +57,10 @@ export function tokenize(line: string): Token[] {
   let text = "";
   let quoted = false;
   let inWord = false;
+  let start = 0;
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < line.length; i++) {
+    if (!inWord && !quote && !/\s/.test(line[i])) start = i;
     const ch = line[i];
     if (quote) {
       if (ch === quote) quote = null;
@@ -71,7 +74,7 @@ export function tokenize(line: string): Token[] {
       text += line[++i];
       inWord = true;
     } else if (/\s/.test(ch)) {
-      if (inWord) tokens.push({ text, quoted });
+      if (inWord) tokens.push({ text, quoted, raw: line.slice(start, i) });
       text = "";
       quoted = false;
       inWord = false;
@@ -80,7 +83,7 @@ export function tokenize(line: string): Token[] {
       inWord = true;
     }
   }
-  if (inWord) tokens.push({ text, quoted });
+  if (inWord) tokens.push({ text, quoted, raw: line.slice(start) });
   return tokens;
 }
 
@@ -110,7 +113,8 @@ function substitute(next: Token[], swaps: Map<string, string>): string | null {
         break;
       }
     }
-    out.push(text === token.text && !token.quoted ? token.text : shellWord(text));
+    // Untouched words stay exactly as written (`"$HOME/x"` keeps its expansion).
+    out.push(text === token.text ? token.raw : shellWord(text));
   }
   return out.join(" ");
 }
@@ -143,7 +147,7 @@ function templateMatch(prev: Token[], next: Token[], last: Token[]): string | nu
     }
   }
   if (!differs) return null; // that is an exact match
-  if (swaps.size === 0) return next.map((token) => (token.quoted ? shellWord(token.text) : token.text)).join(" ");
+  if (swaps.size === 0) return next.map((token) => token.raw).join(" ");
   return substitute(next, swaps);
 }
 
