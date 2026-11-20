@@ -492,8 +492,9 @@ export class BlockTracker {
       this.commandList.push({ command, scope });
       if (this.commandList.length > MAX_PANE_COMMANDS) this.commandList.shift();
     }
-    // Never looked up on this machine for a directory somewhere else.
-    if (cwd && !host && this.options.branch) {
+    // Never looked up on this machine for a nested shell's directory: one
+    // reporting `localhost` or this host name may still be elsewhere.
+    if (cwd && !host && !nested && this.options.branch) {
       this.options.branch(cwd).then(
         (branch) => {
           block.branch = branch;

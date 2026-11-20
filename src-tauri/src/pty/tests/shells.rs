@@ -869,7 +869,7 @@ fn remote_login(outer: &Path, shell: &Path, sandbox: &Sandbox) -> CommandBuilder
 
 /// The remote side: `outer -c <remote command>`, the way sshd runs it with
 /// the user's login shell, and `$SHELL` naming the shell to start.
-fn check_bootstrap(outer: &Path, shell: &Path, sandbox: &Sandbox, prompt: &str) {
+fn check_bootstrap(outer: &Path, shell: &Path, sandbox: &Sandbox, prompt: &str) -> Harness {
     let tmp = sandbox.root.join("tmp");
     fs::create_dir_all(&tmp).unwrap();
     let mut cmd = remote_login(outer, shell, sandbox);
@@ -881,19 +881,28 @@ fn check_bootstrap(outer: &Path, shell: &Path, sandbox: &Sandbox, prompt: &str) 
     assert_eq!(mark_names(&marks)[..2], ["A", "B"], "{:?}", h.text());
     assert_one_aid(&marks);
     h.session
-        .write(b"echo \"si=$MIDTERM_SHELL_INTEGRATION eph=${MIDTERM_SI_EPHEMERAL-gone} zd=${ZDOTDIR-unset}\"; ls -A \"$TMPDIR\" | wc -l\n".to_vec())
+        .write(b"echo \"si=$MIDTERM_SHELL_INTEGRATION eph=${MIDTERM_SI_EPHEMERAL-gone} zd=${ZDOTDIR-unset} bs=${MIDTERM_BASH_SCRIPT-unset} um=$(umask)\"; ls -A \"$TMPDIR\" | wc -l\n".to_vec())
         .unwrap();
     h.wait_for_marks(6);
     let text = h.text();
     assert!(text.contains("si=1 eph=gone"), "{text:?}");
+    assert!(text.contains("bs=unset"), "MIDTERM_BASH_SCRIPT left set: {text:?}");
+    // umask 022 from the harness's environment, not stage 1's.
+    assert!(!text.contains("um=0077") && !text.contains("um=077"), "umask leaked: {text:?}");
     if shell.ends_with("zsh") {
         assert!(text.contains("zd=unset"), "ZDOTDIR left set: {text:?}");
     }
     // The temporary directory was removed at startup.
     let leftovers: Vec<_> = fs::read_dir(&tmp).unwrap().collect();
     assert!(leftovers.is_empty(), "left in TMPDIR: {leftovers:?}");
+    h
+}
+
+/// Ends the shell from [`check_bootstrap`] and returns its whole output.
+fn exit_shell(mut h: Harness) -> String {
     h.session.write(b"exit\n".to_vec()).unwrap();
     assert_eq!(h.wait_for_exit(), Some(0));
+    h.text()
 }
 
 #[test]
@@ -905,12 +914,13 @@ fn bootstrap_starts_an_integrated_zsh_and_cleans_up() {
     let sandbox = Sandbox::new("boot-zsh");
     sandbox.write(".zshrc", "PS1='remote-zsh> '\n");
     sandbox.write(".zprofile", "echo zprofile-read\n");
-    check_bootstrap(&zsh, &zsh, &sandbox, "remote-zsh> ");
+    let text = exit_shell(check_bootstrap(&zsh, &zsh, &sandbox, "remote-zsh> "));
+    assert!(text.contains("zprofile-read"), "{text:?}");
     // sh and bash as the login shell that parses the outer command.
     for outer in ["/bin/sh", "/bin/bash"] {
         let sandbox = Sandbox::new("boot-zsh-outer");
         sandbox.write(".zshrc", "PS1='remote-zsh> '\n");
-        check_bootstrap(Path::new(outer), &zsh, &sandbox, "remote-zsh> ");
+        exit_shell(check_bootstrap(Path::new(outer), &zsh, &sandbox, "remote-zsh> "));
     }
 }
 
@@ -922,12 +932,63 @@ fn bootstrap_starts_an_integrated_bash_and_cleans_up() {
     };
     let sandbox = Sandbox::new("boot-bash");
     sandbox.write(".bash_profile", "PS1='remote-bash> '\n");
-    check_bootstrap(&bash, &bash, &sandbox, "remote-bash> ");
-    if let Some(zsh) = find_shell("zsh") {
+    sandbox.write(".bash_logout", "echo bash-logout-read\n");
+    let mut h = check_bootstrap(&bash, &bash, &sandbox, "remote-bash> ");
+    // A real login shell: login_shell is set, and ~/.bash_logout runs.
+    h.session
+        .write(b"shopt -q login_shell && echo is-login-$((1+1))\n".to_vec())
+        .unwrap();
+    h.wait_for_output("is-login-2");
+    let text = exit_shell(h);
+    assert!(text.contains("bash-logout-read"), "{text:?}");
+    for outer in ["/bin/sh", "/bin/zsh"] {
+        if !Path::new(outer).exists() {
+            continue;
+        }
         let sandbox = Sandbox::new("boot-bash-outer");
         sandbox.write(".bash_profile", "PS1='remote-bash> '\n");
-        check_bootstrap(&zsh, &bash, &sandbox, "remote-bash> ");
+        exit_shell(check_bootstrap(Path::new(outer), &bash, &sandbox, "remote-bash> "));
     }
+}
+
+#[test]
+fn bootstrap_bash_next_to_the_users_prompt_command() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    // A profile that adds a hook after ours: the first command is not
+    // marked (nothing to arm it safely), later ones are, and the hook sees
+    // the command's status.
+    let sandbox = Sandbox::new("boot-bash-pc");
+    sandbox.write(
+        ".bash_profile",
+        "PS1='remote-bash> '\nhook() { HOOK=$?; }\nPROMPT_COMMAND=\"$PROMPT_COMMAND; hook\"\n",
+    );
+    let mut h = Harness::spawn(remote_login(&bash, &bash, &sandbox));
+    h.wait_for_output("remote-bash> ");
+    h.wait_for_marks(2);
+    h.run_line("true", 4);
+    h.run_line("sh -c 'exit 3'", 8);
+    h.run_line("echo \"hook=$HOOK\"", 12);
+    let text = exit_shell(h);
+    let marks = osc133_marks(&text);
+    assert_eq!(
+        mark_names(&marks)[..12],
+        ["A", "B", "A", "B", "C", "D;3", "A", "B", "C", "D;0", "A", "B"],
+        "{text:?}"
+    );
+    assert!(text.contains("hook=3"), "{text:?}");
+
+    // A profile that replaces PROMPT_COMMAND: a plain shell, no marks.
+    let sandbox = Sandbox::new("boot-bash-pc-replaced");
+    sandbox.write(".bash_profile", "PS1='remote-bash> '\nPROMPT_COMMAND=:\n");
+    let mut h = Harness::spawn(remote_login(&bash, &bash, &sandbox));
+    h.wait_for_output("remote-bash> ");
+    h.session.write(b"echo plain-$((1+1))\n".to_vec()).unwrap();
+    h.wait_for_output("plain-2");
+    let text = exit_shell(h);
+    assert!(osc133_marks(&text).is_empty(), "{text:?}");
 }
 
 #[test]
@@ -941,7 +1002,7 @@ fn bootstrap_starts_an_integrated_fish_and_cleans_up() {
         ".config/fish/config.fish",
         "function fish_prompt; printf 'remote-fish> '; end\n",
     );
-    check_bootstrap(&fish, &fish, &sandbox, "remote-fish> ");
+    exit_shell(check_bootstrap(&fish, &fish, &sandbox, "remote-fish> "));
 }
 
 /// Runs a command in a plain login shell started by the remote command and

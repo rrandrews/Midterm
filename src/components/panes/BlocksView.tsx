@@ -4,10 +4,10 @@ import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, u
 import { homeDirectory } from "../../ipc/system";
 import { type Line, type Run, formatDuration, logicalLines, renderRows } from "../../terminal/blockRender";
 import {
-  canRun,
+  canReplay,
   copyBlockCommand,
   copyBlockOutput,
-  runFromBlocks,
+  replayBlock,
   setContextBlock,
 } from "../../terminal/blockMode";
 import { type Block, type BlocksSnapshot, outputRows, scopeOf } from "../../terminal/blocks";
@@ -75,7 +75,8 @@ export function BlocksView({
 
   // A nested shell (over ssh) is somewhere else: its own report, never the pane's cwd.
   const where = snapshot.nested ? snapshot.location : { cwd: session.cwd };
-  const branch = useBranch(where.host ? undefined : where.cwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
+  // Never looked up here for a nested shell: even reporting this host, it may be another machine.
+  const branch = useBranch(snapshot.nested ? undefined : where.cwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
   const promptScope = scopeOf(snapshot.nested, snapshot.location);
 
   return (
@@ -106,7 +107,7 @@ export function BlocksView({
                 block={block}
                 branch={block.branch}
                 // Only at a prompt of the same shell: "Run again" must not run a remote command here.
-                runnable={atPrompt && scopeOf(block.nested, block) === promptScope}
+                runnable={atPrompt && canReplay(session, block)}
               />
             ) : (
               <RunningBlock key={block.id} session={session} block={block} branch={block.branch} />
@@ -116,6 +117,10 @@ export function BlocksView({
       </div>
       {atPrompt && (
         <BlockInput
+          // A new editor (no draft, no history walk) when the prompt is
+          // another shell's: ssh ended or started under it.
+          key={promptScope}
+          scope={promptScope}
           session={session}
           inputRef={inputRef}
           footer={(status) => (
@@ -179,7 +184,7 @@ const FinishedBlock = memo(function FinishedBlock({
           <ActionButton
             label="Run again"
             disabled={!runnable || !block.command}
-            onClick={() => canRun(session) && runFromBlocks(session, block.command)}
+            onClick={() => replayBlock(session, block)}
           >
             <RotateCw size={12} />
           </ActionButton>
