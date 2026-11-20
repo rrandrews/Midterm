@@ -1,5 +1,5 @@
 import { aiCancel, aiSuggest, toAiError } from "../ipc/ai";
-import { type BuiltContext, parseSuggestion, redact } from "./context";
+import { parseSuggestion, redact } from "./context";
 import { contextFor } from "./engine";
 import { targetFor } from "./profiles";
 
@@ -45,10 +45,9 @@ export const CMD_SYSTEM_PROMPT = [
   "If the task cannot be done with a command, reply with nothing.",
 ].join("\n");
 
-/** The request for `/cmd`: the terminal's context with the task in place of "Next command:". */
-export function buildCmdRequest(context: BuiltContext, task: string): BuiltContext {
-  const base = context.prompt.replace(/\n*Next command:\s*$/, "");
-  return { system: CMD_SYSTEM_PROMPT, prompt: `${base}\n\nTask: ${redact(task.trim())}\n\nCommand:` };
+/** The request for `/cmd`: the terminal's context body, then the task. */
+export function buildCmdRequest(body: string, task: string): { system: string; prompt: string } {
+  return { system: CMD_SYSTEM_PROMPT, prompt: `${body}\n\nTask: ${redact(task.trim())}\n\nCommand:` };
 }
 
 /** Reply budget: one command line, possibly a long pipeline. */
@@ -73,7 +72,7 @@ export function writeCommand(paneId: string, task: string): CmdRequest {
     const context = await contextFor(paneId);
     if (!context) throw { kind: "other", message: "This terminal is not available." };
     if (cancelled) throw { kind: "cancelled", message: "Cancelled" };
-    const request = buildCmdRequest(context, task);
+    const request = buildCmdRequest(context.body, task);
     const { text } = await aiSuggest({
       requestId,
       target,

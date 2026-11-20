@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OUTPUT_HEAD_LINES, OUTPUT_TAIL_LINES, buildContext, parseSuggestion, redact, trimOutput } from "./context";
+import { OUTPUT_HEAD_LINES, OUTPUT_TAIL_LINES, buildContext, contextBody, parseSuggestion, redact, trimOutput } from "./context";
 
 describe("redact", () => {
   it.each([
@@ -37,6 +37,16 @@ describe("trimOutput", () => {
     expect(out[out.length - 1]).toBe("line 99");
   });
 
+  it("takes larger limits", () => {
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i}`);
+    const out = trimOutput(lines.join("\n"), { head: 40, tail: 80, chars: 12000 }).split("\n");
+    expect(out).toHaveLength(121);
+    expect(out[39]).toBe("line 39");
+    expect(out[40]).toBe("… (80 lines omitted)");
+    expect(out[120]).toBe("line 199");
+    expect(trimOutput(lines.join("\n"))).toContain("(160 lines omitted)");
+  });
+
   it("redacts a private key whose header falls in the omitted middle", () => {
     const filler = Array.from({ length: 30 }, (_, i) => `line ${i}`);
     const body = Array.from({ length: 40 }, (_, i) => `KEYBODY${i}abcdefghijklmnop`);
@@ -70,6 +80,22 @@ describe("buildContext", () => {
     expect(prompt).toContain("$ git status\nOn branch main\nChanges not staged\n[exit 0]");
     expect(prompt).not.toContain("abc123");
     expect(prompt.endsWith("Next command:")).toBe(true);
+  });
+});
+
+describe("contextBody", () => {
+  it("is the prompt without its question", () => {
+    const input = { os: "macOS", cwd: "~", recentCommands: ["ls"], blocks: [] };
+    const built = buildContext(input);
+    expect(built.body).toBe(contextBody(input));
+    expect(built.prompt).toBe(`${built.body}\n\nNext command:`);
+    expect(built.body).not.toContain("Next command:");
+  });
+
+  it("speaks of commands before the block when it is for one", () => {
+    expect(contextBody({ recentCommands: [], blocks: [], beforeBlock: true })).toContain("No commands were run before the one in question.");
+    const body = contextBody({ recentCommands: [], blocks: [{ command: "ls", exitCode: 0, output: "a" }], beforeBlock: true });
+    expect(body).toContain("Commands run before the one in question, with their output (oldest first):\n\n$ ls\na\n[exit 0]");
   });
 });
 

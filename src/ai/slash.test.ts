@@ -26,11 +26,8 @@ describe("slashCompletion", () => {
 });
 
 describe("buildCmdRequest", () => {
-  it("replaces the next-command question with the task, redacted", () => {
-    const request = buildCmdRequest(
-      { system: "x", prompt: "OS: macOS\n\nNo commands have been run in this terminal yet.\n\nNext command:" },
-      "log in with TOKEN=abc123secret",
-    );
+  it("puts the task after the context body, redacted", () => {
+    const request = buildCmdRequest("OS: macOS\n\nNo commands have been run in this terminal yet.", "log in with TOKEN=abc123secret");
     expect(request.system).toBe(CMD_SYSTEM_PROMPT);
     expect(request.prompt).not.toContain("Next command:");
     expect(request.prompt).not.toContain("abc123secret");

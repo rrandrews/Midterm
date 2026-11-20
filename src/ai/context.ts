@@ -25,9 +25,19 @@ export type ContextInput = {
   blocks: readonly ContextBlock[];
   /** Earlier commands of the same terminal, oldest first. */
   recentCommands: readonly string[];
+  /** The context comes before a block a request is about (explain, fix), not before the prompt. */
+  beforeBlock?: boolean;
 };
 
-export type BuiltContext = { system: string; prompt: string };
+export type BuiltContext = {
+  system: string;
+  prompt: string;
+  /** The prompt without its closing question: facts, earlier commands and blocks (redacted). Other requests build on it. */
+  body: string;
+};
+
+/** How much of a block's output `trimOutput` keeps. */
+export type OutputLimits = { head: number; tail: number; chars: number };
 
 /** Output lines kept from the start and the end of a block. */
 export const OUTPUT_HEAD_LINES = 15;
@@ -37,6 +47,7 @@ export const LINE_CHARS = 240;
 export const OUTPUT_CHARS = 3000;
 export const COMMAND_CHARS = 500;
 export const RECENT_COMMANDS = 20;
+const DEFAULT_LIMITS: OutputLimits = { head: OUTPUT_HEAD_LINES, tail: OUTPUT_TAIL_LINES, chars: OUTPUT_CHARS };
 
 export const SYSTEM_PROMPT = [
   "You suggest the next command for a user working in a terminal.",
@@ -90,25 +101,37 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
  * that straddles a cut (a private key's header dropped, its body kept) is
  * still recognised.
  */
-export function trimOutput(output: string): string {
+export function trimOutput(output: string, limits: OutputLimits = DEFAULT_LIMITS): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences are what is stripped
   const plain = redact(output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\r/g, ""));
   const lines = plain.split("\n").map((line) => clip(line.trimEnd(), LINE_CHARS));
   while (lines.length && !lines[lines.length - 1]) lines.pop();
   let kept = lines;
-  if (lines.length > OUTPUT_HEAD_LINES + OUTPUT_TAIL_LINES) {
-    const skipped = lines.length - OUTPUT_HEAD_LINES - OUTPUT_TAIL_LINES;
-    kept = [...lines.slice(0, OUTPUT_HEAD_LINES), `… (${skipped} lines omitted)`, ...lines.slice(-OUTPUT_TAIL_LINES)];
+  const { head, tail, chars } = limits;
+  if (lines.length > head + tail) {
+    const skipped = lines.length - head - tail;
+    kept = [...lines.slice(0, head), `… (${skipped} lines omitted)`, ...(tail > 0 ? lines.slice(-tail) : [])];
   }
   let text = kept.join("\n");
-  if (text.length > OUTPUT_CHARS) {
-    const half = Math.floor(OUTPUT_CHARS / 2);
+  if (text.length > chars) {
+    const half = Math.floor(chars / 2);
     text = `${text.slice(0, half)}\n…\n${text.slice(-half)}`;
   }
   return text;
 }
 
-export function buildContext(input: ContextInput): BuiltContext {
+/** A context block as the prompt shows it: `$ command`, `(in cwd)` when it differs from `cwd`, the output, `[exit N]`. */
+export function formatBlock(block: ContextBlock, cwd: string | undefined, limits?: OutputLimits): string {
+  const lines = [`$ ${clip(block.command.trim(), COMMAND_CHARS)}`];
+  if (block.cwd && block.cwd !== cwd) lines.push(`(in ${block.cwd})`);
+  const output = trimOutput(block.output, limits);
+  if (output) lines.push(output);
+  lines.push(block.exitCode === undefined ? "[exit status unknown]" : `[exit ${block.exitCode}]`);
+  return lines.join("\n");
+}
+
+/** The facts, earlier commands and blocks every request starts with, redacted. */
+export function contextBody(input: ContextInput): string {
   const parts: string[] = [];
   const facts: string[] = [];
   if (input.host) facts.push(`Remote host (over ssh): ${input.host}`);
@@ -127,19 +150,17 @@ export function buildContext(input: ContextInput): BuiltContext {
   if (recent.length) parts.push(`Earlier commands (oldest first):\n${recent.map((c) => clip(c, COMMAND_CHARS)).join("\n")}`);
 
   if (input.blocks.length) {
-    const blocks = input.blocks.map((block) => {
-      const lines = [`$ ${clip(block.command.trim(), COMMAND_CHARS)}`];
-      if (block.cwd && block.cwd !== input.cwd) lines.push(`(in ${block.cwd})`);
-      const output = trimOutput(block.output);
-      if (output) lines.push(output);
-      lines.push(block.exitCode === undefined ? "[exit status unknown]" : `[exit ${block.exitCode}]`);
-      return lines.join("\n");
-    });
-    parts.push(`Last commands and their output (oldest first):\n\n${blocks.join("\n\n")}`);
-  } else parts.push("No commands have been run in this terminal yet.");
+    const blocks = input.blocks.map((block) => formatBlock(block, input.cwd));
+    const heading = input.beforeBlock ? "Commands run before the one in question, with their output" : "Last commands and their output";
+    parts.push(`${heading} (oldest first):\n\n${blocks.join("\n\n")}`);
+  } else parts.push(input.beforeBlock ? "No commands were run before the one in question." : "No commands have been run in this terminal yet.");
+  return redact(parts.join("\n\n"));
+}
 
-  parts.push("Next command:");
-  return { system: SYSTEM_PROMPT, prompt: redact(parts.join("\n\n")) };
+/** The next-command request: the body, then "Next command:". */
+export function buildContext(input: ContextInput): BuiltContext {
+  const body = contextBody(input);
+  return { system: SYSTEM_PROMPT, prompt: `${body}\n\nNext command:`, body };
 }
 
 /** A model's reply as a single command line, or null when it has none. */

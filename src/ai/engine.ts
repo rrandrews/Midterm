@@ -4,12 +4,12 @@ import { aiCancel, aiSuggest, toAiError } from "../ipc/ai";
 import { homeDirectory } from "../ipc/system";
 import { getSettings, useSettings } from "../settings/settings";
 import { blockOutput, canRun, requestedMode } from "../terminal/blockMode";
-import { scopeOf } from "../terminal/blocks";
+import { type Block, type BlocksSnapshot, scopeOf } from "../terminal/blocks";
 import { commandPairs, loadCommandLog } from "../terminal/commandLog";
 import { branchOf } from "../terminal/gitBranch";
 import type { TerminalSession } from "../terminal/session";
 import { peekSession } from "../terminal/sessions";
-import { type BuiltContext, buildContext, parseSuggestion } from "./context";
+import { type BuiltContext, type ContextInput, buildContext, parseSuggestion } from "./context";
 import { predictNext } from "./predict";
 import { featureReady, targetFor } from "./profiles";
 
@@ -92,42 +92,98 @@ function osName(): string {
   return "Linux";
 }
 
-/** What would be sent for a pane right now (also "Preview what is sent"). */
-export async function contextFor(paneId: string): Promise<BuiltContext | null> {
+/** What `contextInputOf` reads from a terminal session (a seam for tests). */
+export type ContextSource = {
+  snapshot: BlocksSnapshot;
+  /** The root shell's working directory. */
+  cwd: string | undefined;
+  /** The scope of the prompt (`session.blocks.scope`). */
+  scope: string;
+  commandsFor: (scope: string) => readonly string[];
+  /** The foreground program's name when it is a shell. */
+  shell: string | undefined;
+  output: (block: Block) => string;
+  os: string;
+  homeRelative: (path: string | undefined) => string | undefined;
+};
+
+/**
+ * The context for a terminal's prompt, or, with `block`, for a request about
+ * that block: then the scope, directory and host are the block's, and only
+ * what came before it is included (the same shell's finished blocks before
+ * it; earlier commands without it and the ones after it). The block itself
+ * is not in the result. `branch` is looked up by the caller.
+ */
+export function contextInputOf(
+  source: ContextSource,
+  options: { limit: number; block?: Block; branch?: string | null },
+): ContextInput {
+  const { block } = options;
+  const { snapshot } = source;
+  const scope = block ? scopeOf(block.nested, block) : source.scope;
+  const at = block ? snapshot.blocks.indexOf(block) : -1;
+  const before = block ? (at < 0 ? snapshot.blocks.filter((b) => b.id < block.id) : snapshot.blocks.slice(0, at)) : snapshot.blocks;
+  const finished = before.filter((b) => b.end !== undefined && b.command.trim() && scopeOf(b.nested, b) === scope);
+  const recentBlocks = options.limit > 0 ? finished.slice(-options.limit) : [];
+  // At a nested shell (over ssh) the machine is another one: its host and
+  // directory, no local OS, branch or shell.
+  const remote = block ? block.nested : snapshot.nested;
+  const cwd = block ? block.cwd : remote ? snapshot.location.cwd : source.cwd;
+  const host = remote ? ((block ? block.host : snapshot.location.host) ?? "unknown") : undefined;
+  let commands = source.commandsFor(scope).slice(-50);
+  if (block) {
+    // The command log is de-duplicated, so later blocks' commands (and this one) are left out by text.
+    const later = new Set(snapshot.blocks.slice(at < 0 ? snapshot.blocks.length : at).map((b) => b.command.trim()));
+    later.add(block.command.trim());
+    commands = commands.filter((command) => !later.has(command.trim()));
+  }
+  return {
+    os: remote ? undefined : source.os,
+    host,
+    shell: remote ? undefined : source.shell,
+    cwd: remote ? cwd : source.homeRelative(cwd),
+    branch: remote ? null : (options.branch ?? null),
+    blocks: recentBlocks.map((b) => ({
+      command: b.command,
+      exitCode: b.exitCode,
+      output: source.output(b),
+      cwd: b.host ? `${b.host}:${b.cwd ?? "?"}` : source.homeRelative(b.cwd),
+    })),
+    recentCommands: commands,
+    beforeBlock: block ? true : undefined,
+  };
+}
+
+/**
+ * What would be sent for a pane right now (also "Preview what is sent"),
+ * or, with `block`, the context a request about that block starts with.
+ * Only this terminal's own commands (and only that shell's) are included.
+ */
+export async function contextFor(paneId: string, options: { block?: Block } = {}): Promise<BuiltContext | null> {
   const session = peekSession(paneId);
   if (!session) return null;
-  const limit = getSettings().ai.contextBlocks;
+  const { block } = options;
   const snapshot = session.blocks.snapshot();
-  // Only the prompt's shell's blocks (a remote's, or the local shell's).
-  const scope = session.blocks.scope;
-  const finished = snapshot.blocks.filter(
-    (block) => block.end !== undefined && block.command.trim() && scopeOf(block.nested, block) === scope,
-  );
-  const recentBlocks = limit > 0 ? finished.slice(-limit) : [];
-  // At a nested shell's prompt (over ssh) the machine is another one: its
-  // host and directory, no local OS, branch or shell.
-  const remote = snapshot.nested;
-  const cwd = remote ? snapshot.location.cwd : session.cwd;
-  const host = remote ? (snapshot.location.host ?? "unknown") : undefined;
-  // Looked up now: the last block's branch is from when it started (before a `git switch`).
-  const branch = cwd && !remote ? await branchOf(cwd).catch(() => null) : null;
+  const remote = block ? block.nested : snapshot.nested;
+  const cwd = block ? block.cwd : session.cwd;
+  // For the prompt, looked up now (the last block's branch is from when it
+  // started, before a `git switch`); for a block, the one it ran on.
+  const branch = remote ? null : block ? (block.branch ?? null) : cwd ? await branchOf(cwd).catch(() => null) : null;
   const foreground = session.foregroundProgram;
-  return buildContext({
-    os: remote ? undefined : osName(),
-    host,
-    shell: foreground?.isShell && !remote ? foreground.name : undefined,
-    cwd: remote ? cwd : homeRelative(cwd),
-    branch,
-    blocks: recentBlocks.map((block) => ({
-      command: block.command,
-      exitCode: block.exitCode,
-      output: blockOutput(session, block),
-      cwd: block.host ? `${block.host}:${block.cwd ?? "?"}` : homeRelative(block.cwd),
-    })),
-    // This terminal's own commands only (and only the prompt's shell's):
-    // other panes' history is not sent.
-    recentCommands: session.blocks.commandsFor(session.blocks.scope).slice(-50),
-  });
+  const input = contextInputOf(
+    {
+      snapshot,
+      cwd: session.cwd,
+      scope: session.blocks.scope,
+      commandsFor: (scope) => session.blocks.commandsFor(scope),
+      shell: foreground?.isShell ? foreground.name : undefined,
+      output: (b) => blockOutput(session, b),
+      os: osName(),
+      homeRelative,
+    },
+    { limit: getSettings().ai.contextBlocks, block, branch },
+  );
+  return buildContext(input);
 }
 
 /* ---- Requests ---- */

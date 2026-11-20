@@ -1,6 +1,16 @@
 import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { atPrompt, dismiss, leftPrompt, shownSuggestion, typed, useAiSuggestions } from "../../ai/engine";
-import { type CmdRequest, parseSlash, slashCompletion, writeCommand } from "../../ai/slash";
+import {
+  bindEditor,
+  cancelEditorRequest,
+  clearEditorRequest,
+  failEditorRequest,
+  markApplied,
+  pendingText,
+  startEditorRequest,
+  useEditorRequests,
+} from "../../ai/editorRequests";
+import { parseSlash, slashCompletion, writeCommand } from "../../ai/slash";
 import { runFromBlocks } from "../../terminal/blockMode";
 import { globalHistory, historyEntries, loadGlobalHistory, suggestion } from "../../terminal/history";
 import type { TerminalSession } from "../../terminal/session";
@@ -17,8 +27,10 @@ const MAX_ROWS = 12;
  * the AI suggestion. A line starting with a registered slash command
  * (src/ai/slash.ts) is handled here instead of going to the shell: `/cmd
  * <task>` asks the model for a command and puts it in the editor, below the
- * request, ready to edit or run. Shown only while the shell waits at a
- * prompt (so it remounts at every prompt).
+ * request, ready to edit or run. Requests like that (`/cmd`, a block's Fix)
+ * live in src/ai/editorRequests.ts; this shows them and applies their
+ * answers. Shown only while the shell waits at a prompt (so it remounts at
+ * every prompt).
  */
 export function BlockInput({
   session,
@@ -43,12 +55,16 @@ export function BlockInput({
     entries: [],
   });
   const [historyLoaded, setHistoryLoaded] = useState(false);
-  /** The last slash command line and how it went; shown above the editor. */
-  const [slash, setSlash] = useState<{ line: string; status: "loading" | "done" | "error"; message?: string } | null>(
-    null,
+  /** The last request for the editor (`/cmd`, Fix) and how it went; shown above the editor. */
+  const request = useEditorRequests((state) => state[paneId]);
+  const busy = request?.status === "loading";
+  useEffect(() => () => void cancelEditorRequest(paneId), [paneId]);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  useEffect(
+    () => bindEditor(paneId, { draft: () => valueRef.current, focus: () => inputRef.current?.focus() }),
+    [paneId, inputRef],
   );
-  const slashRequest = useRef<CmdRequest | null>(null);
-  useEffect(() => () => slashRequest.current?.cancel(), []);
 
   useEffect(() => {
     let live = true;
@@ -78,7 +94,7 @@ export function BlockInput({
   const fromHistory = walk.index === -1 && caretAtEnd ? suggestion(entries, value) : undefined;
   const slashHint = walk.index === -1 && caretAtEnd ? slashCompletion(value) : undefined;
   const source: "slash" | "ai" | "local" | "history" | undefined =
-    walk.index !== -1 || !caretAtEnd || slash?.status === "loading"
+    walk.index !== -1 || !caretAtEnd || busy
       ? undefined
       : slashHint
         ? "slash"
@@ -114,40 +130,33 @@ export function BlockInput({
     if (suggested) set(suggested);
   };
 
+  // A request started (here or by a block's Fix): the editor waits empty.
+  const loadingId = busy ? request.id : undefined;
+  useEffect(() => {
+    if (loadingId !== undefined) setValue("");
+  }, [loadingId]);
+  // A request settled: its command goes in the editor, or on an error what was there before.
+  const pending = pendingText(request);
+  useEffect(() => {
+    if (!request || pending === undefined) return;
+    markApplied(paneId, request.id);
+    set(pending);
+    // `set` is recreated every render; the request is what matters.
+  }, [paneId, request, pending]);
+
   /** Runs a slash command line; the line stays shown above the editor with its result. */
   const runSlash = (line: string, args: string) => {
-    slashRequest.current?.cancel();
     if (!args) {
-      setSlash({ line, status: "error", message: "Say what the command should do: /cmd <what to do>" });
+      failEditorRequest(paneId, { line, restore: line, message: "Say what the command should do: /cmd <what to do>" });
       return;
     }
-    const request = writeCommand(paneId, args);
-    slashRequest.current = request;
-    setSlash({ line, status: "loading" });
+    // On an error the line goes back in the editor, so ⏎ tries again.
+    startEditorRequest(paneId, { line, restore: line, busy: "writing a command… esc cancels", run: () => writeCommand(paneId, args) });
     setValue("");
-    request.result.then(
-      (command) => {
-        if (slashRequest.current !== request) return;
-        slashRequest.current = null;
-        setSlash({ line, status: "done" });
-        set(command);
-      },
-      (error: { kind: string; message: string }) => {
-        if (slashRequest.current !== request) return;
-        slashRequest.current = null;
-        setSlash({ line, status: "error", message: error.message });
-        // Back in the editor, so ⏎ tries again.
-        set(line);
-      },
-    );
   };
 
-  const cancelSlash = () => {
-    const line = slash?.line ?? "";
-    slashRequest.current?.cancel();
-    slashRequest.current = null;
-    setSlash(null);
-    set(line);
+  const cancelRequest = () => {
+    set(cancelEditorRequest(paneId) ?? "");
   };
 
   const run = () => {
@@ -180,11 +189,11 @@ export function BlockInput({
     const { selectionStart, selectionEnd } = input;
     const collapsed = selectionStart === selectionEnd;
 
-    if (slash?.status === "loading") {
+    if (busy) {
       // Nothing reaches the editor or the shell (⌃D would send EOF) until the request settles.
       if (event.key === "Escape" || (event.ctrlKey && event.key.toLowerCase() === "c")) {
         event.preventDefault();
-        cancelSlash();
+        cancelRequest();
       } else if (event.key === "Enter" || event.key === "Tab" || event.ctrlKey || event.metaKey) {
         if (!event.metaKey) event.preventDefault();
       }
@@ -233,11 +242,11 @@ export function BlockInput({
 
   return (
     <div className="blocks-input">
-      {slash && (
+      {request && (
         <div className="blocks-slash">
-          <span className="blocks-slash-line">{slash.line}</span>
-          {slash.status === "loading" && <span className="animate-pulse text-fg-faint">writing a command… esc cancels</span>}
-          {slash.status === "error" && <span className="truncate text-err/80">{slash.message}</span>}
+          <span className="blocks-slash-line">{request.line}</span>
+          {busy && <span className="animate-pulse text-fg-faint">{request.busy}</span>}
+          {request.status === "error" && <span className="truncate text-err/80">{request.message}</span>}
         </div>
       )}
       <div className="blocks-input-field">
@@ -256,12 +265,12 @@ export function BlockInput({
           autoComplete="off"
           aria-label="Command"
           onFocus={() => {
-            if (!value && slash?.status !== "loading") atPrompt(paneId);
+            if (!value && !busy) atPrompt(paneId);
           }}
           onChange={(event) => {
-            if (slash?.status === "loading") return;
+            if (busy) return;
             setValue(event.target.value);
-            if (!event.target.value && slash) setSlash(null);
+            if (!event.target.value && request) clearEditorRequest(paneId);
             if (event.target.value) typed(paneId);
             else atPrompt(paneId);
             setCaretAtEnd(event.target.selectionEnd === event.target.value.length);
@@ -278,7 +287,7 @@ export function BlockInput({
         <SuggestionStatus
           source={source}
           slashDescription={slashHint?.description}
-          loading={ai?.status === "loading" || slash?.status === "loading"}
+          loading={ai?.status === "loading" || busy}
           error={ai?.status === "error" ? ai.error : undefined}
         />,
       )}
