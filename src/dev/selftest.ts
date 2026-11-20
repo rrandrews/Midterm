@@ -17,6 +17,8 @@ import { importPlugin, removePlugin } from "../ipc/plugins";
 import { refreshInstalled } from "../plugins/loader";
 import { getPlugin, loadErrorOf } from "../plugins/registry";
 import { getSkill, invokeSkillTool } from "../plugins/skills";
+import { fixBlock } from "../ai/blockAi";
+import { dismissNote, explainBlock, useBlockNotes } from "../ai/blockNotes";
 import { suggestNow, useAiSuggestions } from "../ai/engine";
 import { runCommand } from "../commands/registry";
 import { bundledTheme } from "../theme/bundled";
@@ -542,6 +544,33 @@ async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
   input()?.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
   await sleep(100);
   checks.push({ name: "ai: ⇥ accepts it into the editor", ok: input()?.value === "echo midterm-ai-ok", detail: input()?.value });
+
+  // Explain and fix (MID-23) on a failed block.
+  const count = session.blocks.snapshot().blocks.length;
+  session.runCommand("ls /midterm-selftest-missing");
+  await waitFor(() => session.blocks.snapshot().blocks.length > count && canRun(session), 8000);
+  const all = session.blocks.snapshot().blocks;
+  const failed = all[all.length - 1];
+  if (failed) {
+    explainBlock(paneId, failed);
+    const panel = () => document.querySelector(`[data-pane-id="${CSS.escape(paneId)}"] .block-ai`)?.textContent ?? "";
+    const explained = await waitFor(() => useBlockNotes.getState()[paneId]?.[failed.id]?.status === "done", 15000);
+    checks.push({
+      name: "ai: Explain streams an explanation under the block",
+      ok: explained && panel().includes("midterm-explain-ok") && panel().includes("ls /midterm-selftest-missing"),
+      detail: { note: useBlockNotes.getState()[paneId]?.[failed.id], panel: panel().slice(0, 200) },
+    });
+    const blocksBefore = session.blocks.snapshot().blocks.length;
+    fixBlock(paneId, failed);
+    const fixed = await waitFor(() => input()?.value === "echo midterm-fix-ok", 8000);
+    await sleep(300);
+    checks.push({
+      name: "ai: Fix puts the corrected command in the editor, not run",
+      ok: fixed && session.blocks.snapshot().blocks.length === blocksBefore,
+      detail: { value: input()?.value, blocks: [blocksBefore, session.blocks.snapshot().blocks.length] },
+    });
+    dismissNote(paneId, failed.id);
+  } else checks.push({ name: "ai: a failed block to explain", ok: false });
   useSettings.getState().updateAi({ profiles: savedAi.profiles, defaultProfile: savedAi.defaultProfile, features: savedAi.features });
   if (input()) {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
