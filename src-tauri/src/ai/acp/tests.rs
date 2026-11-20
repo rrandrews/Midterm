@@ -1177,3 +1177,18 @@ async fn live_acp() {
     assert_eq!(stop.unwrap(), Stop::End);
     assert!(text.contains("PROBE-MAGIC-7731"), "{text}");
 }
+
+#[test]
+fn stub_override_is_gated_and_split() {
+    // Not allowed (a release build): ignored whatever it says.
+    assert_eq!(
+        agents::stub_from(false, Some("bun scripts/acp-stub.ts")),
+        None
+    );
+    assert_eq!(agents::stub_from(true, None), None);
+    assert_eq!(agents::stub_from(true, Some("  ")), None);
+    assert_eq!(
+        agents::stub_from(true, Some("bun  scripts/acp-stub.ts")),
+        Some(vec!["bun".to_string(), "scripts/acp-stub.ts".to_string()])
+    );
+}

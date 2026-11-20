@@ -379,21 +379,36 @@ async fn launch(
     target: &Target,
 ) -> Result<Launch, AiError> {
     let provider = &target.provider;
-    let adapter = discovery
-        .locate_named(spec.adapter, provider.acp_path())
-        .await
-        .map_err(|e| match provider.acp_path() {
-            Some(_) => e,
-            None => AiError::new(
-                e.kind,
-                format!(
-                    "{} is not on the login shell's PATH. Install it with `{}`.",
-                    spec.adapter,
-                    spec.install_hint()
-                ),
-            ),
-        })?;
-    let cli = discovery.locate(spec.kind, provider.cli_path()).await?;
+    // `MIDTERM_ACP_STUB` (debug and `dev:mcp` builds): another command in
+    // place of the adapter, and no CLI.
+    let (program, args, cli) = match agents::stub_command() {
+        Some(mut command) => {
+            let program = discovery.locate_named(&command.remove(0), None).await?;
+            (
+                program,
+                command.into_iter().map(OsString::from).collect(),
+                None,
+            )
+        }
+        None => {
+            let adapter = discovery
+                .locate_named(spec.adapter, provider.acp_path())
+                .await
+                .map_err(|e| match provider.acp_path() {
+                    Some(_) => e,
+                    None => AiError::new(
+                        e.kind,
+                        format!(
+                            "{} is not on the login shell's PATH. Install it with `{}`.",
+                            spec.adapter,
+                            spec.install_hint()
+                        ),
+                    ),
+                })?;
+            let cli = discovery.locate(spec.kind, provider.cli_path()).await?;
+            (adapter, Vec::new(), Some(cli))
+        }
+    };
     let dir = tempfile::Builder::new()
         .prefix("midterm-agent-")
         .tempdir()
@@ -408,11 +423,13 @@ async fn launch(
         ("PATH".into(), discovery.path_var().await.into()),
         ("NO_COLOR".into(), "1".into()),
     ];
-    env.extend(spec.env(&cli));
+    if let Some(cli) = &cli {
+        env.extend(spec.env(cli));
+    }
     Ok(Launch {
         spawn: Spawn {
-            program: adapter,
-            args: Vec::new(),
+            program,
+            args,
             cwd: Some(cwd),
             env,
             env_remove: spec.env_remove(),

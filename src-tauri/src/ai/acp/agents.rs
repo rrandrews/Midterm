@@ -189,6 +189,31 @@ impl AgentSpec {
     }
 }
 
+/* ---- Stub override ---- */
+
+/// The environment variable that replaces the adapter with another command
+/// (`bun scripts/acp-stub.ts`, MID-88) for the self-test.
+pub const STUB_VAR: &str = "MIDTERM_ACP_STUB";
+
+/// The stub command (program and arguments, split on whitespace), when
+/// `allowed` and `value` is non-blank.
+pub fn stub_from(allowed: bool, value: Option<&str>) -> Option<Vec<String>> {
+    if !allowed {
+        return None;
+    }
+    let parts: Vec<String> = value?.split_whitespace().map(str::to_string).collect();
+    (!parts.is_empty()).then_some(parts)
+}
+
+/// `MIDTERM_ACP_STUB`, honoured in debug builds and `tauri-mcp`
+/// (`bun run dev:mcp`) builds only, never in release.
+pub fn stub_command() -> Option<Vec<String>> {
+    stub_from(
+        cfg!(any(debug_assertions, feature = "tauri-mcp")),
+        std::env::var(STUB_VAR).ok().as_deref(),
+    )
+}
+
 /* ---- Config options ---- */
 
 /// The values a select option offers (grouped ones flattened).
@@ -442,6 +467,17 @@ pub async fn status(
     cli: &crate::ai::cli::CliStatus,
     acp_path: Option<&str>,
 ) -> AgentStatus {
+    if let Some(stub) = stub_command() {
+        return AgentStatus {
+            ready: true,
+            adapter: Some(AdapterInfo {
+                path: stub.join(" "),
+                version: "stub".into(),
+            }),
+            problem: None,
+            note: Some(format!("{STUB_VAR} replaces the adapter.")),
+        };
+    }
     let adapter = discovery.locate_named(spec.adapter, acp_path).await.ok();
     let node = async {
         let path = discovery.locate_named("node", None).await.ok()?;

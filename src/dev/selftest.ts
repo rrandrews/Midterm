@@ -19,6 +19,7 @@ import { getPlugin, loadErrorOf } from "../plugins/registry";
 import { getSkill, invokeSkillTool } from "../plugins/skills";
 import { fixBlock } from "../ai/blockAi";
 import { dismissCard, useAgent } from "../ai/agent/conversation";
+import { aiCliStatus } from "../ipc/ai";
 import { dismissNote, explainBlock, useBlockNotes } from "../ai/blockNotes";
 import { suggestNow, useAiSuggestions } from "../ai/engine";
 import { runCommand } from "../commands/registry";
@@ -596,6 +597,43 @@ async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
     detail: { card: card().slice(0, 300) },
   });
   dismissCard(paneId);
+
+  // The agent over ACP (MID-88): a `claude-code` profile against scripts/acp-stub.ts, which the
+  // backend runs in place of the adapter when started with MIDTERM_ACP_STUB (debug and dev:mcp builds).
+  const adapter = (await aiCliStatus({ id: "claude-code" }).catch(() => undefined))?.agent?.adapter;
+  if (adapter?.version === "stub") {
+    useSettings.getState().updateAi({
+      profiles: [{ id: "selftest-acp", name: "Self-test Claude Code", provider: "claude-code", baseUrl: "", model: "", cliPath: "" }],
+      defaultProfile: "selftest-acp",
+      features: {},
+    });
+    await waitFor(() => input() !== null && canRun(session), 8000);
+    const acpField = input();
+    if (acpField) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(acpField, "/agent what did I run last?");
+      acpField.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(50);
+      acpField.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    }
+    const acpAnswered = await waitFor(() => {
+      const id = conversationId();
+      const conversation = id ? useAgent.getState().conversations[id] : undefined;
+      return !!conversation && conversation.status === "idle" && conversation.items.some((item) => item.type === "assistant");
+    }, 20000);
+    const acpConversation = conversationId();
+    checks.push({
+      name: "ai: /agent over ACP (claude-code profile, stub agent) shows a tool row and the final answer",
+      ok:
+        acpAnswered &&
+        useAgent.getState().conversations[acpConversation ?? ""]?.backend === "acp" &&
+        card().includes("recent_blocks") &&
+        card().includes("midterm-agent-ok") &&
+        card().includes("ls /midterm-selftest-missing"),
+      detail: { card: card().slice(0, 300) },
+    });
+    dismissCard(paneId);
+  }
   useSettings.getState().updateAi({ profiles: savedAi.profiles, defaultProfile: savedAi.defaultProfile, features: savedAi.features });
   if (input()) {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;

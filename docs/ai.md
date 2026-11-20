@@ -1325,7 +1325,12 @@ running (a stand-in OpenAI-compatible server), the self-test:
    was added;
 8. types `/agent what did I run last?` and checks the pane's agent card
    shows the `recent_blocks` tool row and the stub's answer naming the
-   failed command; then puts the profiles back.
+   failed command;
+9. when the backend runs with `MIDTERM_ACP_STUB` (below), sets a
+   `claude-code` profile, asks `/agent what did I run last?` again and
+   checks the card shows the `recent_blocks` tool row and the answer from
+   the ACP stub; then puts the profiles back. Without the variable, this
+   step is skipped.
 
 The stub also answers `stream: true` with SSE chunks (a longer reply, one
 word every 80 ms) and `[DONE]`, for trying `ai_stream` / `streamText` by
@@ -1343,3 +1348,26 @@ command it returned; with `midterm-agent-write`, two `…__run_command` calls
 conversation and Deny), then an answer saying which ran and which were
 denied; with `midterm-agent-slow`, a long answer one word every 80 ms, to
 try Stop.
+
+`scripts/acp-stub.ts` is a stdio ACP agent with no model behind it, for the
+agent over ACP. It advertises MCP-over-ACP and a `systemPrompt` override,
+offers the `model`, `effort` (`thought_level`) and `mode` options, and
+streams `agent_message_chunk` updates. It calls Midterm's tools through the
+attached `midterm` MCP server (`server/discover`, `tools/list`,
+`tools/call`) and answers by prompt text like the API stub: by default a
+`recent_blocks` call, then `midterm-agent-ok` and the last command;
+`midterm-agent-write` makes two `run_command` calls (`echo midterm-agent-1`,
+`-2`) and reports which ran or were denied; `midterm-agent-slow` streams a
+long answer, stopped by `session/cancel`; `midterm-agent-plain` answers
+without tool calls. `--version` prints `acp-stub 0.0.0`.
+
+`MIDTERM_ACP_STUB="bun /abs/path/scripts/acp-stub.ts"` makes the backend run
+that command (split on whitespace, the program looked up on the login
+shell's PATH) in place of `claude-agent-acp`, with no Claude Code lookup. It
+is read in debug builds and `bun run dev:mcp` builds only and ignored in
+release (`agents::stub_command`). While it is set, `ai_cli_status` reports
+the agent ready with an adapter whose version is `stub`; the self-test uses
+that to decide whether to run its ACP step. Start the app with
+`MIDTERM_ACP_STUB=... ` and `?selftest=PORT&aistub=PORT` in the dev URL. To
+try the stub alone: `bun scripts/acp-probe.ts --prompt midterm-agent-slow
+--cancel-after 600 -- bun scripts/acp-stub.ts`.
