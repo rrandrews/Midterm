@@ -353,6 +353,16 @@ describe("BlockTracker: nested shells (ssh)", () => {
     expect(u.tracker.snapshot().nested).toBe(false);
   });
 
+  it("looks up no branch for a nested shell that reports this host", async () => {
+    const t = await sshSession();
+    t.branch.mockClear();
+    t.tracker.noteCwd({ cwd: "/home/me" });
+    t.tracker.submit("ls");
+    await t.write(`ls\r\n${remote.C}${remote.D(0)}${remote.prompt()}`);
+    expect(t.tracker.snapshot().blocks[1]).toMatchObject({ nested: true, cwd: "/home/me", host: undefined });
+    expect(t.branch).not.toHaveBeenCalled();
+  });
+
   it("resetScope leaves the nested scope without a closing block", async () => {
     const t = await sshSession();
     t.tracker.resetScope();

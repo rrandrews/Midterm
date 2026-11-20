@@ -4,6 +4,7 @@ import { type ProviderConfig, type ProviderId, aiCancel, aiSuggest, providerInfo
 import { homeDirectory } from "../ipc/system";
 import { getSettings, useSettings } from "../settings/settings";
 import { blockOutput, canRun, requestedMode } from "../terminal/blockMode";
+import { scopeOf } from "../terminal/blocks";
 import { branchOf } from "../terminal/gitBranch";
 import type { TerminalSession } from "../terminal/session";
 import { peekSession } from "../terminal/sessions";
@@ -91,11 +92,13 @@ export async function contextFor(paneId: string): Promise<BuiltContext | null> {
   const session = peekSession(paneId);
   if (!session) return null;
   const limit = getSettings().ai.contextBlocks;
-  const finished = session.blocks
-    .snapshot()
-    .blocks.filter((block) => block.end !== undefined && block.command.trim());
-  const recentBlocks = limit > 0 ? finished.slice(-limit) : [];
   const snapshot = session.blocks.snapshot();
+  // Only the prompt's shell's blocks (a remote's, or the local shell's).
+  const scope = session.blocks.scope;
+  const finished = snapshot.blocks.filter(
+    (block) => block.end !== undefined && block.command.trim() && scopeOf(block.nested, block) === scope,
+  );
+  const recentBlocks = limit > 0 ? finished.slice(-limit) : [];
   // At a nested shell's prompt (over ssh) the machine is another one: its
   // host and directory, no local OS, branch or shell.
   const remote = snapshot.nested;

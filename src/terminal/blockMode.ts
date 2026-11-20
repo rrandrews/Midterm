@@ -4,7 +4,7 @@ import { activePlugin } from "../plugins/registry";
 import { findPane } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
 import { rowsText } from "./blockRender";
-import { type Block, outputRows } from "./blocks";
+import { type Block, outputRows, scopeOf } from "./blocks";
 import { recordCommand } from "./history";
 import type { TerminalSession } from "./session";
 import { peekSession } from "./sessions";
@@ -63,12 +63,31 @@ export function canRun(session: TerminalSession): boolean {
   return snap.integration === "present" && snap.phase === "prompt" && !snap.altScreen;
 }
 
-/** Runs a command line from the blocks view (input editor or re-run). */
-export function runFromBlocks(session: TerminalSession, command: string): void {
+/**
+ * Runs a command line from the blocks view (input editor, a skill). With
+ * `scope`, only if the prompt still belongs to that shell: a line composed
+ * at a remote prompt is not sent to the local shell after ssh ended.
+ */
+export function runFromBlocks(session: TerminalSession, command: string, scope?: string): void {
   if (!command.trim() || !canRun(session)) return;
+  if (scope !== undefined && session.blocks.scope !== scope) return;
   // A nested shell's commands (over ssh) stay out of this machine's history.
   const root = !session.blocks.snapshot().nested;
   if (session.runCommand(command) && root) recordCommand(command);
+}
+
+/**
+ * Whether a block's command can be run again now: the shell is at a prompt
+ * and it is the shell that ran it (never a remote command in the local
+ * shell, or the other way round).
+ */
+export function canReplay(session: TerminalSession, block: Block): boolean {
+  return !!block.command && canRun(session) && scopeOf(block.nested, block) === session.blocks.scope;
+}
+
+/** "Run again", checked at the moment it runs. */
+export function replayBlock(session: TerminalSession, block: Block): void {
+  if (canReplay(session, block)) runFromBlocks(session, block.command);
 }
 
 export const copyBlockCommand = (block: Block) => void copyText(block.command);

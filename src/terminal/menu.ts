@@ -2,14 +2,14 @@ import { aiMenuItems } from "../ai/commands";
 import { copyText, pasteText } from "../ipc/clipboard";
 import type { MenuItemSpec } from "../plugins/types";
 import {
-  canRun,
   contextBlockOf,
   copyBlockCommand,
   copyBlockOutput,
   hasIntegration,
   otherTerminalKind,
   requestedMode,
-  runFromBlocks,
+  canReplay,
+  replayBlock,
   toggleBlocks,
 } from "./blockMode";
 import { peekSession } from "./sessions";
@@ -40,7 +40,7 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
     items.push(
       { label: "Copy command", disabled: !block.command, run: () => copyBlockCommand(block) },
       { label: "Copy output", disabled: !block.end, run: () => copyBlockOutput(session, block) },
-      { label: "Run again", disabled: !block.command || !canRun(session), run: () => runFromBlocks(session, block.command) },
+      { label: "Run again", disabled: !canReplay(session, block), run: () => replayBlock(session, block) },
       { type: "separator" },
     );
   }

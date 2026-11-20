@@ -18,10 +18,13 @@ const MAX_ROWS = 12;
  */
 export function BlockInput({
   session,
+  scope,
   inputRef,
   footer,
 }: {
   session: TerminalSession;
+  /** Whose prompt this editor is for (see `scopeOf`): nothing is sent to another shell's. */
+  scope: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   /** The line below the editor; `status` says where the suggestion comes from, or that one is loading or failed. */
   footer: (status: ReactNode) => ReactNode;
@@ -47,7 +50,6 @@ export function BlockInput({
 
   // At a nested shell's prompt (over ssh) only its own commands apply: the
   // saved history is this machine's.
-  const scope = session.blocks.scope;
   const scopeCommands = session.blocks.commandsFor(scope);
   const entries = useMemo(
     () => historyEntries(session.blocks.commandsFor(scope), scope === "" ? globalHistory() : []),
@@ -85,7 +87,7 @@ export function BlockInput({
 
   const run = () => {
     if (!value.trim()) return;
-    runFromBlocks(session, value);
+    runFromBlocks(session, value, scope);
     setValue("");
     setWalk({ index: -1, draft: "", entries: [] });
   };
