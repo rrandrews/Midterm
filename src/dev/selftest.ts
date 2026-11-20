@@ -18,6 +18,7 @@ import { refreshInstalled } from "../plugins/loader";
 import { getPlugin, loadErrorOf } from "../plugins/registry";
 import { getSkill, invokeSkillTool } from "../plugins/skills";
 import { fixBlock } from "../ai/blockAi";
+import { dismissCard, useAgent } from "../ai/agent/conversation";
 import { dismissNote, explainBlock, useBlockNotes } from "../ai/blockNotes";
 import { suggestNow, useAiSuggestions } from "../ai/engine";
 import { runCommand } from "../commands/registry";
@@ -571,6 +572,30 @@ async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
     });
     dismissNote(paneId, failed.id);
   } else checks.push({ name: "ai: a failed block to explain", ok: false });
+
+  // The agent (MID-13): `/agent` in the blocks editor runs a one-off request in the pane's card.
+  await waitFor(() => input() !== null && canRun(session), 8000);
+  const field = input();
+  if (field) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(field, "/agent what did I run last?");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(50);
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  }
+  const card = () => document.querySelector(`[data-pane-id="${CSS.escape(paneId)}"] .agent-card`)?.textContent ?? "";
+  const conversationId = () => useAgent.getState().cards[paneId];
+  const answered = await waitFor(() => {
+    const id = conversationId();
+    const conversation = id ? useAgent.getState().conversations[id] : undefined;
+    return !!conversation && conversation.status === "idle" && conversation.items.some((item) => item.type === "assistant");
+  }, 15000);
+  checks.push({
+    name: "ai: /agent shows a tool row and the final answer in the pane's card",
+    ok: answered && card().includes("recent_blocks") && card().includes("midterm-agent-ok") && card().includes("ls /midterm-selftest-missing"),
+    detail: { card: card().slice(0, 300) },
+  });
+  dismissCard(paneId);
   useSettings.getState().updateAi({ profiles: savedAi.profiles, defaultProfile: savedAi.defaultProfile, features: savedAi.features });
   if (input()) {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
