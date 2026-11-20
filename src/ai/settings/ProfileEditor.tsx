@@ -20,6 +20,7 @@ import {
 import { BUTTON, CommitField, FIELD, Row } from "../../settings/controls";
 import { AI_PROFILE_NAME_MAX, type AiProfile, EFFORT_LEVELS, type EffortLevel } from "../../settings/schema";
 import { clearBackoff } from "../engine";
+import { AgentStatusLine } from "./AgentStatus";
 import { formatExtra, nameTaken, parseExtra, profileProblem, providerConfigOf, saveProfile, targetOf } from "../profiles";
 
 /*
@@ -339,7 +340,19 @@ export function ProfileEditor({ initial, isNew, onDone }: { initial: AiProfile; 
         />
       </Row>
 
-      <Row label="Provider" hint={info ? <StatusLine status={status} needsKey={info.needsKey} /> : "Where requests go."}>
+      <Row
+        label="Provider"
+        hint={
+          info ? (
+            <>
+              <StatusLine status={status} needsKey={info.needsKey} />
+              <AgentStatusLine provider={info} agent={status?.kind === "cli" ? status.status.agent : undefined} />
+            </>
+          ) : (
+            "Where requests go."
+          )
+        }
+      >
         <select
           aria-label="Provider"
           className={`${FIELD} w-56 pr-6`}

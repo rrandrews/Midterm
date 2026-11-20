@@ -4,7 +4,8 @@ import { useSettings } from "../settings/settings";
 import { AI_CONTEXT_RANGE } from "../settings/schema";
 import { activeTerminal } from "../terminal/blockMode";
 import { contextFor } from "./engine";
-import { FEATURES, featureProblem, setDefaultProfile, setFeatureProfile } from "./profiles";
+import { FEATURES, featureProblem, profileFor, setDefaultProfile, setFeatureProfile } from "./profiles";
+import { ProblemText, useAgentAdapterProblem } from "./settings/AgentStatus";
 import { ProfileList } from "./settings/ProfileList";
 
 /*
@@ -16,6 +17,8 @@ import { ProfileList } from "./settings/ProfileList";
 function Features() {
   const settings = useSettings();
   const { profiles, defaultProfile, features } = settings.ai;
+  // The agent's CLI profile: whether its ACP adapter is installed (featureProblem stays pure).
+  const adapterProblem = useAgentAdapterProblem(profileFor("agent", settings));
   if (!profiles.length) return <div className="border-b border-line/60 py-2 text-meta text-fg-dim">Add a model above, then choose which features use it.</div>;
   const defaultName = profiles.find((p) => p.id === defaultProfile)?.name ?? "none";
   return (
@@ -30,9 +33,21 @@ function Features() {
         </select>
       </Row>
       {FEATURES.map((feature) => {
-        const problem = featureProblem(feature.id, settings);
+        const problem = featureProblem(feature.id, settings) ?? (feature.id === "agent" ? adapterProblem : null);
         return (
-          <Row key={feature.id} label={feature.label} hint={problem ? <span className="text-warn">{problem}</span> : feature.hint}>
+          <Row
+            key={feature.id}
+            label={feature.label}
+            hint={
+              problem ? (
+                <span className="text-warn">
+                  <ProblemText problem={problem} />
+                </span>
+              ) : (
+                feature.hint
+              )
+            }
+          >
             <select
               aria-label={`Model for ${feature.label}`}
               className={`${FIELD} w-56 pr-6`}
