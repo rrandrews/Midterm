@@ -276,6 +276,8 @@ export function SettingsDialog() {
               event.preventDefault();
               (document.activeElement as HTMLElement).blur();
             }
+            // A field that handles Escape itself (a combobox closing its list or reverting).
+            if (document.activeElement?.hasAttribute("data-escape-local")) event.preventDefault();
           }}
           className="fixed top-1/2 left-1/2 z-50 flex h-[min(560px,calc(100vh-64px))] w-[min(720px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg bg-popover shadow-menu outline-none"
         >
