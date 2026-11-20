@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { activePaneId, livePane } from "../actions";
-import { type ProviderConfig, type ProviderId, aiCancel, aiSuggest, providerInfo, toAiError } from "../ipc/ai";
+import { aiCancel, aiSuggest, toAiError } from "../ipc/ai";
 import { homeDirectory } from "../ipc/system";
 import { getSettings, useSettings } from "../settings/settings";
 import { blockOutput, canRun, requestedMode } from "../terminal/blockMode";
@@ -11,6 +11,7 @@ import type { TerminalSession } from "../terminal/session";
 import { peekSession } from "../terminal/sessions";
 import { type BuiltContext, buildContext, parseSuggestion } from "./context";
 import { predictNext } from "./predict";
+import { featureReady, targetFor } from "./profiles";
 
 /*
  * Next-command suggestions, per terminal pane and outside React. The blocks
@@ -18,9 +19,9 @@ import { predictNext } from "./predict";
  * when the user types (`typed`) and when the prompt goes away (`leftPrompt`:
  * a command runs or the pane closes). A request is made only for the
  * focused pane, after a short pause, at most one per pane at a time, and
- * only once per prompt; errors back off. Nothing is sent until a provider
- * (and, for APIs, a model) is chosen, and only this terminal's own history
- * is sent.
+ * only once per prompt; errors back off. Nothing is sent until the
+ * suggestions feature resolves to a ready model profile (src/ai/profiles.ts),
+ * and only this terminal's own history is sent.
  *
  * Before any request, the command log is checked for a likely follow-up to
  * the previous command (src/ai/predict.ts). A local prediction is shown at
@@ -50,19 +51,9 @@ const MAX_TOKENS = 120;
 const BACKOFF_BASE_MS = 15_000;
 const BACKOFF_MAX_MS = 10 * 60_000;
 
-/** Whether a provider (and model, where needed) is chosen, suggestions on or not. */
-export function providerReady(settings = getSettings()): boolean {
-  const { provider, model, baseUrl } = settings.ai;
-  const info = providerInfo(provider);
-  if (!info) return false;
-  if (info.type === "api" && !model) return false;
-  if (info.id === "custom" && !baseUrl) return false;
-  return true;
-}
-
-/** Whether suggestions are on and a provider (and model, where needed) is chosen. */
+/** Whether suggestions are on and resolve to a ready model profile. */
 export function aiConfigured(settings = getSettings()): boolean {
-  return settings.ai.suggestions && providerReady(settings);
+  return settings.ai.suggestions && featureReady("suggestions", settings);
 }
 
 /**
@@ -75,17 +66,6 @@ export function localPrediction(session: TerminalSession): string | undefined {
   const last = session.blocks.commandsFor("").slice(-1)[0];
   if (!last) return undefined;
   return predictNext(commandPairs(), last)?.command;
-}
-
-/** The provider config the backend expects, from the settings. */
-export function providerConfig(settings = getSettings()): ProviderConfig | null {
-  const { provider, baseUrl, cliPaths } = settings.ai;
-  const info = providerInfo(provider);
-  if (!info) return null;
-  const config: ProviderConfig = { id: provider as ProviderId };
-  if (info.id === "custom" && baseUrl) config.baseUrl = baseUrl;
-  if (info.type === "cli" && cliPaths[provider]) config.cliPath = cliPaths[provider];
-  return config;
 }
 
 /** Whether the pane's own switch (terminal menu) allows suggestions. */
@@ -201,9 +181,8 @@ function mayAsk(paneId: string, key: string, automatic: boolean): boolean {
 }
 
 async function request(paneId: string, key: string, automatic: boolean): Promise<void> {
-  const settings = getSettings();
-  const provider = providerConfig(settings);
-  if (!provider) return;
+  const target = targetFor("suggestions");
+  if (!target) return;
   cancelRequest(paneId);
   const requestId = `suggest-${paneId}-${++requestCounter}`;
   inFlight.set(paneId, requestId);
@@ -219,12 +198,10 @@ async function request(paneId: string, key: string, automatic: boolean): Promise
     }
     const { text } = await aiSuggest({
       requestId,
-      provider,
-      model: settings.ai.model,
+      target,
       system: context.system,
       prompt: context.prompt,
       maxTokens: MAX_TOKENS,
-      effort: settings.ai.effort[provider.id],
     });
     if (!stillCurrent()) return;
     failures = 0;

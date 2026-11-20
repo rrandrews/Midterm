@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { EffortLevel } from "../settings/schema";
+import { AI_PROTECTED_KEYS, type EffortLevel } from "../settings/schema";
 
 /*
  * Typed wrapper around the AI commands (src-tauri/src/ai/, docs/ai.md).
@@ -46,6 +46,16 @@ export function providerInfo(id: string): ProviderInfo | undefined {
 
 export type ProviderConfig = { id: ProviderId; baseUrl?: string; cliPath?: string };
 
+/**
+ * What a request goes to: a model profile resolved for a feature (see
+ * `ai/profiles.ts`). `effort` absent: Midterm's pick. `extra` is merged into
+ * the request body (API providers only).
+ */
+export type AiTarget = { provider: ProviderConfig; model: string; effort?: EffortLevel; extra?: Record<string, unknown> };
+
+/** Top-level request keys extra JSON may not set (mirrors `PROTECTED` in src-tauri/src/ai/extra.rs). */
+export const PROTECTED_EXTRA_KEYS: readonly string[] = AI_PROTECTED_KEYS;
+
 export type AiErrorKind =
   | "noKey"
   | "auth"
@@ -72,13 +82,10 @@ export function toAiError(error: unknown): AiError {
 
 export type SuggestRequest = {
   requestId: string;
-  provider: ProviderConfig;
-  model: string;
+  target: AiTarget;
   system: string;
   prompt: string;
   maxTokens?: number;
-  /** The stored reasoning effort setting; absent: Midterm's pick. */
-  effort?: EffortLevel;
 };
 
 /** A level the backend sends (`default` is not one: it sends nothing). */
@@ -130,25 +137,34 @@ export async function aiCancel(requestId: string): Promise<void> {
   await invoke("ai_cancel", { requestId });
 }
 
+/** The browser mock's model list: enough ids for the combobox to scroll and filter. */
+const MOCK_MODELS = [
+  "mock-small",
+  "mock-large",
+  "mock-reasoner",
+  ...Array.from({ length: 40 }, (_, n) => `vendor-${String.fromCharCode(97 + (n % 26))}/model-${n + 1}`),
+];
+
 export function aiModels(provider: ProviderConfig): Promise<string[]> {
-  if (!isTauri()) return Promise.resolve(provider.id.includes("-") || provider.id === "codex" ? [] : ["mock-small", "mock-large"]);
+  if (!isTauri()) return Promise.resolve(providerInfo(provider.id)?.type === "api" ? MOCK_MODELS : []);
   return invoke<string[]>("ai_models", { provider });
 }
 
-export function aiTest(provider: ProviderConfig, model: string, effort?: EffortLevel): Promise<{ ok: boolean; message: string }> {
+export function aiTest(target: AiTarget): Promise<{ ok: boolean; message: string }> {
   if (!isTauri()) return Promise.resolve({ ok: true, message: "OK (browser mock)" });
-  return invoke<{ ok: boolean; message: string }>("ai_test", { provider, model, effort });
+  return invoke<{ ok: boolean; message: string }>("ai_test", { target });
 }
 
 const MOCK_LEVELS: Effort[] = ["low", "medium", "high"];
 
-export function aiEffortOptions(provider: ProviderConfig, model: string, effort?: EffortLevel): Promise<EffortOptions> {
+export function aiEffortOptions(target: AiTarget): Promise<EffortOptions> {
   if (!isTauri()) {
+    const { effort } = target;
     const requested = effort === undefined ? "low" : effort === "default" ? null : effort;
     const effective = requested === null ? null : MOCK_LEVELS.includes(requested) ? requested : requested === "none" || requested === "minimal" ? "low" : "high";
     return Promise.resolve({ levels: MOCK_LEVELS, effective, note: null });
   }
-  return invoke<EffortOptions>("ai_effort_options", { provider, model, effort });
+  return invoke<EffortOptions>("ai_effort_options", { target });
 }
 
 /** The keychain entry a key is kept under: per provider, and for `custom` per base URL (a key only ever goes to the endpoint it was set for). */

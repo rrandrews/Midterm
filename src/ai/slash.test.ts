@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CMD_SYSTEM_PROMPT, buildCmdRequest, parseSlash, slashCompletion } from "./slash";
+import { CMD_SYSTEM_PROMPT, buildCmdRequest, parseSlash, slashCompletion, writeCommand } from "./slash";
 
 describe("parseSlash", () => {
   it("parses registered commands and their arguments", () => {
@@ -35,5 +35,14 @@ describe("buildCmdRequest", () => {
     expect(request.prompt).not.toContain("Next command:");
     expect(request.prompt).not.toContain("abc123secret");
     expect(request.prompt).toMatch(/Task: log in with TOKEN=\[redacted\]\n\nCommand:$/);
+  });
+});
+
+describe("writeCommand", () => {
+  it("asks for a model for /cmd when it has no ready profile", async () => {
+    await expect(writeCommand("pane-1", "list files").result).rejects.toEqual({
+      kind: "other",
+      message: "Choose a model for /cmd in Settings → AI.",
+    });
   });
 });

@@ -499,8 +499,8 @@ async function pluginChecks(checks: Check[]): Promise<void> {
 }
 
 /**
- * M10: suggestions end to end through the `custom` provider pointed at
- * scripts/ai-stub.ts: inert without a provider, then a suggestion shows as
+ * M10: suggestions end to end through a `custom` model profile pointed at
+ * scripts/ai-stub.ts: inert without a profile, then a suggestion shows as
  * ghost text, with the secret in the history redacted on the way.
  */
 async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
@@ -523,9 +523,15 @@ async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
   await waitFor(() => input() !== null, 3000);
   input()?.focus();
   await sleep(600);
-  checks.push({ name: "ai: nothing is asked before a provider is chosen", ok: useAiSuggestions.getState()[paneId] === undefined });
+  checks.push({ name: "ai: nothing is asked before a model profile is chosen", ok: useAiSuggestions.getState()[paneId] === undefined });
 
-  useSettings.getState().updateAi({ suggestions: true, provider: "custom", baseUrl: `http://127.0.0.1:${stubPort}/v1`, model: "stub-model" });
+  const savedAi = useSettings.getState().ai;
+  useSettings.getState().updateAi({
+    suggestions: true,
+    profiles: [{ id: "selftest", name: "Self-test stub", provider: "custom", baseUrl: `http://127.0.0.1:${stubPort}/v1`, model: "stub-model", cliPath: "" }],
+    defaultProfile: "selftest",
+    features: {},
+  });
   const asked = suggestNow(paneId);
   const shown = await waitFor(() => ghost().includes("echo "), 8000);
   checks.push({
@@ -536,7 +542,7 @@ async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
   input()?.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
   await sleep(100);
   checks.push({ name: "ai: ⇥ accepts it into the editor", ok: input()?.value === "echo midterm-ai-ok", detail: input()?.value });
-  useSettings.getState().updateAi({ provider: "", baseUrl: "", model: "" });
+  useSettings.getState().updateAi({ profiles: savedAi.profiles, defaultProfile: savedAi.defaultProfile, features: savedAi.features });
   if (input()) {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
     setter?.call(input(), "");

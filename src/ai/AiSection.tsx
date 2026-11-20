@@ -1,266 +1,63 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import {
-  type CliStatus,
-  type Effort,
-  type EffortOptions,
-  PROVIDERS,
-  aiCliStatus,
-  aiEffortOptions,
-  aiKeyDelete,
-  aiKeySet,
-  aiKeyStatus,
-  aiModels,
-  aiTest,
-  providerInfo,
-  toAiError,
-} from "../ipc/ai";
-import { BUTTON, CommitField, FIELD, Row, SectionHeading, Toggle } from "../settings/controls";
+import { useState } from "react";
+import { BUTTON, FIELD, Row, SectionHeading, Toggle } from "../settings/controls";
 import { useSettings } from "../settings/settings";
-import { AI_CONTEXT_RANGE, EFFORT_LEVELS, type EffortLevel } from "../settings/schema";
+import { AI_CONTEXT_RANGE } from "../settings/schema";
 import { activeTerminal } from "../terminal/blockMode";
-import { aiConfigured, clearBackoff, contextFor, providerConfig } from "./engine";
+import { contextFor } from "./engine";
+import { FEATURES, featureProblem, setDefaultProfile, setFeatureProfile } from "./profiles";
+import { ProfileList } from "./settings/ProfileList";
 
 /*
- * Settings → AI: next-command suggestions and the provider they come from.
- * Keys are write-only here: they go to the OS keychain and never come back.
+ * Settings → AI: the suggestions switches, the model profiles (Models), and
+ * which profile each feature uses (Features). Keys are write-only here:
+ * they go to the OS keychain and never come back.
  */
 
-type Status = { kind: "key"; set: boolean } | { kind: "cli"; status: CliStatus } | { kind: "loading" } | { kind: "error"; message: string };
-
-function useProviderStatus(provider: string, baseUrl: string, cliPath: string | undefined): [Status | null, () => void] {
-  const [status, setStatus] = useState<Status | null>(null);
-  const [revision, setRevision] = useState(0);
-  useEffect(() => {
-    const info = providerInfo(provider);
-    const config = providerConfig();
-    if (!info || !config) {
-      setStatus(null);
-      return;
-    }
-    if (info.id === "custom" && !baseUrl) {
-      setStatus({ kind: "key", set: false });
-      return;
-    }
-    let live = true;
-    setStatus({ kind: "loading" });
-    const check: Promise<Status> =
-      info.type === "cli"
-        ? aiCliStatus(config).then((status) => ({ kind: "cli", status }))
-        : aiKeyStatus(config).then((set) => ({ kind: "key", set }));
-    void check
-      .catch((error: unknown): Status => ({ kind: "error", message: toAiError(error).message }))
-      .then((next) => live && setStatus(next));
-    return () => {
-      live = false;
-    };
-  }, [provider, baseUrl, cliPath, revision]);
-  return [status, useCallback(() => setRevision((n) => n + 1), [])];
-}
-
-function StatusLine({ status, needsKey }: { status: Status | null; needsKey: boolean }) {
-  if (!status) return null;
-  if (status.kind === "loading") return <span className="text-fg-dim">Checking…</span>;
-  if (status.kind === "error") return <span className="text-err">{status.message}</span>;
-  if (status.kind === "key")
-    return status.set ? (
-      <span className="text-ok">Key saved in the keychain</span>
-    ) : (
-      <span className={needsKey ? "text-warn" : "text-fg-dim"}>{needsKey ? "No key yet" : "No key (optional)"}</span>
-    );
-  if (status.status.found && status.status.outdated)
-    return (
-      <span className="text-warn">
-        Found {status.status.path}
-        {status.status.version ? ` · ${status.status.version}` : ""} · {status.status.outdated}
-      </span>
-    );
-  return status.status.found ? (
-    <span className="text-ok">
-      Found {status.status.path}
-      {status.status.version ? ` · ${status.status.version}` : ""}
-    </span>
-  ) : (
-    <span className="text-warn">Not found on the login shell’s PATH</span>
-  );
-}
-
-function ModelPicker({ provider, model, ready }: { provider: string; model: string; ready: boolean }) {
-  const updateAi = useSettings((s) => s.updateAi);
-  const [models, setModels] = useState<string[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const info = providerInfo(provider);
-  // The whole provider config: a list is only shown for the config it was asked for.
-  const configKey = JSON.stringify(providerConfig(useSettings.getState()));
-  useSettings((s) => s.ai);
-  const latest = useRef(0);
-  const load = useCallback(() => {
-    const config = providerConfig();
-    if (!config) return;
-    const request = ++latest.current;
-    setError(null);
-    setModels(null);
-    void aiModels(config).then(
-      (list) => request === latest.current && setModels([...list].sort()),
-      (raw: unknown) => request === latest.current && setError(toAiError(raw).message),
-    );
-  }, []);
-  useEffect(() => {
-    if (ready) load();
-    else {
-      latest.current += 1;
-      setModels(null);
-      setError(null);
-    }
-  }, [ready, load, configKey]);
+function Features() {
+  const settings = useSettings();
+  const { profiles, defaultProfile, features } = settings.ai;
+  if (!profiles.length) return <div className="border-b border-line/60 py-2 text-meta text-fg-dim">Add a model above, then choose which features use it.</div>;
+  const defaultName = profiles.find((p) => p.id === defaultProfile)?.name ?? "none";
   return (
-    <div className="flex flex-col items-end gap-1">
-      <div className="flex items-center gap-1.5">
-        <CommitField
-          label="Model"
-          className="w-56 font-mono"
-          placeholder={info?.type === "cli" ? "The CLI’s default" : "Model id"}
-          value={model}
-          onCommit={(next) => updateAi({ model: next.trim() })}
-        />
-        {models && models.length > 0 && (
-          <select aria-label="Available models" className={`${FIELD} w-8 pr-0`} value="" onChange={(event) => updateAi({ model: event.target.value })}>
-            <option value="" disabled>
-              ▾
+    <>
+      <Row label="Default model" hint="Used by every feature that does not pick its own.">
+        <select aria-label="Default model" className={`${FIELD} w-56 pr-6`} value={defaultProfile} onChange={(event) => setDefaultProfile(event.target.value)}>
+          {profiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.name}
             </option>
-            {models.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
-        )}
-        <button type="button" className={BUTTON} onClick={load} disabled={!ready} title="Refresh the list">
-          ↻
-        </button>
-      </div>
-      {error && <span className="max-w-80 truncate text-meta text-err" title={error}>{error}</span>}
-      {models && models.length === 0 && info?.type === "cli" && <span className="text-meta text-fg-dim">This CLI does not list models; type one or leave empty.</span>}
-    </div>
-  );
-}
-
-const EFFORT_LABELS: Record<Effort, string> = {
-  none: "Off",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-};
-
-/** The effort shown for `provider`, from `ai_effort_options` for the current model. */
-function useEffortOptions(provider: string, model: string, stored: EffortLevel | undefined, ready: boolean) {
-  const [options, setOptions] = useState<EffortOptions | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const configKey = JSON.stringify(providerConfig(useSettings.getState()));
-  useSettings((s) => s.ai);
-  useEffect(() => {
-    const config = providerConfig();
-    setOptions(null);
-    setError(null);
-    if (!ready || !config) return;
-    let live = true;
-    void aiEffortOptions(config, model, stored).then(
-      (next) => live && setOptions(next),
-      (raw: unknown) => live && setError(toAiError(raw).message),
-    );
-    return () => {
-      live = false;
-    };
-  }, [provider, model, stored, ready, configKey]);
-  return { options, error };
-}
-
-function EffortPicker({ provider, model, ready }: { provider: string; model: string; ready: boolean }) {
-  const ai = useSettings((s) => s.ai);
-  const updateAi = useSettings((s) => s.updateAi);
-  const stored = ai.effort[provider];
-  const { options, error } = useEffortOptions(provider, model, stored, ready);
-  const set = (value: string) => {
-    const effort = { ...ai.effort };
-    if (value) effort[provider] = value as EffortLevel;
-    else delete effort[provider];
-    updateAi({ effort });
-  };
-  const levels = options?.levels ?? [];
-  // A stored level the model does not offer stays selectable, so the select shows it.
-  const listed: Effort[] = stored && stored !== "default" && !levels.includes(stored) ? [...levels, stored] : levels;
-  const ordered = EFFORT_LEVELS.filter((level) => listed.includes(level));
-  let hint: ReactNode = "How long the model may think before it answers. Higher is slower and costs more.";
-  if (error) hint = <span className="text-err">{error}</span>;
-  else if (options) {
-    const effective = options.effective ? EFFORT_LABELS[options.effective] : null;
-    if (stored === undefined) hint = effective ? `Midterm’s pick: ${effective}.` : "Midterm’s pick: nothing is sent.";
-    else if (stored !== "default" && options.effective !== stored)
-      hint = effective ? `This model does not offer ${EFFORT_LABELS[stored]}; ${effective} is sent.` : "This model takes no effort setting; nothing is sent.";
-    if (options.note) hint = <>{hint} {options.note}</>;
-  }
-  return (
-    <Row label="Reasoning effort" hint={hint}>
-      <select aria-label="Reasoning effort" className={`${FIELD} w-56 pr-6`} value={stored ?? ""} disabled={!ready} onChange={(event) => set(event.target.value)}>
-        <option value="">Automatic</option>
-        <option value="default">Provider default</option>
-        {ordered.map((level) => (
-          <option key={level} value={level}>
-            {EFFORT_LABELS[level]}
-            {levels.includes(level) ? "" : " (not offered)"}
-          </option>
-        ))}
-      </select>
-    </Row>
+          ))}
+        </select>
+      </Row>
+      {FEATURES.map((feature) => {
+        const problem = featureProblem(feature.id, settings);
+        return (
+          <Row key={feature.id} label={feature.label} hint={problem ? <span className="text-warn">{problem}</span> : feature.hint}>
+            <select
+              aria-label={`Model for ${feature.label}`}
+              className={`${FIELD} w-56 pr-6`}
+              value={features[feature.id] ?? ""}
+              onChange={(event) => setFeatureProfile(feature.id, event.target.value || null)}
+            >
+              <option value="">Default ({defaultName})</option>
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+          </Row>
+        );
+      })}
+    </>
   );
 }
 
 export function AiSection() {
   const ai = useSettings((s) => s.ai);
   const updateAi = useSettings((s) => s.updateAi);
-  const info = providerInfo(ai.provider);
-  const [status, recheck] = useProviderStatus(ai.provider, ai.baseUrl, ai.cliPaths[ai.provider]);
-  const [keyDraft, setKeyDraft] = useState("");
-  const [keyError, setKeyError] = useState<string | null>(null);
-  const [test, setTest] = useState<{ ok: boolean; message: string } | "running" | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  useEffect(() => {
-    setTest(null);
-    setKeyDraft("");
-    setKeyError(null);
-  }, [ai.provider, ai.baseUrl]);
 
-  const keyReady = info?.type === "api" && (!info.needsKey || (status?.kind === "key" && status.set));
-  const cliReady = info?.type === "cli" && status?.kind === "cli" && status.status.found;
-  const reachable = !!(keyReady || cliReady) && !(info?.id === "custom" && !ai.baseUrl);
-
-  const saveKey = async () => {
-    const config = providerConfig();
-    if (!config || !keyDraft.trim()) return;
-    try {
-      await aiKeySet(config, keyDraft);
-      clearBackoff();
-      setKeyDraft("");
-      setKeyError(null);
-      recheck();
-    } catch (error) {
-      setKeyError(toAiError(error).message);
-    }
-  };
-  const deleteKey = async () => {
-    const config = providerConfig();
-    if (!config) return;
-    await aiKeyDelete(config).catch((error: unknown) => setKeyError(toAiError(error).message));
-    recheck();
-  };
-  const runTest = async () => {
-    const config = providerConfig();
-    if (!config) return;
-    setTest("running");
-    setTest(await aiTest(config, ai.model, ai.effort[ai.provider]).catch((error: unknown) => ({ ok: false, message: toAiError(error).message })));
-  };
   const showPreview = async () => {
     const paneId = activeTerminal();
     const context = paneId ? await contextFor(paneId) : null;
@@ -270,10 +67,9 @@ export function AiSection() {
   return (
     <div>
       <div className="mb-3 rounded-[5px] bg-raised px-3 py-2 text-meta text-fg-mid">
-        Suggestions send the current terminal’s own recent commands (never other terminals’), their output (cut to its start and end), the directory, git
-        branch, shell and OS to the provider you choose. Values that look like secrets are replaced with [redacted] first.
-        Nothing is sent until you choose a provider{info?.type === "api" ? " and a model" : ""}, and a suggestion is only ever
-        placed in the input editor, never run.
+        Suggestions and /cmd send the current terminal’s own recent commands (never other terminals’), their output (cut to its start and end), the
+        directory, git branch, shell and OS to the model you choose. Values that look like secrets are replaced with [redacted] first. Nothing is sent
+        until you add a model, and a suggestion is only ever placed in the input editor, never run.
       </div>
 
       <SectionHeading>Suggestions</SectionHeading>
@@ -291,115 +87,11 @@ export function AiSection() {
           onChange={(event) => updateAi({ contextBlocks: Number(event.target.value) })}
         />
       </Row>
-
-      <SectionHeading>Provider</SectionHeading>
-      <Row label="Provider" hint={info ? <StatusLine status={status} needsKey={info.needsKey} /> : "Choose where suggestions come from."}>
-        <select
-          aria-label="Provider"
-          className={`${FIELD} w-56 pr-6`}
-          value={ai.provider}
-          onChange={(event) => updateAi({ provider: event.target.value, model: "" })}
-        >
-          <option value="">None</option>
-          <optgroup label="APIs (your key)">
-            {PROVIDERS.filter((p) => p.type === "api").map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </optgroup>
-          <optgroup label="CLIs (their own login)">
-            {PROVIDERS.filter((p) => p.type === "cli").map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </optgroup>
-        </select>
+      <Row label="Context preview" hint="What a request from the focused terminal would send right now.">
+        <button type="button" className={BUTTON} onClick={() => void showPreview()}>
+          Preview what is sent
+        </button>
       </Row>
-
-      {info?.id === "custom" && (
-        <Row label="Base URL" hint="OpenAI-compatible, e.g. http://localhost:11434/v1. A key is kept per URL.">
-          <CommitField label="Base URL" className="w-72 font-mono" placeholder="https://…/v1" value={ai.baseUrl} onCommit={(baseUrl) => updateAi({ baseUrl: baseUrl.trim() })} />
-        </Row>
-      )}
-
-      {info?.type === "api" && (
-        <Row label="API key" hint={keyError ? <span className="text-err">{keyError}</span> : "Stored in the OS keychain; it cannot be shown again."}>
-          <div className="flex items-center gap-1.5">
-            <input
-              aria-label="API key"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={status?.kind === "key" && status.set ? "•••••••• (replace)" : "Paste a key"}
-              className={`${FIELD} w-48`}
-              value={keyDraft}
-              disabled={info.id === "custom" && !ai.baseUrl}
-              onChange={(event) => setKeyDraft(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && void saveKey()}
-            />
-            <button type="button" className={BUTTON} disabled={!keyDraft.trim()} onClick={() => void saveKey()}>
-              Save
-            </button>
-            <button type="button" className={BUTTON} disabled={!(status?.kind === "key" && status.set)} onClick={() => void deleteKey()}>
-              Remove
-            </button>
-          </div>
-        </Row>
-      )}
-
-      {info?.type === "cli" && (
-        <Row label="Executable" hint={`Leave empty to look up “${info.executable}” on the login shell’s PATH.`}>
-          <CommitField
-            label="Executable path"
-            className="w-72 font-mono"
-            placeholder={info.executable}
-            value={ai.cliPaths[info.id] ?? ""}
-            onCommit={(path) => {
-              const cliPaths = { ...ai.cliPaths };
-              if (path.trim()) cliPaths[info.id] = path.trim();
-              else delete cliPaths[info.id];
-              updateAi({ cliPaths });
-            }}
-          />
-        </Row>
-      )}
-
-      {info && (
-        <Row label="Model" hint={info.type === "api" ? "Listed by the provider; any id can be typed." : undefined}>
-          <ModelPicker provider={ai.provider} model={ai.model} ready={reachable} />
-        </Row>
-      )}
-
-      {info && <EffortPicker provider={ai.provider} model={ai.model} ready={reachable} />}
-
-      {info && (
-        <Row
-          label="Check"
-          hint={
-            test === "running" ? (
-              "Asking…"
-            ) : test ? (
-              <span className={test.ok ? "text-ok" : "text-err"}>{test.message}</span>
-            ) : aiConfigured() ? (
-              "Ready."
-            ) : (
-              "Choose a model to start."
-            )
-          }
-        >
-          <div className="flex items-center gap-1.5">
-            <button type="button" className={BUTTON} disabled={test === "running" || (info.type === "api" && !ai.model)} onClick={() => void runTest()}>
-              Test
-            </button>
-            <button type="button" className={BUTTON} onClick={() => void showPreview()}>
-              Preview what is sent
-            </button>
-          </div>
-        </Row>
-      )}
-
       {preview !== null && (
         <div className="mt-2">
           <div className="mb-1 flex items-center justify-between text-meta text-fg-dim">
@@ -413,6 +105,12 @@ export function AiSection() {
           </pre>
         </div>
       )}
+
+      <SectionHeading>Models</SectionHeading>
+      <ProfileList />
+
+      <SectionHeading>Features</SectionHeading>
+      <Features />
     </div>
   );
 }

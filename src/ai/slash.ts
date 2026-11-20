@@ -1,7 +1,7 @@
 import { aiCancel, aiSuggest, toAiError } from "../ipc/ai";
-import { getSettings } from "../settings/settings";
 import { type BuiltContext, parseSuggestion, redact } from "./context";
-import { contextFor, providerConfig, providerReady } from "./engine";
+import { contextFor } from "./engine";
+import { targetFor } from "./profiles";
 
 /*
  * Slash commands in the blocks input editor: a line starting with a
@@ -60,31 +60,26 @@ export type CmdRequest = { result: Promise<string>; cancel: () => void };
 
 /**
  * Asks the model for a command doing `task` in the pane's context. Rejects
- * with an `AiError` (kind `other` when no provider is set up, `empty` when
- * there is no usable command). Needs a provider, but not the suggestions
- * switch: this is asked for explicitly.
+ * with an `AiError` (kind `other` when `/cmd` has no ready model profile,
+ * `empty` when there is no usable command). Needs a profile, but not the
+ * suggestions switch: this is asked for explicitly.
  */
 export function writeCommand(paneId: string, task: string): CmdRequest {
   const requestId = `cmd-${paneId}-${++counter}`;
   let cancelled = false;
   const result = (async () => {
-    const settings = getSettings();
-    const provider = providerConfig(settings);
-    if (!provider || !providerReady(settings)) {
-      throw { kind: "other", message: "Choose an AI provider in Settings → AI to use /cmd." };
-    }
+    const target = targetFor("cmd");
+    if (!target) throw { kind: "other", message: "Choose a model for /cmd in Settings → AI." };
     const context = await contextFor(paneId);
     if (!context) throw { kind: "other", message: "This terminal is not available." };
     if (cancelled) throw { kind: "cancelled", message: "Cancelled" };
     const request = buildCmdRequest(context, task);
     const { text } = await aiSuggest({
       requestId,
-      provider,
-      model: settings.ai.model,
+      target,
       system: request.system,
       prompt: request.prompt,
       maxTokens: CMD_MAX_TOKENS,
-      effort: settings.ai.effort[provider.id],
     });
     const command = parseSuggestion(text);
     if (!command) throw { kind: "empty", message: "The model did not suggest a command." };
