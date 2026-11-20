@@ -188,6 +188,7 @@ exercises the viewer).
 | Command | What it does |
 |---|---|
 | `bun run tauri dev` | The real app. |
+| `bun run dev:mcp` | The real app with the local Tauri MCP bridge enabled. |
 | `bun run dev` | Frontend only, in a browser at `localhost:1420`, with a mock PTY that echoes input. Good for layout work. |
 | `bun run dev` + `?mockup` | Same, seeded with the arrangement from the design mockup (the editor and viewer show files from the mock file tree). |
 | `bun run test` | Frontend unit tests (vitest). |
@@ -198,3 +199,19 @@ exercises the viewer).
 In dev builds `window.__midterm` exposes `actions`, `dock`, `store`,
 `sessions`, `settings`, `commands`, `plugins` (the registry), `skills`,
 `loader` and `invokeSkillTool` for poking at the app from the console or a test driver.
+
+### Tauri MCP
+
+Open this repo in Claude Code, Codex, or Antigravity. Each client reads its
+project configuration (`.mcp.json`, `.codex/config.toml`, or
+`.agents/mcp_config.json`) and launches the pinned `tauri` server through
+`npx`. Use Node.js 20 or newer. Claude Code prompts for project server approval
+on first use. Codex and Antigravity load MCP servers for trusted workspaces.
+In Antigravity, open `/mcp` in a workspace session to check the server status.
+
+Run `bun run dev:mcp` from the repo root and wait for the bridge to log its
+address. Start `driver_session` with `action: "start"`, using host `127.0.0.1`
+and the logged port (typically `9223`), then call `webview_dom_snapshot` or
+`webview_screenshot`. The optional Cargo feature and Tauri config overlay
+enable the bridge and its webview permissions for this debug run. While it is
+running, local processes can connect and control the app through the bridge.

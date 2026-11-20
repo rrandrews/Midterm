@@ -81,7 +81,15 @@ fn local_hostname() -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(all(debug_assertions, feature = "tauri-mcp"))]
+    let builder = builder.plugin(
+        tauri_plugin_mcp_bridge::Builder::new()
+            .bind_address("127.0.0.1")
+            .build(),
+    );
+
+    let app = builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

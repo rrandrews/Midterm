@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mcp": "tauri dev --features tauri-mcp --config src-tauri/tauri.mcp.conf.json",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",

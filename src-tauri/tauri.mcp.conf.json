@@ -1,0 +1,16 @@
+{
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        "default",
+        {
+          "identifier": "tauri-mcp",
+          "description": "MCP bridge for the Midterm development window",
+          "windows": ["main"],
+          "permissions": ["mcp-bridge:default"]
+        }
+      ]
+    }
+  }
+}
