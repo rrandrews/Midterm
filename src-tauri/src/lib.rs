@@ -40,6 +40,24 @@ fn app_hide_on_close(app: AppHandle) -> bool {
     }
 }
 
+/// Brings the app forward: unhides it (after `app_hide_on_close`) and
+/// focuses its window. Called before a confirmation is shown, so a quit
+/// from the Dock while hidden does not ask in an invisible window.
+#[tauri::command]
+fn app_show(app: AppHandle) {
+    show_app(&app);
+}
+
+fn show_app(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
+    for window in app.webview_windows().values() {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// This machine's host name, as shells report it in OSC 7 (`gethostname`).
 #[tauri::command]
 fn local_hostname() -> Option<String> {
@@ -121,6 +139,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_quit,
             app_hide_on_close,
+            app_show,
             local_hostname,
             menu::menu_set,
             pty::commands::pty_spawn,
@@ -173,14 +192,7 @@ pub fn run() {
         // The Dock icon was clicked: show the app again if it was hidden by
         // its close button (`app_hide_on_close`) or its window minimized.
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => {
-            let _ = app.show();
-            for window in app.webview_windows().values() {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
+        RunEvent::Reopen { .. } => show_app(app),
         // Last chance to make sure no shell outlives the app.
         RunEvent::Exit => {
             app.state::<PtyManager>().kill_all();

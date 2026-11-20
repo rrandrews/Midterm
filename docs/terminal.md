@@ -345,7 +345,7 @@ Closing the window asks the same way (`installCloseGuards` in
 `src/ipc/window.ts`), except on macOS, where the close button hides the app
 instead (`app_hide_on_close`) and nothing ends, so nothing is asked.
 Clicking the Dock icon (`RunEvent::Reopen` in `lib.rs`) or ⌘-Tab shows it
-again. Quitting: the backend emits `quit-requested`, and the
+again. A confirmation (`confirm()`) calls `app_show` first, so quitting from the Dock while hidden asks in a visible window. Quitting: the backend emits `quit-requested`, and the
 webview asks, flushes the saved state (waiting for a save already in
 flight) and calls `app_quit`. ⌘Q is our own menu item (`menu::QUIT_ID`);
 Quit from the Dock, logout and shutdown go through

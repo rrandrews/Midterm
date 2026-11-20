@@ -32,6 +32,12 @@ export function watchFullscreen(onChange: (fullscreen: boolean) => void): () => 
   };
 }
 
+/** Brings the app forward if it was hidden (or its window minimized). */
+export function revealApp(): void {
+  if (!isTauri()) return;
+  invoke("app_show").catch((error) => console.error("app_show failed:", error));
+}
+
 /**
  * Asks `mayClose` before the window closes (its close button) or the app
  * quits (⌘Q, which the backend turns into a `quit-requested` event instead
