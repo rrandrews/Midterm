@@ -72,6 +72,8 @@ describe("snapshot and restore", () => {
         createPane("terminal", { cwd: "/c" }),
         createPane("terminal", { terminalMode: "fancy" }),
         createPane("editor", { path: "/x", terminalMode: "blocks" }),
+        // Another plugin's data that happens to nest a `{ kind: "terminal" }` object.
+        createPane("acme-notes", { data: { kind: "terminal", terminalMode: "blocks" }, nested: [{ data: { kind: "terminal" } }] }),
       ];
       const layout = createLayout({ type: "split", orientation: "horizontal", children: panes.map((pane) => paneNode(pane)) });
       const saved = roundTrip(snapshotState({ workspaces: [createWorkspace("w", [createTab({ layout })])], activeWorkspaceId: "" }));
@@ -85,8 +87,16 @@ describe("snapshot and restore", () => {
       { kind: "terminal", cwd: "/c" },
       { kind: "terminal" },
       { kind: "editor", path: "/x" },
+      { kind: "acme-notes", data: { kind: "terminal", terminalMode: "blocks" }, nested: [{ data: { kind: "terminal" } }] },
     ]);
-    expect(v1(true)?.map((data) => data.kind)).toEqual(["block-terminal", "terminal", "block-terminal", "block-terminal", "editor"]);
+    expect(v1(true)?.map((data) => data.kind)).toEqual([
+      "block-terminal",
+      "terminal",
+      "block-terminal",
+      "block-terminal",
+      "editor",
+      "acme-notes",
+    ]);
   });
 
   it("keeps a version 2 block terminal, and a terminal stays classic", () => {

@@ -131,23 +131,34 @@ function restoreWorkspace(saved: unknown, index: number): Workspace | null {
 /**
  * Version 1 had one terminal plugin with a per-pane `terminalMode` (unset:
  * the terminal's "new terminals open in" setting). Version 2 has a plugin
- * per mode: a blocks pane becomes a `block-terminal` pane. Rewrites every
- * pane's data in place, wherever it sits in the layout tree.
+ * per mode: a blocks pane becomes a `block-terminal` pane. Rewrites the
+ * panes (the layout's tab nodes) in place; walks only the layout's own
+ * structure (splits, tabsets, floating tabsets), never into pane data,
+ * which belongs to plugins.
  */
-function migrateV1Panes(node: unknown, legacyBlocksDefault: boolean): void {
-  if (Array.isArray(node)) {
-    for (const child of node) migrateV1Panes(child, legacyBlocksDefault);
-    return;
-  }
-  if (!isRecord(node)) return;
-  for (const [key, value] of Object.entries(node)) {
-    if (key === "data" && isRecord(value) && value.kind === "terminal") {
-      const { terminalMode, ...rest } = value;
-      const blocks = terminalMode === "blocks" || (terminalMode !== "classic" && legacyBlocksDefault);
-      node.data = { ...rest, kind: blocks ? "block-terminal" : "terminal" };
-    } else {
-      migrateV1Panes(value, legacyBlocksDefault);
+function migrateV1Layout(layout: unknown, legacyBlocksDefault: boolean): void {
+  const migrateNode = (node: unknown): void => {
+    if (!isRecord(node)) return;
+    if (node.type === "split" && Array.isArray(node.children)) node.children.forEach(migrateNode);
+    if (node.type === "tabset" && Array.isArray(node.tabs)) {
+      for (const tab of node.tabs) {
+        if (!isRecord(tab) || !isRecord(tab.data) || tab.data.kind !== "terminal") continue;
+        const { terminalMode, ...rest } = tab.data;
+        const blocks = terminalMode === "blocks" || (terminalMode !== "classic" && legacyBlocksDefault);
+        tab.data = { ...rest, kind: blocks ? "block-terminal" : "terminal" };
+      }
     }
+  };
+  if (!isRecord(layout)) return;
+  migrateNode(layout.root);
+  if (Array.isArray(layout.floating)) layout.floating.forEach(migrateNode);
+}
+
+function migrateV1Panes(workspaces: unknown, legacyBlocksDefault: boolean): void {
+  if (!Array.isArray(workspaces)) return;
+  for (const workspace of workspaces) {
+    if (!isRecord(workspace) || !Array.isArray(workspace.tabs)) continue;
+    for (const tab of workspace.tabs) if (isRecord(tab)) migrateV1Layout(tab.layout, legacyBlocksDefault);
   }
 }
 
