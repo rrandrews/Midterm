@@ -425,21 +425,28 @@ the OS store, `MIDTERM_KEYSTORE=memory` forces memory in any build
 (`keys::select_store`). The chosen store is logged once at startup
 (`ai keys: using the Memory store`).
 
-OS store reads are cached for the life of the app (set and delete update
-the cache; errors are not cached), so the OS asks at most once per account
-per launch, not once per request.
+OS store reads are cached for the life of the app, so the OS asks at most
+once per account per launch, not once per request. Every OS store call
+holds one lock together with its cache update (a cold read cannot overwrite
+a newer save, and concurrent cold reads ask once). Errors are not cached; a
+failed save or delete drops the account from the cache so it is read again.
+A change made to the item outside the app shows up after a restart.
 
 **Key file for debug builds.** A `tauri dev` binary is ad-hoc signed with
 no Team ID, so the Keychain item's partition list ties it to the hash of
 one build, and every rebuild asks for the login password, even with the
-item set to "Allow all applications". `MIDTERM_KEYSTORE=file` (debug builds
-on Unix only; release and `tauri-mcp` builds ignore it, so a variable
+item set to "Allow all applications". `MIDTERM_KEYSTORE=file` (builds with
+debug assertions, i.e. `tauri dev`, on Unix only; release and `tauri-mcp` builds ignore it, so a variable
 exported in your shell never gives an agent's `dev:mcp` instance your keys) keeps keys in a JSON file instead:
 `MIDTERM_KEYS_FILE`, or `~/.config/midterm-dev/keys.json`, an object of
-account → key. The directory is created 700 and the file written 600,
-atomically (temp file + rename). A file readable by group or others is
-refused ("run chmod 600"), and malformed JSON is an error rather than an
-empty store, so a write never overwrites it. Keys in the Keychain are not
+account → key. Every access holds an exclusive `flock` on `keys.json.lock`
+beside it, so two app instances cannot lose each other's saves. The
+directory is created 700 and must be the user's and not writable by others.
+The file is opened without following symlinks and checked through the open
+handle (a regular file, owned by the user, no group or other bits: else
+"run chmod 600"); it is replaced atomically from a `tempfile` created
+exclusively with mode 600 in the same directory. A missing or empty file is
+an empty store; malformed JSON is an error, so a write never overwrites it. Keys in the Keychain are not
 copied over; save them again in Settings → AI.
 
 ### Commands
