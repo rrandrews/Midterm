@@ -189,6 +189,7 @@ async function request(paneId: string, key: string, automatic: boolean): Promise
       system: context.system,
       prompt: context.prompt,
       maxTokens: MAX_TOKENS,
+      effort: settings.ai.effort[provider.id],
     });
     if (!stillCurrent()) return;
     failures = 0;

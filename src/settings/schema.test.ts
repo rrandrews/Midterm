@@ -33,6 +33,13 @@ describe("validateSettings", () => {
     expect(validateSettings({ accent: "red" }).accent).toBe("");
     expect(validateSettings({ accent: "#fff" }).accent).toBe("");
   });
+
+  it("keeps known reasoning effort levels per provider and drops the rest", () => {
+    expect(validateSettings({}).ai.effort).toEqual({});
+    const ai = validateSettings({ ai: { effort: { openai: "xhigh", anthropic: "default", gemini: "ultra", deepseek: 3 } } }).ai;
+    expect(ai.effort).toEqual({ openai: "xhigh", anthropic: "default" });
+    expect(validateSettings({ ai: { effort: "high" } }).ai.effort).toEqual({});
+  });
 });
 
 describe("migrateSettings", () => {
