@@ -20,6 +20,11 @@
 (( ${+_midterm_si_loaded} )) && builtin return 0
 builtin typeset -g _midterm_si_loaded=1
 
+# This shell's id in its marks (`aid=`), so the terminal can tell them from
+# the marks of a shell nested inside it (over ssh). Digits and a dot only:
+# it goes into PS1 below.
+builtin typeset -g _midterm_aid=$$.$RANDOM
+
 # Percent-encodes $1 byte by byte for a file:// URL and stores it in REPLY.
 _midterm_urlencode() {
   builtin emulate -L zsh
@@ -59,10 +64,10 @@ _midterm_prompt_start() {
   builtin emulate -L zsh
   if (( _midterm_ran )); then
     _midterm_ran=0
-    builtin print -rn -- $'\e]133;D;'"$1"$'\a'
+    builtin print -rn -- $'\e]133;D;'"$1;aid=$_midterm_aid"$'\a'
   fi
   _midterm_report_cwd
-  builtin print -rn -- $'\e]133;A\a'
+  builtin print -rn -- $'\e]133;A;aid='"$_midterm_aid"$'\a'
   if [[ ${precmd_functions[-1]-} != _midterm_prompt_end ]]; then
     precmd_functions=(${precmd_functions:#_midterm_prompt_end} _midterm_prompt_end)
   fi
@@ -82,7 +87,7 @@ _midterm_precmd() {
 # prompt_subst and prompt_bang leave it alone; %{ %} makes it zero-width.
 _midterm_prompt_end() {
   builtin local ret=$?
-  builtin local mark=$'%{\e]133;B\a%}'
+  builtin local mark=$'%{\e]133;B;aid='"$_midterm_aid"$'\a%}'
   PS1=${PS1//"$mark"/}
   [[ -o prompt_percent ]] && PS1+=$mark
   [[ -o errexit ]] && builtin return 0
@@ -91,7 +96,7 @@ _midterm_prompt_end() {
 
 _midterm_preexec() {
   _midterm_ran=1
-  builtin print -rn -- $'\e]133;C\a'
+  builtin print -rn -- $'\e]133;C;aid='"$_midterm_aid"$'\a'
 }
 
 # The hooks are put in place at the first prompt rather than now: the user's

@@ -15,7 +15,10 @@ describe("parseOsc133", () => {
     expect(parseOsc133("B")).toEqual({ kind: "B" });
     expect(parseOsc133("C;cmdline=ls")).toEqual({ kind: "C" });
     expect(parseOsc133("D;0")).toEqual({ kind: "D", exitCode: 0 });
-    expect(parseOsc133("D;130;aid=1")).toEqual({ kind: "D", exitCode: 130 });
+    expect(parseOsc133("D;130;aid=1")).toEqual({ kind: "D", exitCode: 130, aid: "1" });
+    expect(parseOsc133("A;aid=123.45")).toEqual({ kind: "A", aid: "123.45" });
+    expect(parseOsc133("C;cmdline=ls;aid=9")).toEqual({ kind: "C", aid: "9" });
+    expect(parseOsc133("B;aid=")).toEqual({ kind: "B" });
     expect(parseOsc133("D")).toEqual({ kind: "D", exitCode: undefined });
     expect(parseOsc133("D;x")).toEqual({ kind: "D", exitCode: undefined });
     expect(parseOsc133("P;k=i")).toBeNull();

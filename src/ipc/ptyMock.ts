@@ -13,7 +13,6 @@ import type { Pty, PtyOptions } from "./pty";
 
 const ESC = "\x1b";
 const BEL = "\x07";
-const mark = (payload: string) => `${ESC}]133;${payload}${BEL}`;
 const dim = (text: string) => `${ESC}[38;2;133;138;150m${text}${ESC}[0m`;
 const SGR = (code: string, text: string) => `${ESC}[${code}m${text}${ESC}[0m`;
 
@@ -35,6 +34,9 @@ export function spawnMockPty(options: PtyOptions): Pty {
   /** Unfinished escape sequence from the last write. */
   let pendingEscape = "";
   let pasting = false;
+  /** The mock shell's `aid=`, like the real scripts'. */
+  const aid = `${Math.floor(Math.random() * 1e6)}.mock`;
+  const mark = (payload: string) => `${ESC}]133;${payload};aid=${aid}${BEL}`;
 
   const display = (path: string) => (path === MOCK_HOME || path.startsWith(`${MOCK_HOME}/`) ? `~${path.slice(MOCK_HOME.length)}` : path);
   const cwdReport = () => `${ESC}]7;file://localhost${encodeURI(cwd)}${BEL}`;

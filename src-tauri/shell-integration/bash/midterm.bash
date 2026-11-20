@@ -80,18 +80,21 @@ _midterm_report_cwd() {
 # end of PROMPT_COMMAND until the first command of the next command line.
 _midterm_ran=
 _midterm_armed=
+# This shell's id in its marks (`aid=`), so the terminal can tell them from
+# the marks of a shell nested inside it (over ssh).
+_midterm_aid=$$.$RANDOM
 # OSC 133;B, wrapped in \[ \] so that bash does not count it as visible.
-_midterm_mark_b='\[\e]133;B\a\]'
+_midterm_mark_b='\[\e]133;B;aid='"$_midterm_aid"'\a\]'
 
 _midterm_prompt_command() {
   local ret=$?  # exit status of the last command, for OSC 133;D
   _midterm_armed=
   if [[ -n $_midterm_ran ]]; then
     _midterm_ran=
-    builtin printf '\033]133;D;%s\007' "$ret"
+    builtin printf '\033]133;D;%s;aid=%s\007' "$ret" "$_midterm_aid"
   fi
   _midterm_report_cwd
-  builtin printf '\033]133;A\007'
+  builtin printf '\033]133;A;aid=%s\007' "$_midterm_aid"
   # Pass the status on to the user's hooks, except under errexit, where a
   # failing hook would end the shell.
   [[ $- == *e* ]] && builtin return 0
@@ -128,7 +131,7 @@ _midterm_debug_trap() {
       # (Under functrace the trap also fires inside functions, ours too.)
       _midterm_armed=
       _midterm_ran=1
-      builtin printf '\033]133;C\007'
+      builtin printf '\033]133;C;aid=%s\007' "$_midterm_aid"
     fi
   fi
   [[ ${1-} == chain ]] && builtin return $ret

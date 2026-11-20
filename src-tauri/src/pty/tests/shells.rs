@@ -349,7 +349,8 @@ fn fish_reports_cwd_and_restores_xdg_data_dirs() {
     );
 }
 
-const MARK_B: &str = "\x1b]133;B\x07";
+/// The start of a B mark: our marks end with `;aid=<id>` before the BEL.
+const MARK_B: &str = "\x1b]133;B;aid=";
 
 /// Every OSC 133 mark in `output` (terminated by BEL or ST) with the byte
 /// offset where it starts, e.g. `(120, "D;0")`.
@@ -363,8 +364,24 @@ fn osc133_marks(output: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// The marks without their `;aid=<id>` parameter.
 fn mark_names(marks: &[(usize, String)]) -> Vec<&str> {
-    marks.iter().map(|(_, mark)| mark.as_str()).collect()
+    marks
+        .iter()
+        .map(|(_, mark)| mark.split(";aid=").next().unwrap_or(mark))
+        .collect()
+}
+
+/// The `aid=` of every mark; one shell's marks all carry the same one.
+fn assert_one_aid(marks: &[(usize, String)]) {
+    let aids: Vec<&str> = marks
+        .iter()
+        .map(|(_, mark)| mark.split_once(";aid=").map_or("", |(_, aid)| aid))
+        .collect();
+    assert!(
+        !aids[0].is_empty() && aids.iter().all(|aid| *aid == aids[0]),
+        "aids {aids:?}"
+    );
 }
 
 impl Harness {
@@ -407,6 +424,7 @@ fn check_prompt_marks(h: &mut Harness, fail: &str) -> String {
 
     let text = h.text();
     let marks = osc133_marks(&text);
+    assert_one_aid(&marks);
     let names = mark_names(&marks);
     let expected = [
         "A", "B", "C", "D;3", "A", "B", "C", "D;0", "A", "B", "A", "B",

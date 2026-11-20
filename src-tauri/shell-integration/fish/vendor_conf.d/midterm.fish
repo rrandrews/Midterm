@@ -45,6 +45,10 @@ end
 status is-interactive; or exit 0
 functions -q __midterm_report_cwd; and exit 0
 
+# This shell's id in its marks (`aid=`), so the terminal can tell them from
+# the marks of a shell nested inside it (over ssh).
+set -g __midterm_aid $fish_pid.(random)
+
 # OSC 7: tells the terminal the shell's working directory.
 function __midterm_report_cwd --on-variable PWD
     printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)
@@ -52,7 +56,7 @@ end
 
 function __midterm_prompt --on-event fish_prompt
     __midterm_report_cwd
-    printf '\e]133;A\a'
+    printf '\e]133;A;aid=%s\a' $__midterm_aid
     __midterm_wrap_prompt
 end
 
@@ -68,18 +72,18 @@ function __midterm_wrap_prompt
     # The original runs first, so that it still sees the command's $status.
     function fish_prompt
         __midterm_original_fish_prompt $argv
-        printf '\e]133;B\a'
+        printf '\e]133;B;aid=%s\a' $__midterm_aid
     end
 end
 
 function __midterm_preexec --on-event fish_preexec
     set -g __midterm_ran 1
-    printf '\e]133;C\a'
+    printf '\e]133;C;aid=%s\a' $__midterm_aid
 end
 
 function __midterm_postexec --on-event fish_postexec
     set -l cmd_status $status
     set -q __midterm_ran; or return
     set -e __midterm_ran
-    printf '\e]133;D;%s\a' $cmd_status
+    printf '\e]133;D;%s;aid=%s\a' $cmd_status $__midterm_aid
 end

@@ -9,6 +9,10 @@ import type { IBuffer, IDisposable, IEvent, IMarker } from "@xterm/xterm";
  *   ESC ] 133 ; C BEL         the command line was accepted; output starts
  *   ESC ] 133 ; D ; <n> BEL   the command finished with exit status n
  *
+ * Our scripts add `;aid=<id>` (the spec's application id) to every mark,
+ * one id per shell, so marks from a shell nested inside it (`ssh host`)
+ * can be told apart; see "Nested shells" below.
+ *
  * The xterm buffer stays the source of truth: a block is a pair of markers
  * (`term.registerMarker`) on the rows where its output starts (C) and ends
  * (D), which xterm keeps pointing at the right rows as scrollback is
@@ -17,22 +21,29 @@ import type { IBuffer, IDisposable, IEvent, IMarker } from "@xterm/xterm";
  * the rows is `blockRender.ts`, the UI is `BlocksView`.
  */
 
-export type PromptMark =
+export type PromptMark = (
   | { kind: "A" | "B" | "C" }
-  | { kind: "D"; exitCode: number | undefined };
+  | { kind: "D"; exitCode: number | undefined }
+) & {
+  /** The `aid=` parameter: which shell printed the mark. */
+  aid?: string;
+};
 
 /** Parses the payload of an OSC 133 sequence (what follows `133;`). */
 export function parseOsc133(data: string): PromptMark | null {
   const [kind, ...params] = data.split(";");
+  const aidParam = params.find((param) => param.startsWith("aid="));
+  const aid = aidParam ? aidParam.slice(4) || undefined : undefined;
+  const withAid = <T extends object>(mark: T): T & { aid?: string } => (aid === undefined ? mark : { ...mark, aid });
   switch (kind) {
     case "A":
     case "B":
     case "C":
-      return { kind };
+      return withAid({ kind });
     case "D": {
       const first = params[0];
       const code = first !== undefined && /^-?\d+$/.test(first) ? Number(first) : undefined;
-      return { kind: "D", exitCode: code };
+      return withAid({ kind: "D" as const, exitCode: code });
     }
     default:
       return null;
