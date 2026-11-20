@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 use super::effort::{AnthropicCaps, Effort};
 use super::error::{AiError, ErrorKind};
+use super::extra;
 use super::http;
 use super::{Completion, Reply};
 
@@ -135,6 +136,7 @@ pub fn build_body(req: &Completion, shape: Shape) -> Value {
             body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
         }
     }
+    extra::apply(&mut body, req.extra);
     body
 }
 
@@ -311,6 +313,7 @@ mod tests {
             max_tokens: 4200,
             effort: Some(Effort::Low),
             timeout: http::REQUEST_TIMEOUT,
+            extra: None,
         }
     }
 
@@ -523,6 +526,29 @@ mod tests {
     }
 
     #[test]
+    fn extra_is_merged_last() {
+        let extra = json!({
+            "metadata": { "user_id": "u1" },
+            "output_config": { "effort": "high" },
+            "max_tokens": 9000,
+            "top_k": 5
+        });
+        let mut r = req();
+        r.extra = Some(extra.as_object().unwrap());
+        let b = build_body(&r, LOW);
+        assert_eq!(b["metadata"]["user_id"], "u1");
+        assert_eq!(b["output_config"]["effort"], "high");
+        assert_eq!(b["max_tokens"], 9000);
+        assert_eq!(b["top_k"], 5);
+        assert_eq!(b["model"], "claude-x");
+        let extra = json!({ "system": null });
+        r.extra = Some(extra.as_object().unwrap());
+        // `check` rejects protected keys before a request is built; merge
+        // itself is mechanical.
+        assert!(build_body(&r, Shape::Plain).get("system").is_none());
+    }
+
+    #[test]
     fn parses_replies() {
         assert_eq!(
             parse_reply(&reply(" git push \n", "end_turn")).unwrap(),
@@ -593,6 +619,26 @@ mod tests {
         let sent = server.requests();
         assert!(sent[0].json().get("thinking").is_some());
         assert!(sent[1].json().get("thinking").is_none());
+        assert!(sent[1].json().get("output_config").is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_without_effort_keeps_extra() {
+        let server = stub::serve(vec![
+            Canned::json(400, json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "output_config.effort: not supported by this model" } })),
+            Canned::json(200, reply("ok", "end_turn")),
+        ])
+        .await;
+        let extra = json!({ "metadata": { "user_id": "u1" } });
+        let mut r = req();
+        r.extra = Some(extra.as_object().unwrap());
+        complete(&stub::client(), &server.url, "k", &r, LOW)
+            .await
+            .unwrap();
+        let sent = server.requests();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].json()["metadata"]["user_id"], "u1");
+        assert_eq!(sent[1].json()["metadata"]["user_id"], "u1");
         assert!(sent[1].json().get("output_config").is_none());
     }
 

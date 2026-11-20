@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 
 use super::effort::Effort;
 use super::error::{AiError, ErrorKind};
+use super::extra;
 use super::http;
 use super::provider::Flavor;
 use super::{Completion, Reply};
@@ -56,6 +57,9 @@ pub fn build_body(flavor: Flavor, req: &Completion, with_effort: bool) -> Value 
                 body.insert("reasoning_effort".into(), json!(level.as_str()));
             }
         }
+    }
+    if let Some(extra) = req.extra {
+        extra::merge(&mut body, extra);
     }
     Value::Object(body)
 }
@@ -118,16 +122,82 @@ pub fn strip_think(text: &str) -> &str {
     }
 }
 
-/// Model ids from `GET {base}/models` (`{ data: [{ id }] }`), sorted.
-/// A `models/` prefix (Gemini's native id form) is dropped.
+/// Words in a model id that mark a model whose output is not text (or that
+/// is not a chat model at all). Matched against whole id segments.
+const NON_TEXT_WORDS: &[&str] = &[
+    "tts",
+    "stt",
+    "asr",
+    "speech",
+    "whisper",
+    "transcribe",
+    "transcription",
+    "audio",
+    "realtime",
+    "live",
+    "image",
+    "images",
+    "imagen",
+    "video",
+    "sora",
+    "veo",
+    "lyria",
+    "embedding",
+    "embeddings",
+    "embed",
+    "rerank",
+    "reranker",
+    "moderation",
+    "aqa",
+];
+
+/// Whether a model id looks like a text-to-text chat model, for listings
+/// that say nothing about modalities. `vision`, `instruct`, `search` and
+/// `computer-use` models stay: their output is text.
+pub fn is_text_model(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    if id.contains("dall-e") || id.contains("stable-diffusion") {
+        return false;
+    }
+    !id.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|segment| NON_TEXT_WORDS.contains(&segment))
+}
+
+/// Whether a `GET /models` entry is a text-to-text model: from
+/// `architecture.output_modalities`/`input_modalities` (OpenRouter), else
+/// the legacy `architecture.modality` string (`"text+image->text"`), else
+/// the id ([`is_text_model`]).
+fn keeps_entry(entry: &Value, id: &str) -> bool {
+    let arch = &entry["architecture"];
+    if let Some(outputs) = arch["output_modalities"].as_array() {
+        let text_out = outputs.len() == 1 && outputs[0] == "text";
+        let text_in = match &arch["input_modalities"] {
+            Value::Null => true,
+            Value::Array(inputs) => inputs.iter().any(|m| m == "text"),
+            _ => false,
+        };
+        return text_out && text_in;
+    }
+    if let Some((input, output)) = arch["modality"].as_str().and_then(|m| m.split_once("->")) {
+        return output.trim() == "text" && input.split('+').any(|m| m.trim() == "text");
+    }
+    is_text_model(id)
+}
+
+/// Text-to-text model ids from `GET {base}/models` (`{ data: [{ id }] }`),
+/// sorted. A `models/` prefix (Gemini's native id form) is dropped. Image,
+/// audio, embedding and similar models are left out (see [`keeps_entry`]);
+/// any id can still be typed in Settings.
 pub fn parse_models(response: &Value) -> Vec<String> {
     let mut ids: Vec<String> = response["data"]
         .as_array()
         .map(|models| {
             models
                 .iter()
-                .filter_map(|m| m["id"].as_str())
-                .map(|id| id.strip_prefix("models/").unwrap_or(id).to_string())
+                .filter_map(|m| Some((m, m["id"].as_str()?)))
+                .map(|(m, id)| (m, id.strip_prefix("models/").unwrap_or(id)))
+                .filter(|(m, id)| keeps_entry(m, id))
+                .map(|(_, id)| id.to_string())
                 .collect()
         })
         .unwrap_or_default();
@@ -200,6 +270,7 @@ mod tests {
             max_tokens: 100,
             effort: Some(Effort::Low),
             timeout: http::REQUEST_TIMEOUT,
+            extra: None,
         }
     }
 
@@ -269,6 +340,33 @@ mod tests {
     }
 
     #[test]
+    fn extra_is_merged_last() {
+        let extra = json!({
+            "max_completion_tokens": 50,
+            "reasoning_effort": null,
+            "provider": { "order": ["a"] },
+            "stop": ["x"]
+        });
+        let extra = extra.as_object().unwrap();
+        let mut r = req();
+        r.extra = Some(extra);
+        let b = build_body(Flavor::OpenAi, &r, true);
+        assert_eq!(b["max_completion_tokens"], 50);
+        assert!(b.get("reasoning_effort").is_none());
+        assert_eq!(b["provider"]["order"][0], "a");
+        assert_eq!(b["stop"], json!(["x"]));
+        assert_eq!(b["model"], "m-1");
+
+        let extra = json!({ "reasoning": { "exclude": false, "max_tokens": 10 } });
+        r.extra = Some(extra.as_object().unwrap());
+        let b = build_body(Flavor::OpenRouter, &r, true);
+        assert_eq!(
+            b["reasoning"],
+            json!({ "effort": "low", "exclude": false, "max_tokens": 10 })
+        );
+    }
+
+    #[test]
     fn parses_replies() {
         assert_eq!(
             parse_reply(&reply(json!(" ls -la\n"), "stop")).unwrap(),
@@ -300,8 +398,70 @@ mod tests {
     }
 
     #[test]
+    fn filters_non_text_model_ids() {
+        for id in [
+            "gpt-4o-audio-preview",
+            "gpt-realtime",
+            "gpt-4o-mini-tts",
+            "whisper-1",
+            "dall-e-3",
+            "gpt-image-1",
+            "text-embedding-3-small",
+            "omni-moderation-latest",
+            "sora-2",
+            "imagen-4.0-generate-001",
+            "veo-3.1-generate-preview",
+            "aqa",
+            "gemini-2.5-flash-image",
+            "gemini-live-2.5-flash-preview",
+            "nomic-embed-text",
+            "gpt-4o-transcribe",
+            "stable-diffusion-xl",
+            "Models/Gemini-Embedding-001",
+        ] {
+            assert!(!is_text_model(id), "{id} should be dropped");
+        }
+        for id in [
+            "gpt-4o",
+            "o3-mini",
+            "gpt-4o-search-preview",
+            "gemini-2.5-flash-lite",
+            "deepseek-reasoner",
+            "llama-3.2-11b-vision-preview",
+            "mistral-7b-instruct",
+            "openai/gpt-4o",
+            "computer-use-preview",
+            "claude-sonnet-4-5",
+        ] {
+            assert!(is_text_model(id), "{id} should be kept");
+        }
+    }
+
+    #[test]
+    fn filters_models_by_modalities() {
+        let v = json!({ "data": [
+            { "id": "a/vision", "architecture": { "input_modalities": ["text", "image"], "output_modalities": ["text"] } },
+            { "id": "b/painter", "architecture": { "input_modalities": ["text"], "output_modalities": ["image"] } },
+            { "id": "c/both", "architecture": { "input_modalities": ["text"], "output_modalities": ["text", "image"] } },
+            { "id": "d/no-text-in", "architecture": { "input_modalities": ["audio"], "output_modalities": ["text"] } },
+            { "id": "d/odd-input", "architecture": { "input_modalities": "image", "output_modalities": ["text"] } },
+            { "id": "e/legacy", "architecture": { "modality": "text+image->text" } },
+            { "id": "f/legacy-image", "architecture": { "modality": "text->image" } },
+            // Modalities win over the id: this "image" model outputs text.
+            { "id": "g/image-describer", "architecture": { "output_modalities": ["text"] } },
+            // No modalities: the id decides.
+            { "id": "h/gpt-image-1" },
+            { "id": "i/plain" }
+        ] });
+        assert_eq!(
+            parse_models(&v),
+            vec!["a/vision", "e/legacy", "g/image-describer", "i/plain"]
+        );
+    }
+
+    #[test]
     fn parses_models() {
-        let v = json!({ "object": "list", "data": [{ "id": "b" }, { "id": "models/a" }, { "id": "b" }, { "x": 1 }] });
+        let v = json!({ "object": "list", "data": [{ "id": "b" }, { "id": "models/a" }, { "id": "b" }, { "x": 1 }, { "id": "whisper-1" }] });
         assert_eq!(parse_models(&v), vec!["a", "b"]);
         assert!(parse_models(&json!({})).is_empty());
     }
@@ -357,6 +517,31 @@ mod tests {
         let sent = server.requests();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[0].json()["reasoning_effort"], "low");
+        assert!(sent[1].json().get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_without_effort_keeps_extra() {
+        let server = stub::serve(vec![
+            Canned::json(
+                400,
+                json!({ "error": { "message": "reasoning_effort is not supported" } }),
+            ),
+            Canned::json(200, reply(json!("ok"), "stop")),
+        ])
+        .await;
+        let extra = json!({ "user": "midterm", "metadata": { "a": 1 } });
+        let mut r = req();
+        r.extra = Some(extra.as_object().unwrap());
+        complete(&stub::client(), Flavor::OpenAi, &server.url, Some("k"), &r)
+            .await
+            .unwrap();
+        let sent = server.requests();
+        assert_eq!(sent.len(), 2);
+        for body in [sent[0].json(), sent[1].json()] {
+            assert_eq!(body["user"], "midterm");
+            assert_eq!(body["metadata"]["a"], 1);
+        }
         assert!(sent[1].json().get("reasoning_effort").is_none());
     }
 

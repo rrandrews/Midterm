@@ -7,6 +7,7 @@ mod cli;
 pub mod commands;
 pub mod effort;
 mod error;
+mod extra;
 mod http;
 mod keys;
 mod openai;
@@ -26,7 +27,7 @@ use tokio::sync::oneshot;
 
 use effort::{AnthropicCaps, Effort, EffortSetting, Resolved};
 pub use error::{AiError, ErrorKind};
-pub use provider::{Backend, ProviderConfig, ProviderId};
+pub use provider::{Backend, ProviderConfig, ProviderId, Target};
 
 /// What one completion asks for, whichever adapter sends it.
 pub struct Completion<'a> {
@@ -39,6 +40,9 @@ pub struct Completion<'a> {
     pub effort: Option<Effort>,
     /// Total time allowed for the request.
     pub timeout: Duration,
+    /// The profile's extra request JSON, merged into the body last (see
+    /// `extra.rs`). API adapters only.
+    pub extra: Option<&'a serde_json::Map<String, serde_json::Value>>,
 }
 
 /// A completion's text, and whether the provider rejected the effort field
@@ -321,34 +325,50 @@ impl AiManager {
         resolved
     }
 
-    fn note_reply(
-        &self,
-        provider: &ProviderConfig,
-        model: &str,
-        resolved: &Resolved,
-        reply: &Reply,
-    ) {
+    /// Remembers a level the provider rejected. Not when the profile's extra
+    /// JSON sets a reasoning field: the rejection may be about that field.
+    fn note_reply(&self, target: &Target, model: &str, resolved: &Resolved, reply: &Reply) {
+        if extra::touches_reasoning(target.extra.as_ref()) {
+            return;
+        }
         if let (true, Some(level)) = (reply.effort_dropped, resolved.level) {
-            self.rejections.insert(provider, model, level);
+            self.rejections.insert(&target.provider, model, level);
         }
     }
 
-    /// One completion from `provider`, at the reasoning effort `setting`
+    /// The target's extra JSON, checked (see `extra::check`); `None` for CLI
+    /// backends, which ignore it. Runs before any key lookup.
+    pub fn checked_extra(
+        target: &Target,
+    ) -> Result<Option<&serde_json::Map<String, serde_json::Value>>, AiError> {
+        if matches!(target.provider.id.backend(), Backend::Cli(_)) {
+            return Ok(None);
+        }
+        let extra = target.extra.as_ref();
+        if let Some(extra) = extra {
+            extra::check(extra)?;
+        }
+        Ok(extra)
+    }
+
+    /// One completion from `target`, at its reasoning effort setting
     /// (`None`: Midterm's pick, see [`effort::builtin`]).
     pub async fn complete(
         &self,
-        provider: &ProviderConfig,
-        model: &str,
+        target: &Target,
         system: &str,
         prompt: &str,
         reply_tokens: Option<u32>,
-        setting: Option<EffortSetting>,
     ) -> Result<Reply, AiError> {
+        let provider = &target.provider;
+        let setting = target.effort;
         let backend = provider.id.backend();
-        let model = model.trim();
-        if !matches!(backend, Backend::Cli(_)) && model.is_empty() {
+        let model = target.model.trim();
+        let is_cli = matches!(backend, Backend::Cli(_));
+        if !is_cli && model.is_empty() {
             return Err(AiError::other("choose a model"));
         }
+        let extra = Self::checked_extra(target)?;
         let completion = |resolved: &Resolved| Completion {
             model,
             system,
@@ -356,6 +376,7 @@ impl AiManager {
             max_tokens: output_budget(reply_tokens, resolved),
             effort: resolved.level,
             timeout: effort::scaled(http::REQUEST_TIMEOUT, resolved),
+            extra,
         };
         match backend {
             Backend::OpenAiCompatible(flavor) => {
@@ -371,7 +392,7 @@ impl AiManager {
                 )
                 .await
                 .map_err(|e| redact(e, key.as_deref()))?;
-                self.note_reply(provider, model, &resolved, &reply);
+                self.note_reply(target, model, &resolved, &reply);
                 Ok(reply)
             }
             Backend::Anthropic => {
@@ -391,7 +412,7 @@ impl AiManager {
                 let reply = anthropic::complete(self.http()?, &base, &key, &req, shape)
                     .await
                     .map_err(|e| redact(e, Some(&key)))?;
-                self.note_reply(provider, model, &resolved, &reply);
+                self.note_reply(target, model, &resolved, &reply);
                 Ok(reply)
             }
             Backend::Cli(kind) => {
@@ -400,21 +421,18 @@ impl AiManager {
                     .discovery
                     .complete(kind, provider.cli_path(), model, system, prompt, &resolved)
                     .await?;
-                self.note_reply(provider, model, &resolved, &reply);
+                self.note_reply(target, model, &resolved, &reply);
                 Ok(reply)
             }
         }
     }
 
-    /// The effort levels Settings → AI offers for `provider` and `model`,
-    /// and what the stored `setting` would send.
-    pub async fn effort_options(
-        &self,
-        provider: &ProviderConfig,
-        model: &str,
-        setting: Option<EffortSetting>,
-    ) -> Result<EffortOptions, AiError> {
-        let model = model.trim();
+    /// The effort levels Settings → AI offers for `target`'s provider and
+    /// model, and what its effort setting would send. Extra JSON is ignored.
+    pub async fn effort_options(&self, target: &Target) -> Result<EffortOptions, AiError> {
+        let provider = &target.provider;
+        let setting = target.effort;
+        let model = target.model.trim();
         let mut caps = None;
         let mut caps_failed = false;
         if provider.id.backend() == Backend::Anthropic && !model.is_empty() {
@@ -521,7 +539,16 @@ mod tests {
             cli_path: None,
         };
         // Custom keys are optional; a broken keychain must not matter here.
-        let ask = |setting| manager.complete(&config, "m", "", "p", None, Some(setting));
+        let manager = &manager;
+        let ask = |setting| {
+            let target = Target {
+                provider: config.clone(),
+                model: "m".into(),
+                effort: Some(setting),
+                extra: None,
+            };
+            async move { manager.complete(&target, "", "p", None).await }
+        };
         let first = ask(EffortSetting::High).await.unwrap();
         assert!(first.effort_dropped);
         assert_eq!(ask(EffortSetting::High).await.unwrap().text, "b");
@@ -552,6 +579,7 @@ mod tests {
             max_tokens: 10,
             effort: None,
             timeout: http::REQUEST_TIMEOUT,
+            extra: None,
         };
         let client = stub::client();
         let canceller = manager.clone();
@@ -699,12 +727,67 @@ mod tests {
             base_url: None,
             cli_path: Some(fake.to_string_lossy().into_owned()),
         };
+        let target = Target {
+            provider: config,
+            model: String::new(),
+            effort: None,
+            extra: None,
+        };
         let result = manager
-            .cancellable("c1", manager.complete(&config, "", "", "p", None, None))
+            .cancellable("c1", manager.complete(&target, "", "p", None))
             .await;
         assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(!marker.exists(), "the CLI's process group was not killed");
+    }
+
+    #[tokio::test]
+    async fn extra_is_checked_before_the_key_lookup() {
+        let manager = AiManager::default();
+        let target: Target = serde_json::from_value(json!({
+            "provider": { "id": "openai" },
+            "model": "gpt-4o",
+            "extra": { "messages": [] }
+        }))
+        .unwrap();
+        let e = manager.complete(&target, "", "p", None).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Other);
+        assert!(e.message.contains("`messages`"), "{}", e.message);
+    }
+
+    #[tokio::test]
+    async fn rejections_are_not_memoized_when_extra_sets_reasoning() {
+        let ok = json!({ "choices": [{ "message": { "content": "a" }, "finish_reason": "stop" }] });
+        let server = stub::serve(vec![
+            Canned::json(
+                400,
+                json!({ "error": { "message": "bad reasoning field" } }),
+            ),
+            Canned::json(200, ok.clone()),
+            Canned::json(200, ok),
+        ])
+        .await;
+        let manager = AiManager::default();
+        let target: Target = serde_json::from_value(json!({
+            "provider": { "id": "custom", "baseUrl": server.url },
+            "model": "m",
+            "effort": "high",
+            "extra": { "reasoning": { "max_tokens": 5 } }
+        }))
+        .unwrap();
+        assert!(
+            manager
+                .complete(&target, "", "p", None)
+                .await
+                .unwrap()
+                .effort_dropped
+        );
+        manager.complete(&target, "", "p", None).await.unwrap();
+        let sent = server.requests();
+        assert_eq!(sent.len(), 3);
+        // Not remembered: the level is sent again.
+        assert_eq!(sent[2].json()["reasoning_effort"], "high");
+        assert_eq!(sent[2].json()["reasoning"]["max_tokens"], 5);
     }
 
     #[tokio::test]
@@ -715,10 +798,13 @@ mod tests {
             base_url: None,
             cli_path: None,
         };
-        let e = manager
-            .complete(&config, " ", "", "p", None, None)
-            .await
-            .unwrap_err();
+        let target = Target {
+            provider: config,
+            model: " ".into(),
+            effort: None,
+            extra: None,
+        };
+        let e = manager.complete(&target, "", "p", None).await.unwrap_err();
         assert_eq!(e.kind, ErrorKind::Other);
     }
 }

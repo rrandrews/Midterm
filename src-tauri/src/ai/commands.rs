@@ -7,10 +7,9 @@ use serde::Serialize;
 use tauri::State;
 
 use super::cli::CliStatus;
-use super::effort::EffortSetting;
 use super::error::{AiError, truncate};
 use super::keys;
-use super::provider::ProviderConfig;
+use super::provider::{ProviderConfig, Target};
 use super::{AiManager, EffortOptions};
 
 #[derive(Debug, Serialize)]
@@ -34,22 +33,19 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| AiError::other(format!("background task failed: {e}")))?
 }
 
-/// One completion. `maxTokens` is the reply budget; room for thinking is
-/// added. `effort` is the stored reasoning effort setting (absent: Midterm's
-/// pick). Cancel with `ai_cancel(requestId)`.
+/// One completion from `target`. `maxTokens` is the reply budget; room for
+/// thinking is added. `target.effort` is the profile's reasoning effort
+/// setting (absent: Midterm's pick). Cancel with `ai_cancel(requestId)`.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn ai_suggest(
     manager: State<'_, AiManager>,
     request_id: String,
-    provider: ProviderConfig,
-    model: String,
+    target: Target,
     system: String,
     prompt: String,
     max_tokens: Option<u32>,
-    effort: Option<EffortSetting>,
 ) -> Result<Suggestion, AiError> {
-    let work = manager.complete(&provider, &model, &system, &prompt, max_tokens, effort);
+    let work = manager.complete(&target, &system, &prompt, max_tokens);
     let reply = manager.cancellable(&request_id, work).await?;
     Ok(Suggestion { text: reply.text })
 }
@@ -60,7 +56,8 @@ pub fn ai_cancel(manager: State<'_, AiManager>, request_id: String) {
     manager.cancel(&request_id);
 }
 
-/// The provider's live model list; `[]` for CLIs that cannot list theirs.
+/// The provider's live model list, text-to-text models only for
+/// OpenAI-compatible providers; `[]` for CLIs that cannot list theirs.
 #[tauri::command]
 pub async fn ai_models(
     manager: State<'_, AiManager>,
@@ -69,35 +66,33 @@ pub async fn ai_models(
     manager.models(&provider).await
 }
 
-/// The reasoning effort levels offered for `provider` and `model`, and what
-/// the stored `effort` setting would send.
+/// The reasoning effort levels offered for `target`'s provider and model,
+/// and what its effort setting would send. `target.extra` is ignored.
 #[tauri::command]
 pub async fn ai_effort_options(
     manager: State<'_, AiManager>,
-    provider: ProviderConfig,
-    model: String,
-    effort: Option<EffortSetting>,
+    target: Target,
 ) -> Result<EffortOptions, AiError> {
-    manager.effort_options(&provider, &model, effort).await
+    manager.effort_options(&target).await
 }
 
 /// Sends a tiny request. Failures are reported in the result, not as errors.
 #[tauri::command]
-pub async fn ai_test(
-    manager: State<'_, AiManager>,
-    provider: ProviderConfig,
-    model: String,
-    effort: Option<EffortSetting>,
-) -> Result<TestResult, AiError> {
-    let options = manager.effort_options(&provider, &model, effort).await.ok();
+pub async fn ai_test(manager: State<'_, AiManager>, target: Target) -> Result<TestResult, AiError> {
+    // Bad extra JSON fails before the effort lookup reads a key.
+    if let Err(e) = AiManager::checked_extra(&target) {
+        return Ok(TestResult {
+            ok: false,
+            message: e.message,
+        });
+    }
+    let options = manager.effort_options(&target).await.ok();
     let result = manager
         .complete(
-            &provider,
-            &model,
+            &target,
             "You are a connectivity check. Reply with the single word OK.",
             "Reply with OK.",
             Some(16),
-            effort,
         )
         .await;
     Ok(match result {

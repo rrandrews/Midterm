@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::effort::EffortSetting;
 use super::error::AiError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -31,6 +32,21 @@ pub struct ProviderConfig {
     /// Overrides where a CLI provider's executable is.
     #[serde(default)]
     pub cli_path: Option<String>,
+}
+
+/// What a request goes to: a model profile as the webview resolved it for a
+/// feature. `extra` is the profile's extra request JSON (API providers only;
+/// see `extra.rs`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Target {
+    pub provider: ProviderConfig,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub effort: Option<EffortSetting>,
+    #[serde(default)]
+    pub extra: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Request-shape differences between OpenAI-compatible providers.
@@ -198,6 +214,33 @@ mod tests {
 
     fn config(json: serde_json::Value) -> ProviderConfig {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn parses_targets() {
+        let t: Target = serde_json::from_value(serde_json::json!({
+            "provider": { "id": "openrouter" },
+            "model": "openai/gpt-4o",
+            "effort": "high",
+            "extra": { "provider": { "order": ["x"] } }
+        }))
+        .unwrap();
+        assert_eq!(t.provider.id, ProviderId::Openrouter);
+        assert_eq!(t.model, "openai/gpt-4o");
+        assert_eq!(t.effort, Some(EffortSetting::High));
+        assert_eq!(t.extra.unwrap()["provider"]["order"][0], "x");
+        // Only the provider is required.
+        let t: Target =
+            serde_json::from_value(serde_json::json!({ "provider": { "id": "codex" } })).unwrap();
+        assert_eq!(t.model, "");
+        assert!(t.effort.is_none() && t.extra.is_none());
+        // Extra must be an object.
+        assert!(
+            serde_json::from_value::<Target>(serde_json::json!({
+                "provider": { "id": "openai" }, "extra": [1]
+            }))
+            .is_err()
+        );
     }
 
     #[test]
