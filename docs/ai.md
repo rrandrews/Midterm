@@ -16,20 +16,22 @@ runs the CLI. The webview's CSP stays "nothing remote"
 
 | File | What lives there |
 |---|---|
-| `mod.rs` | `AiManager` (Tauri state): dispatch by provider, the `max_tokens` budget, cancellation registry, lazy HTTP client. |
+| `mod.rs` | `AiManager` (Tauri state): `prepare` (key, base URL, capabilities, effort, budget), `complete` and `stream` dispatching by provider, the `max_tokens` budget, cancellation registry, lazy HTTP client. |
 | `commands.rs` | The Tauri commands below. Thin. |
 | `extra.rs` | Extra request JSON: protected keys, size check, the JSON Merge Patch into a request body. |
 | `effort.rs` | Reasoning effort: levels offered per provider and model, Midterm's pick, clamping, token headroom, timeout scaling. |
 | `provider.rs` | `ProviderId`, `ProviderConfig`, `Target` (what a request goes to), default base URLs, which backend each provider uses. |
-| `openai.rs` | OpenAI-compatible chat completions adapter. |
-| `anthropic.rs` | Anthropic Messages adapter (raw HTTP). |
-| `http.rs` | Shared HTTP: client, send, HTTP-status → error mapping, error-body parsing. |
+| `openai.rs` | OpenAI-compatible chat completions adapter: `complete`, `stream` and its accumulator `ChatStream` (with `ThinkFilter`). |
+| `anthropic.rs` | Anthropic Messages adapter (raw HTTP): `complete`, `stream` and its accumulator `MessageStream`. |
+| `http.rs` | Shared HTTP: client, `open` (status checked) + `json` (`send` is both), the effort retry, stream timeouts and chunk reads, HTTP-status → error mapping, error-body parsing. |
+| `sse.rs` | A byte-level Server-Sent Events parser (`SseParser::push`/`finish`). |
+| `stream.rs` | What the streaming adapters share: `Stop`, `Streamed`, the `StreamState` accumulator trait, `Text` (leading whitespace, trimming), and the read loop (one delta per network chunk). |
 | `cli.rs` | CLI providers: locating, status, argument builders, running. |
 | `shell_path.rs` | The login shell's PATH (marker extraction, merge, executable lookup). |
 | `process.rs` | Child process with stdin, timeout, and process-group kill on drop. |
 | `keys.rs` | Keys in the OS credential store (`keyring`). |
 | `error.rs` | `AiError { kind, message }`. |
-| `stub.rs` | Tests only: a stub HTTP server on 127.0.0.1. |
+| `stub.rs` | Tests only: a stub HTTP server on 127.0.0.1 (JSON answers, or SSE frames with gaps). |
 
 ### Providers
 
@@ -114,7 +116,8 @@ the editor's hint says so.
 
 ### Request shapes
 
-Common to every HTTP request: one non-streaming call, a system prompt and
+Common to every HTTP request: one call (non-streaming for `ai_suggest` and
+`ai_test`, streaming for `ai_stream`; see [Streaming](#streaming)), a system prompt and
 one user message, **no sampling parameters** (`temperature`, `top_p`,
 `top_k`: current Claude models reject them, and reasoning models on other
 providers do too), a reasoning effort (see "Reasoning effort" below), and a
@@ -125,7 +128,8 @@ backend sends `maxTokens` (the reply budget, default 512, clamped to
 medium, 16384 for high and "Provider default", 32768 for xhigh and max
 (`output_budget` in `mod.rs`, `effort::headroom`). Timeouts: 10 s to connect,
 60 s in total, doubled for high and "Provider default", tripled for xhigh
-and max.
+and max. A streamed request instead gets that (scaled) time for the headers
+and for each chunk, and 600 s in total.
 
 **OpenAI-compatible** (`openai.rs`), `POST {base}/chat/completions`:
 
@@ -201,6 +205,49 @@ when present. No text is `empty`, with a token-limit hint on `stop_reason:
 
 Models: `GET {base}/models?limit=1000`, following `has_more` / `last_id`
 (`after_id`), up to 10 pages.
+
+### Streaming
+
+`ai_stream` asks the same request with `"stream": true` and reads the reply
+as Server-Sent Events. No SSE or stream crates: `reqwest::Response::chunk()`
+and `sse.rs` (lines split on `\n`/`\r\n` at the byte level before
+decoding, multi-line `data:` joined with `\n`, `:` comments skipped, an
+event without a closing blank line still counts at the end).
+
+- **Before any byte streams**, `http::open` checks the status and reads a
+  non-2xx body, so the retry without effort and the error mapping are the
+  same as for `complete`. Nothing from the rejected attempt is emitted.
+- **Deltas**: one per network chunk (the text of all its events together),
+  not per token. Leading whitespace before the first text is dropped; the
+  final text is trimmed. The command's result carries the full text and is
+  **authoritative**: Channel messages and the invoke response are not
+  ordered against each other.
+- **Readers are accumulators** (`StreamState::event` per SSE event,
+  `take_text` per chunk, then the adapter's `finish`), so tool calls can be
+  added to the state later without touching the loop.
+- **OpenAI-compatible**: text from `choices[0].delta.content` (a string or
+  text parts); `data: [DONE]` ends it (reading stops there). Chunks with
+  empty `choices` are fine; `reasoning_content`/`reasoning` are ignored.
+  `ThinkFilter` holds text back while it could still be a leading
+  `<think>` block and swallows the block. `delta.refusal` (accumulated) or
+  `finish_reason: "content_filter"` → `refused`; a chunk with `error` →
+  `http` (message redacted, then truncated); `finish_reason: "length"` →
+  `stop: "length"` with text, `empty` with the token-limit hint without.
+  A response that is not `text/event-stream` (a server that ignores
+  `stream`) is read whole, parsed like a non-streaming reply and emitted as
+  one delta.
+- **Anthropic**: `content_block_delta` with `text_delta` → text, across
+  blocks; `thinking_delta`, `signature_delta`, `ping` and unknown events
+  are ignored; `message_stop` ends it. `message_delta.delta.stop_reason`:
+  `refusal` → `refused` (with `stop_details.explanation`), `max_tokens` → as
+  `length` above. `event: error` → `http` with `error.message`.
+- **CLIs**: the whole reply as one delta at the end (incremental Claude Code
+  output is a follow-up).
+- **Timeouts**: the effort-scaled request timeout (60/120/180 s) limits the
+  wait for the headers and for each chunk; 600 s caps the whole stream.
+  Either expiry is `timeout`.
+- **Cancel**: `ai_cancel(requestId)` drops the stream; no delta is sent
+  after it.
 
 ### Reasoning effort
 
@@ -320,6 +367,9 @@ type AiTarget = { provider: ProviderConfig; model: string; effort?: EffortLevel;
 
 ai_suggest({ requestId: string, target: AiTarget, system: string, prompt: string,
              maxTokens?: number }) -> { text: string }
+ai_stream({ requestId: string, target: AiTarget, system: string, prompt: string,
+            maxTokens?: number, onEvent: Channel<{ type: "delta", text: string }> })
+    -> { text: string, stop: "end" | "length", effortDropped: boolean }
 ai_cancel({ requestId: string }) -> void
 ai_models({ provider: ProviderConfig }) -> string[]         // text -> text only (see Models)
 ai_test({ target: AiTarget }) -> { ok: boolean, message: string }
@@ -336,8 +386,14 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
   headroom for reasoning is added. `target.effort` is the profile's setting
   (absent: Midterm's pick). `target.extra` is merged into the body (see
   [Extra request JSON](#extra-request-json)).
+- `ai_stream`: `ai_suggest` streamed (see [Streaming](#streaming)). Reply
+  text arrives on `onEvent` as `delta`s; the result's `text` is the whole
+  reply and wins over the deltas. `stop` is `length` when the token limit
+  cut the reply short. Errors and cancellation as for `ai_suggest`.
+  `ai_suggest` and `ai_test` stay non-streaming (one-line replies, and
+  `stream: false` is the most compatible path for odd servers).
 - `ai_cancel`: aborts the HTTP request or kills the CLI; the pending
-  `ai_suggest` rejects with `cancelled`. A cancel that arrives before its
+  `ai_suggest` or `ai_stream` rejects with `cancelled`. A cancel that arrives before its
   `ai_suggest` registered is remembered (the last 64), so the request is
   cancelled as soon as it starts. Cancels for ids that already started
   (the last 256) are ignored, so a late or repeated cancel never cancels a
@@ -378,10 +434,10 @@ Every command rejects with `{ kind, message }`:
 | `noKey` | No key stored for a provider that needs one. |
 | `auth` | HTTP 401/403, or a CLI that exited with a login/API-key message. |
 | `network` | No HTTP answer (DNS, connection refused, TLS). |
-| `http` | Any other non-2xx status; the message has the status and the provider's error message. |
+| `http` | Any other non-2xx status; the message has the status and the provider's error message. Also an error reported inside a stream. |
 | `refused` | Anthropic `stop_reason: "refusal"`, OpenAI `message.refusal`, `finish_reason: "content_filter"`. |
 | `empty` | The model returned no text (with a hint when the token limit was hit). |
-| `timeout` | 60 s for HTTP, 120 s for a CLI run (×2 at high or "Provider default", ×3 at xhigh or max). |
+| `timeout` | 60 s for HTTP, 120 s for a CLI run (×2 at high or "Provider default", ×3 at xhigh or max). A stream: that long without headers or a chunk, or 600 s in all. |
 | `cancelled` | `ai_cancel` was called. |
 | `notFound` | A CLI's executable was not found (or `cliPath` is not executable). |
 | `other` | Everything else: no model chosen, bad base URL, keychain failure, unexpected response, CLI failure. A redirect (3xx) comes back as `http`. |
@@ -401,7 +457,15 @@ the budget invariant, refusal, empty, 401/5xx, unreachable
 server, model listing and pagination, cancel mid-request, a cancel or
 replacement landing after the result is ready, redaction before
 truncation, keychain accounts (`custom` bound to its URL), and keyless
-`custom` surviving a failed key lookup. The credential store itself is not
+`custom` surviving a failed key lookup. Streaming: the SSE parser (a
+fixture split at every byte offset, CRLF, comments, multi-line data, no
+final blank line), both adapters' accumulators (concatenation, `[DONE]`, a
+think block split across deltas, refusal, content filter, length with and
+without text, empty, error chunks and events, thinking and pings ignored,
+several text blocks), the JSON fallback, retry without effort before the
+stream (no delta from the first attempt, level memoized), 401 before the
+stream, cancel mid-stream (no later delta), a stalled stream and stalled
+headers (`timeout`), and extra JSON that tries to set `stream`. The credential store itself is not
 exercised by tests. CLI tests use
 fake executables (flags, empty working directory, stdin) and check that
 cancel kills the process group. Pure helpers (PATH markers, merge, lookup,
@@ -417,7 +481,8 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 
 | File | What |
 |---|---|
-| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, cancellable, and a model list of ~40 ids for API providers (none for CLIs). |
+| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`. `aiStream` creates the Channel and drops deltas that arrive after the promise settled. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, a canned Markdown stream in 12 chunks 40 ms apart (both cancellable), and a model list of ~40 ids for API providers (none for CLIs). |
+| `stream.ts` | `streamText(feature, { system, prompt, maxTokens }, onText)` → `{ result, cancel }`: resolves `targetFor(feature)`, makes the request id, accumulates deltas and calls `onText(soFar)` at most once per animation frame, then once with the authoritative text. Nothing calls it yet (explain/fix will). Tested in `stream.test.ts` against the mock. |
 | `profiles.ts` | Pure apart from the settings store: which profile a feature uses (`profileFor`), `providerConfigOf`, `profileReady` / `profileProblem`, `featureReady` / `featureProblem`, `targetFor(feature)` (omits `extra` for CLIs), `FEATURES` (the rows under Features), `parseExtra`, and the mutations (`saveProfile`, `deleteProfile`, `duplicateProfile`, `setDefaultProfile`, `setFeatureProfile`). Unit-tested in `profiles.test.ts`. |
 | `context.ts` | Pure: `buildContext` (system prompt and prompt), `redact`, `trimOutput`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
 | `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `localPrediction`. Requests go to `targetFor("suggestions")`. |
@@ -691,3 +756,7 @@ running (a stand-in OpenAI-compatible server), the self-test:
 4. checks that the ghost text shows the stub's answer. The stub only gives
    that answer when the prompt contains the command and not the secret.
 5. checks that ⇥ accepts it, then puts the profiles back.
+
+The stub also answers `stream: true` with SSE chunks (a longer reply, one
+word every 80 ms) and `[DONE]`, for trying `ai_stream` / `streamText` by
+hand in a dev build.
