@@ -189,8 +189,8 @@ panes showing it (`renameOpenFiles`), keeping their buffers. See
 | ↑ ↓, Page Up/Down, Home/End | Move the selection |
 | → | Expand; on an expanded directory, go to its first child |
 | ← | Collapse; otherwise go to the parent |
-| ↩ | Open a file, toggle a directory |
-| F2 | Rename |
+| ⌘O, ⌘↓ | Open a file, toggle a directory (with ⇧: open in a new pane) |
+| ↩, F2 | Rename (as in Finder) |
 | ⌘⌫ | Move to Trash (asks) |
 | letters | Type-ahead; repeating one letter cycles through names starting with it |
 

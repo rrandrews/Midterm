@@ -110,6 +110,12 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
       if (row?.type === "entry") void confirmTrash(model, [row.entry.path]);
       return;
     }
+    // Finder's keys: ⌘O (or ⌘↓) opens, ↩ renames.
+    if (event.metaKey && !event.ctrlKey && !event.altKey && (event.key.toLowerCase() === "o" || event.key === "ArrowDown")) {
+      handled();
+      if (row) activate(row, event.shiftKey);
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     switch (event.key) {
       case "ArrowDown":
@@ -155,9 +161,6 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
         return;
       }
       case "Enter":
-        handled();
-        if (row) activate(row);
-        return;
       case "F2":
         handled();
         if (row?.type === "entry") model.startRename(row.entry.path);

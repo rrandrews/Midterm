@@ -52,7 +52,7 @@ export function EntryMenuItems({ paneId, model, entry, root, onOpen }: EntryMenu
         </>
       ) : (
         <>
-          <MenuItem shortcut="↩" onSelect={() => onOpen(false)}>
+          <MenuItem shortcut="⌘O" onSelect={() => onOpen(false)}>
             Open
           </MenuItem>
           <MenuItem onSelect={() => onOpen(true)}>Open in new pane</MenuItem>
@@ -68,7 +68,7 @@ export function EntryMenuItems({ paneId, model, entry, root, onOpen }: EntryMenu
         <MenuItem onSelect={() => void copyText(relative)}>Copy relative path</MenuItem>
       )}
       <MenuSeparator />
-      <MenuItem shortcut="F2" onSelect={() => model.startRename(entry.path)}>
+      <MenuItem shortcut="↩" onSelect={() => model.startRename(entry.path)}>
         Rename…
       </MenuItem>
       <MenuItem shortcut="⌘⌫" onSelect={() => void confirmTrash(model, [entry.path])}>
