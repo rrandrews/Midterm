@@ -188,7 +188,7 @@ exercises the viewer).
 | Command | What it does |
 |---|---|
 | `bun run tauri dev` | The real app. |
-| `bun run dev:mcp` | The real app with the local Tauri MCP bridge enabled. Self-contained: vite on 1430 (`MIDTERM_DEV_PORT`, HMR on port+1), app data in `com.ron.midterm.mcp`, in-memory AI keys, window titled "midterm (mcp)". Runs next to `tauri dev`. |
+| `bun run dev:mcp` | The real app with the local Tauri MCP bridge enabled. Self-contained: vite on 1430 (`MIDTERM_DEV_PORT`; HMR on the same port, or port+1 with `TAURI_DEV_HOST`), app data in `com.ron.midterm.mcp`, in-memory AI keys, window titled "midterm (mcp)". Runs next to `tauri dev`. |
 | `bun run dev` | Frontend only, in a browser at `localhost:1420`, with a mock PTY that echoes input. Good for layout work. |
 | `bun run dev` + `?mockup` | Same, seeded with the arrangement from the design mockup (the editor and viewer show files from the mock file tree). |
 | `bun run test` | Frontend unit tests (vitest). |
