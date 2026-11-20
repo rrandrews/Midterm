@@ -68,6 +68,10 @@
 .block-header {
   margin-bottom: 4px;
 }
+/* The host of a directory on another machine (a shell over ssh). */
+.block-host {
+  color: var(--color-accent);
+}
 
 .block-actions {
   display: flex;

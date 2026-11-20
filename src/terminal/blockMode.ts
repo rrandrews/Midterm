@@ -57,7 +57,9 @@ export function canRun(session: TerminalSession): boolean {
 /** Runs a command line from the blocks view (input editor or re-run). */
 export function runFromBlocks(session: TerminalSession, command: string): void {
   if (!command.trim() || !canRun(session)) return;
-  if (session.runCommand(command)) recordCommand(command);
+  // A nested shell's commands (over ssh) stay out of this machine's history.
+  const root = !session.blocks.snapshot().nested;
+  if (session.runCommand(command) && root) recordCommand(command);
 }
 
 export const copyBlockCommand = (block: Block) => void copyText(block.command);

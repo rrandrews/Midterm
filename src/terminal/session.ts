@@ -127,7 +127,13 @@ export class TerminalSession {
       }),
     );
 
-    registerFileLinks(this.term, paneId, () => this.currentCwd);
+    // Paths a shell over ssh prints are not files here.
+    registerFileLinks(
+      this.term,
+      paneId,
+      () => this.currentCwd,
+      () => !this.blocks.snapshot().nested,
+    );
 
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
@@ -463,6 +469,9 @@ export class TerminalSession {
 
   private noteForeground(current: PtyForeground | null): void {
     if (this.disposed) return;
+    // The root shell has the terminal again, so no nested shell (ssh) is
+    // running, whatever marks were missed.
+    if (current?.isShell) this.blocks.resetScope();
     const last = this.lastForeground;
     this.lastForeground = current;
     if (last?.pid !== current?.pid || last?.name !== current?.name) {
@@ -472,7 +481,12 @@ export class TerminalSession {
 
   private handleCwdReport(data: string): void {
     const reported = parseOsc7(data);
-    if (!reported || !this.isLocal(reported.host) || reported.path === this.currentCwd) return;
+    if (!reported) return;
+    const local = this.isLocal(reported.host);
+    // Every report, remote ones too, places a nested shell's blocks.
+    this.blocks.noteCwd({ cwd: reported.path, host: local ? undefined : reported.host });
+    // Only this machine's directories become the pane's (splits open there).
+    if (!local || reported.path === this.currentCwd) return;
     this.currentCwd = reported.path;
     this.events.onCwdChange(this, reported.path);
   }

@@ -56,10 +56,13 @@ export const terminalSkills: Skill[] = [
           return {
             paneId: id,
             integration: snap.integration,
-            cwd: session.cwd ?? null,
+            cwd: (snap.nested ? snap.location.cwd : session.cwd) ?? null,
+            // Set while the prompt is a shell on another machine (over ssh).
+            host: snap.nested ? (snap.location.host ?? "unknown") : null,
             blocks: snap.blocks.slice(-count).map((block) => ({
               command: block.command,
               cwd: block.cwd ?? null,
+              host: block.host ?? null,
               exitCode: block.exitCode ?? null,
               running: block.end === undefined,
               durationMs: block.endedAt === undefined ? null : Math.round(block.endedAt - block.startedAt),

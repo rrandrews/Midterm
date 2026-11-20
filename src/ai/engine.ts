@@ -95,23 +95,30 @@ export async function contextFor(paneId: string): Promise<BuiltContext | null> {
     .snapshot()
     .blocks.filter((block) => block.end !== undefined && block.command.trim());
   const recentBlocks = limit > 0 ? finished.slice(-limit) : [];
-  const cwd = session.cwd;
+  const snapshot = session.blocks.snapshot();
+  // At a nested shell's prompt (over ssh) the machine is another one: its
+  // host and directory, no local OS, branch or shell.
+  const remote = snapshot.nested;
+  const cwd = remote ? snapshot.location.cwd : session.cwd;
+  const host = remote ? (snapshot.location.host ?? "unknown") : undefined;
   // Looked up now: the last block's branch is from when it started (before a `git switch`).
-  const branch = cwd ? await branchOf(cwd).catch(() => null) : null;
+  const branch = cwd && !remote ? await branchOf(cwd).catch(() => null) : null;
   const foreground = session.foregroundProgram;
   return buildContext({
-    os: osName(),
-    shell: foreground?.isShell ? foreground.name : undefined,
-    cwd: homeRelative(cwd),
+    os: remote ? undefined : osName(),
+    host,
+    shell: foreground?.isShell && !remote ? foreground.name : undefined,
+    cwd: remote ? cwd : homeRelative(cwd),
     branch,
     blocks: recentBlocks.map((block) => ({
       command: block.command,
       exitCode: block.exitCode,
       output: blockOutput(session, block),
-      cwd: homeRelative(block.cwd),
+      cwd: block.host ? `${block.host}:${block.cwd ?? "?"}` : homeRelative(block.cwd),
     })),
-    // This terminal's own commands only: other panes' history is not sent.
-    recentCommands: session.blocks.commands.slice(-50),
+    // This terminal's own commands only (and only the prompt's shell's):
+    // other panes' history is not sent.
+    recentCommands: session.blocks.commandsFor(session.blocks.scope).slice(-50),
   });
 }
 

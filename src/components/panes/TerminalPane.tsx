@@ -8,7 +8,14 @@ import { type TerminalMode, useTerminalSettings } from "../../terminal/settings"
 import { BlocksView } from "./BlocksView";
 import { TerminalFindBar } from "./TerminalFindBar";
 
-const NO_BLOCKS: BlocksSnapshot = { integration: "pending", phase: "running", altScreen: false, blocks: [] };
+const NO_BLOCKS: BlocksSnapshot = {
+  integration: "pending",
+  phase: "running",
+  altScreen: false,
+  blocks: [],
+  nested: false,
+  location: {},
+};
 const noSubscribe = () => () => {};
 
 /**

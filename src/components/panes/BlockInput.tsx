@@ -45,10 +45,14 @@ export function BlockInput({
     };
   }, []);
 
+  // At a nested shell's prompt (over ssh) only its own commands apply: the
+  // saved history is this machine's.
+  const scope = session.blocks.scope;
+  const scopeCommands = session.blocks.commandsFor(scope);
   const entries = useMemo(
-    () => historyEntries(session.blocks.commands, globalHistory()),
+    () => historyEntries(session.blocks.commandsFor(scope), scope === "" ? globalHistory() : []),
     // The lists only change between commands (and when the saved history loads).
-    [session, historyLoaded, session.blocks.commands.length],
+    [session, historyLoaded, scope, scopeCommands.length],
   );
   // The AI's suggestion: asked for at an empty prompt, dropped when the prompt goes.
   useEffect(() => {
