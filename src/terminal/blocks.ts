@@ -9,30 +9,54 @@ import type { IBuffer, IDisposable, IEvent, IMarker } from "@xterm/xterm";
  *   ESC ] 133 ; C BEL         the command line was accepted; output starts
  *   ESC ] 133 ; D ; <n> BEL   the command finished with exit status n
  *
+ * Our scripts add `;aid=<id>` (the spec's application id) to every mark,
+ * one id per shell, so marks from a shell nested inside it (`ssh host`)
+ * can be told apart; see "Nested shells" below.
+ *
  * The xterm buffer stays the source of truth: a block is a pair of markers
  * (`term.registerMarker`) on the rows where its output starts (C) and ends
  * (D), which xterm keeps pointing at the right rows as scrollback is
  * trimmed or reflowed. Blocks whose rows have left the scrollback are
  * dropped. `BlockTracker` only follows marks and keeps the list; drawing
  * the rows is `blockRender.ts`, the UI is `BlocksView`.
+ *
+ * Nested shells. A shell started inside a command (`ssh host` with our
+ * integration on the remote, or a remote shell with its own OSC 133
+ * script) prints marks of its own. The first aid seen is the root shell's;
+ * an A with another aid (or none) while a root command runs enters the
+ * nested scope: the outer block (`ssh host`) ends there and the nested
+ * shell's commands become blocks of their own, flat in the same list,
+ * tagged `nested` and with the nested shell's host and cwd (from OSC 7,
+ * `noteCwd`), never the local ones. Any mark with the root aid leaves it:
+ * a nested block still running ends with the root D's status, or else a
+ * closing block for the outer command is added (what followed the last
+ * prompt, e.g. "Connection to host closed."). A root shell without aids
+ * (another terminal's integration) never enters the nested scope.
  */
 
-export type PromptMark =
+export type PromptMark = (
   | { kind: "A" | "B" | "C" }
-  | { kind: "D"; exitCode: number | undefined };
+  | { kind: "D"; exitCode: number | undefined }
+) & {
+  /** The `aid=` parameter: which shell printed the mark. */
+  aid?: string;
+};
 
 /** Parses the payload of an OSC 133 sequence (what follows `133;`). */
 export function parseOsc133(data: string): PromptMark | null {
   const [kind, ...params] = data.split(";");
+  const aidParam = params.find((param) => param.startsWith("aid="));
+  const aid = aidParam ? aidParam.slice(4) || undefined : undefined;
+  const withAid = <T extends object>(mark: T): T & { aid?: string } => (aid === undefined ? mark : { ...mark, aid });
   switch (kind) {
     case "A":
     case "B":
     case "C":
-      return { kind };
+      return withAid({ kind });
     case "D": {
       const first = params[0];
       const code = first !== undefined && /^-?\d+$/.test(first) ? Number(first) : undefined;
-      return { kind: "D", exitCode: code };
+      return withAid({ kind: "D" as const, exitCode: code });
     }
     default:
       return null;
@@ -66,6 +90,10 @@ export type Block = {
   readonly command: string;
   /** Working directory when the command started. */
   readonly cwd: string | undefined;
+  /** Host of `cwd` when it is not this machine (a nested shell over ssh). */
+  readonly host: string | undefined;
+  /** Run by a shell nested inside a root command (see "Nested shells"). */
+  readonly nested: boolean;
   /** Git branch of `cwd` when it started, once looked up; `null` outside a repository. */
   branch: string | null | undefined;
   /** First row of output (where C was printed), or the first one left (see `truncated`). */
@@ -112,10 +140,33 @@ export type BlocksSnapshot = {
   readonly altScreen: boolean;
   /** Blocks still in the scrollback, oldest first. The last one may be running. */
   readonly blocks: readonly Block[];
+  /** The prompt belongs to a shell nested inside a root command (`ssh host`). */
+  readonly nested: boolean;
+  /**
+   * Where the prompt is: for the root shell, `cwd` is unset here (use the
+   * session's); for a nested shell, its last report, either part unset when
+   * unknown.
+   */
+  readonly location: BlockLocation;
 };
 
+/** A working directory and, when it is not this machine, its host. */
+export type BlockLocation = { readonly cwd?: string; readonly host?: string };
+
+/**
+ * Which commands a history entry belongs with: `""` for the root shell, a
+ * host for a nested shell that reported one, `"nested"` otherwise.
+ */
+export type CommandScope = string;
+
+/** The scope of a prompt or block: `nested` and where it is. */
+export function scopeOf(nested: boolean, location: BlockLocation | undefined): CommandScope {
+  if (!nested) return "";
+  return location?.host ?? "nested";
+}
+
 export type BlockTrackerOptions = {
-  /** The shell's working directory as last reported (OSC 7). */
+  /** The root shell's working directory as last reported (OSC 7 from this machine). */
   cwd: () => string | undefined;
   /** Looks up a directory's git branch (`null` outside a work tree). */
   branch?: (cwd: string) => Promise<string | null>;
@@ -145,8 +196,16 @@ export class BlockTracker {
 
   /** Where the user's input starts on the current prompt (B). */
   private inputStart: { marker: IMarker; col: number } | undefined;
-  /** Commands run in this terminal, oldest first. */
-  private readonly commandList: string[] = [];
+  /** Commands run in this terminal, oldest first, with their scope. */
+  private readonly commandList: { command: string; scope: CommandScope }[] = [];
+
+  /** The root shell's aid: unset until the first mark, `null` if it had none. */
+  private rootAid: string | null | undefined;
+  private nested = false;
+  /** The root command a nested shell runs inside (`ssh host`), for the closing block. */
+  private outer: { command: string; cwd: string | undefined; startedAt: number } | undefined;
+  /** The last OSC 7 since the current root command started (a nested shell's). */
+  private innerLocation: BlockLocation | undefined;
 
   constructor(
     private readonly term: BlockTerminal,
@@ -198,9 +257,41 @@ export class BlockTracker {
     return () => this.outputListeners.delete(listener);
   }
 
-  /** Commands run in this terminal, oldest first. */
+  /** The root shell's commands in this terminal, oldest first. */
   get commands(): readonly string[] {
-    return this.commandList;
+    return this.commandsFor("");
+  }
+
+  /** Commands run in `scope` in this terminal, oldest first. */
+  commandsFor(scope: CommandScope): string[] {
+    return this.commandList.filter((entry) => entry.scope === scope).map((entry) => entry.command);
+  }
+
+  /** The scope of the prompt: whose history applies to it. */
+  get scope(): CommandScope {
+    return scopeOf(this.nested, this.innerLocation);
+  }
+
+  /**
+   * Records a working directory report (OSC 7). `host` is unset for this
+   * machine. Root blocks take their directory from `options.cwd`; this is
+   * where a nested shell's comes from.
+   */
+  noteCwd(location: BlockLocation): void {
+    this.innerLocation = location;
+    if (this.nested) this.changed();
+  }
+
+  /**
+   * Leaves the nested scope without a closing block: the root shell is back
+   * in the foreground but printed no mark we recognised (a root shell
+   * without aids, or `exec zsh`).
+   */
+  resetScope(): void {
+    if (!this.nested) return;
+    if (this.runningBlock()) this.finishRunning(undefined);
+    this.leaveNested();
+    this.changed();
   }
 
   /** The buffer blocks live in (marks are never placed on the alternate screen). */
@@ -221,6 +312,7 @@ export class BlockTracker {
     this.inputStart?.marker.dispose();
     this.inputStart = undefined;
     this.phase = "running";
+    if (!this.nested) this.innerLocation = undefined;
     this.addBlock(command, start, true);
     this.changed();
     return true;
@@ -257,6 +349,20 @@ export class BlockTracker {
     if (this.integration !== "present") {
       this.integration = "present";
       clearTimeout(this.integrationTimer);
+    }
+    if (this.rootAid === undefined) this.rootAid = mark.aid ?? null;
+    if (this.rootAid !== null) {
+      if (this.nested && mark.aid === this.rootAid) {
+        // The root shell is back: the nested one (and ssh) ended.
+        this.closeNested(mark.kind === "D" ? mark.exitCode : undefined);
+        if (mark.kind === "D") {
+          this.phase = "prompt";
+          this.changed();
+          return;
+        }
+      } else if (!this.nested && mark.kind === "A" && mark.aid !== this.rootAid && this.runningBlock()) {
+        this.enterNested();
+      }
     }
     switch (mark.kind) {
       case "A":
@@ -300,35 +406,94 @@ export class BlockTracker {
     this.inputStart?.marker.dispose();
     this.inputStart = undefined;
     this.phase = "running";
+    if (!this.nested) this.innerLocation = undefined;
     if (start) this.addBlock(command, start, false);
   }
 
-  private addBlock(command: string, start: IMarker, provisional: boolean): void {
-    const cwd = this.options.cwd();
+  /** A nested shell's first prompt (A with a foreign aid) while root command runs. */
+  private enterNested(): void {
+    const running = this.runningBlock();
+    if (!running) return;
+    this.outer = { command: running.command, cwd: running.cwd, startedAt: running.startedAt };
+    this.nested = true;
+    // The A that follows ends the outer block, which holds the banner.
+  }
+
+  /** The root shell printed a mark: the nested shell is gone. */
+  private closeNested(exitCode: number | undefined): void {
+    if (this.runningBlock()) {
+      // `exit` typed at the nested prompt, or the connection dropped mid-command.
+      this.finishRunning(exitCode);
+    } else if (this.outer) {
+      this.closeOuter(exitCode);
+    }
+    this.leaveNested();
+  }
+
+  /**
+   * Adds the closing block for the outer command (ended at a nested prompt,
+   * e.g. by ⌃D): its output is what followed the last prompt line.
+   */
+  private closeOuter(exitCode: number | undefined): void {
+    const outer = this.outer;
+    if (!outer) return;
+    const buffer = this.term.buffer.normal;
+    const row = this.inputStart && this.inputStart.marker.line >= 0 ? this.inputStart.marker.line : buffer.baseY + buffer.cursorY;
+    const start = this.markerAt(row);
+    if (!start) return;
+    this.addBlock(outer.command, start, true, {
+      record: false,
+      location: { cwd: outer.cwd },
+      nested: false,
+      startedAt: outer.startedAt,
+    });
+    this.finishRunning(exitCode);
+  }
+
+  private leaveNested(): void {
+    this.nested = false;
+    this.outer = undefined;
+    this.innerLocation = undefined;
+  }
+
+  private addBlock(
+    command: string,
+    start: IMarker,
+    provisional: boolean,
+    overrides: { record?: boolean; location?: BlockLocation; nested?: boolean; startedAt?: number } = {},
+  ): void {
+    const nested = overrides.nested ?? this.nested;
+    const location: BlockLocation =
+      overrides.location ?? (nested ? (this.innerLocation ?? {}) : { cwd: this.options.cwd() });
+    const { cwd, host } = location;
     const block: Block = {
       id: this.nextId++,
       command,
       cwd,
+      host,
+      nested,
       branch: undefined,
       start,
       truncated: false,
       provisional,
       end: undefined,
       endCol: 0,
-      startedAt: this.now(),
+      startedAt: overrides.startedAt ?? this.now(),
       endedAt: undefined,
       exitCode: undefined,
       cleared: false,
     };
     start.onDispose(() => this.schedulePrune());
     this.blocks.push(block);
-    if (command.trim()) {
-      const index = this.commandList.lastIndexOf(command);
+    if (command.trim() && overrides.record !== false) {
+      const scope = scopeOf(nested, location);
+      const index = this.commandList.findIndex((entry) => entry.command === command && entry.scope === scope);
       if (index !== -1) this.commandList.splice(index, 1);
-      this.commandList.push(command);
+      this.commandList.push({ command, scope });
       if (this.commandList.length > MAX_PANE_COMMANDS) this.commandList.shift();
     }
-    if (cwd && this.options.branch) {
+    // Never looked up on this machine for a directory somewhere else.
+    if (cwd && !host && this.options.branch) {
       this.options.branch(cwd).then(
         (branch) => {
           block.branch = branch;
@@ -454,6 +619,8 @@ export class BlockTracker {
       phase: this.phase,
       altScreen: this.altScreen,
       blocks: [...this.blocks],
+      nested: this.nested,
+      location: this.nested ? (this.innerLocation ?? {}) : {},
     };
   }
 

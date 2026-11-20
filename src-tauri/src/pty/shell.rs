@@ -12,9 +12,10 @@ pub struct CustomShell {
 }
 
 /// The command for a new terminal in `cwd`: the user's login shell with
-/// shell integration where supported (see `super::integration`), or
-/// `custom` (from the settings) exactly as given, without integration.
-pub fn shell_command(cwd: Option<&str>, custom: Option<&CustomShell>) -> CommandBuilder {
+/// shell integration where supported (see `super::integration`; with
+/// `ssh`, also on ssh remotes), or `custom` (from the settings) exactly as
+/// given, without integration.
+pub fn shell_command(cwd: Option<&str>, custom: Option<&CustomShell>, ssh: bool) -> CommandBuilder {
     if let Some(custom) = custom.filter(|custom| !custom.program.trim().is_empty()) {
         let mut cmd = CommandBuilder::new(custom.program.trim());
         cmd.args(&custom.args);
@@ -24,7 +25,7 @@ pub fn shell_command(cwd: Option<&str>, custom: Option<&CustomShell>) -> Command
     #[allow(unused_mut)]
     let mut cmd = base_command(cwd);
     #[cfg(unix)]
-    super::integration::setup(&mut cmd);
+    super::integration::setup(&mut cmd, ssh);
     cmd
 }
 
@@ -87,7 +88,7 @@ mod tests {
 
     #[test]
     fn sets_terminal_environment() {
-        let cmd = shell_command(None, None);
+        let cmd = shell_command(None, None, true);
         let env = |key: &str| cmd.get_env(key).and_then(|v| v.to_str());
         assert_eq!(env("TERM"), Some("xterm-256color"));
         assert_eq!(env("COLORTERM"), Some("truecolor"));
@@ -99,14 +100,14 @@ mod tests {
     #[test]
     fn runs_a_custom_shell_as_given() {
         let custom = CustomShell { program: "/bin/sh".into(), args: vec!["-i".into()] };
-        let cmd = shell_command(None, Some(&custom));
+        let cmd = shell_command(None, Some(&custom), true);
         assert!(!cmd.is_default_prog());
         let argv: Vec<_> = cmd.get_argv().iter().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(argv, ["/bin/sh", "-i"]);
         assert_eq!(cmd.get_env("TERM_PROGRAM").and_then(|v| v.to_str()), Some("midterm"));
 
         let blank = CustomShell { program: "  ".into(), args: vec![] };
-        assert!(shell_command(None, Some(&blank)).get_env("TERM").is_some());
+        assert!(shell_command(None, Some(&blank), true).get_env("TERM").is_some());
     }
 
     #[test]
@@ -119,7 +120,7 @@ mod tests {
         assert_eq!(resolve_cwd(Some("")), home);
         assert_eq!(resolve_cwd(Some("/definitely/not/a/real/dir")), home);
 
-        let cmd = shell_command(tmp.to_str(), None);
+        let cmd = shell_command(tmp.to_str(), None, true);
         assert_eq!(cmd.get_cwd().map(PathBuf::from), Some(tmp));
     }
 }

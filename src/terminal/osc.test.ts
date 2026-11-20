@@ -21,6 +21,10 @@ describe("parseOsc7", () => {
     expect(parseOsc7("file://h/tmp/")?.path).toBe("/tmp");
   });
 
+  it("accepts kitty's scheme", () => {
+    expect(parseOsc7("kitty-shell-cwd://box/srv/app")).toEqual({ host: "box", path: "/srv/app" });
+  });
+
   it("rejects other schemes and garbage", () => {
     expect(parseOsc7("http://h/tmp")).toBeNull();
     expect(parseOsc7("/tmp")).toBeNull();

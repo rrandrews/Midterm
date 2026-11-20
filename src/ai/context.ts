@@ -14,7 +14,10 @@ export type ContextBlock = {
 };
 
 export type ContextInput = {
-  os: string;
+  /** This machine's OS; left out for a shell on another host. */
+  os?: string;
+  /** The host the shell runs on when it is not this machine (over ssh). */
+  host?: string;
   shell?: string;
   cwd?: string;
   branch?: string | null;
@@ -107,7 +110,9 @@ export function trimOutput(output: string): string {
 
 export function buildContext(input: ContextInput): BuiltContext {
   const parts: string[] = [];
-  const facts = [`OS: ${input.os}`];
+  const facts: string[] = [];
+  if (input.host) facts.push(`Remote host (over ssh): ${input.host}`);
+  else if (input.os) facts.push(`OS: ${input.os}`);
   if (input.shell) facts.push(`Shell: ${input.shell}`);
   if (input.cwd) facts.push(`Working directory: ${input.cwd}`);
   if (input.branch) facts.push(`Git branch: ${input.branch}`);

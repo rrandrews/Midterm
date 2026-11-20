@@ -71,7 +71,7 @@ installed plugins, enable/disable, import, remove) and Keyboard (click a
 shortcut and press the new keys; ✕ unbinds, ↺ restores the default;
 conflicts are flagged). Below them, one section per pane plugin: Terminal
 (default mode, cursor, scrollback, copy-on-select, bell, background, shell
-and arguments), Explorer (follow the terminal, hidden files), Editor (word
+and arguments, shell integration over ssh), Explorer (follow the terminal, hidden files), Editor (word
 wrap, tab size, line numbers), Viewer (Markdown rendered or as source),
 each with its skills. Controls are shared from `src/settings/controls.tsx`,
 which also renders plugins' declarative fields. Changes apply and save at once; text

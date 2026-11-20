@@ -116,7 +116,8 @@ prints OSC 7 and OSC 133 marks like the real integration, so blocks mode can
 be worked on in a browser, and knows a few commands: `ls`, `cd`, `pwd`,
 `echo`, `git status`, `seq N`, `sleep N` (⌃C stops it), `ask` (reads a
 line), `vim`/`less` (alternate screen, `q` quits), `clear`, `true`,
-`false`, `exit [n]`.
+`false`, `exit [n]`. `ssh <host>` pretends to start a remote shell (its own
+aid, `file://<host>` reports, `exit` leaves it), for nested blocks.
 
 ## Backend (`src-tauri/src/pty/`)
 
@@ -218,6 +219,61 @@ Paths are percent-encoded byte by byte (everything except `A-Za-z0-9/._~-`)
 in zsh and bash, and with `string escape --style=url` in fish. The host is
 `$HOST` (zsh), `$HOSTNAME` (bash) or `$hostname` (fish).
 
+### SSH
+
+`ssh host` from an integrated shell loads the same integration on the
+remote, so the remote's commands become blocks (see "Nested shells" under
+Blocks mode). Nothing is installed on the remote and nothing of the user's
+ssh setup changes.
+
+- **Opt-out**: the terminal setting `sshIntegration` (on by default, new
+  terminals). When on, `pty_spawn` passes `MIDTERM_SSH_DIR=<dir>/ssh`; the
+  scripts move it into a shell variable (`_midterm_ssh_dir`, fish
+  `__midterm_ssh_dir`), unexport it and define an `ssh` function, unless
+  the user has one (bash and fish check; in zsh the user's `.zshrc` runs
+  later and replaces ours). `command ssh` skips it for one call. Scripts,
+  git, rsync, scp and sftp run the ssh binary, not the function.
+- **What is wrapped**: `ssh/should-wrap.sh` (POSIX sh, one parser for
+  all three shells) exits 0 only for a plain interactive login: stdin and
+  stdout are terminals; exactly one non-option argument (the
+  destination; options may come after it, a second one is a remote
+  command); every option is one ssh knows; none of `-N -f -T -W -O -Q -G
+  -V -s -n`, `-o RemoteCommand=…` or `-o RequestTTY=no`; and `ssh -G
+  <args>` shows no `remotecommand` and not `requesttty no`. Anything else
+  runs ssh unchanged. `-p`, `-J`, `-i`, `-F`, `ProxyCommand` and
+  ControlMaster pass through: the wrapper only adds `-t` and a command.
+- **The remote command** (`integration::remote_command`, written to
+  `<dir>/ssh/remote-command`) is one line: `sh -c '<stage 0>'`, with no
+  other single quote, no backslash, newline or `!`, so sh, bash, zsh,
+  fish and csh all hand the inner text to `sh` intact. Stage 0 decodes a
+  base64 payload (`base64 -d`, BSD `base64 -D`, or `openssl base64 -d
+  -A`) and evals it, else starts `$SHELL -l`. About 11 KB.
+- **Stage 1** (`ssh/bootstrap.sh`, with the four scripts filled in,
+  comment lines stripped) prints `/etc/motd` unless `~/.hushlogin` exists
+  (sshd only does that for sessions without a command), then for zsh,
+  bash or fish (3.0 or later) writes only that shell's scripts to a
+  `mktemp -d` directory (umask 077), sets the same variables as
+  `integration::inject` plus `MIDTERM_SI_EPHEMERAL=<that dir>` and execs
+  the shell as a login shell. An unknown shell, an older fish or a failing
+  `mktemp` gets a plain login shell (one block, as before).
+- **Cleanup**: with `MIDTERM_SI_EPHEMERAL` set, each script deletes its
+  own files by name once loaded and `rmdir`s the directory (zsh in
+  `.zshenv`'s `always` block, bash and fish at the top, after the shell
+  has read the file), then unsets the variable. Only
+  `MIDTERM_SHELL_INTEGRATION=1` stays exported on the remote. The remote
+  gets no `ssh` function, so a second hop is plain.
+- **Security**: the payload holds only the embedded scripts (the same
+  for every host; tested). It is visible briefly in the remote's `ps`. The
+  marks and OSC 7 a remote prints only affect display: see "Nested
+  shells".
+
+Known gaps: hosts without a POSIX `sh`, or that reject commands
+(network gear, `ForceCommand` menus, git hosts), fail or behave
+differently when wrapped; turn the setting off or use `command ssh`.
+Only `/etc/motd` is printed, not the dynamic MOTD some Linux systems
+build with PAM. fish and csh login shells do not exec their last `-c`
+command, so one idle process stays on the remote for the session.
+
 ### OSC 133: prompt and command marks
 
 Each script marks the parts of the screen (all terminated by BEL):
@@ -228,6 +284,11 @@ Each script marks the parts of the screen (all terminated by BEL):
 | `ESC ] 133 ; B` | prompt ends, input starts | the end of the prompt (`PS1`, or fish's wrapped `fish_prompt`) |
 | `ESC ] 133 ; C` | command accepted, output starts | preexec |
 | `ESC ] 133 ; D ; <status>` | command finished | the prompt hook (fish: `fish_postexec`), only if a C was printed since the last prompt |
+
+Every mark ends with `;aid=<id>` (the spec's application id): `$$.$RANDOM`
+(fish `$fish_pid.(random)`), set once per shell. It tells the root
+shell's marks from those of a shell nested inside it (over ssh). Other
+terminals ignore the parameter.
 
 So one command is `C … output … D;n (OSC 7) A prompt B`. An empty Enter or
 ⌃C at the prompt gives only `A B`. Redraws (zle `reset-prompt`, ⌃L) can
@@ -309,7 +370,11 @@ A session learns its shell's directory from OSC 7 (`file://host/path`,
 parsed by `src/terminal/osc.ts`). Only reports naming this machine count:
 an empty host, `localhost`, or the host name from `gethostname` (the
 `local_hostname` command, loaded at startup), which is what zsh, bash and
-fish report. Reports from elsewhere (a shell inside `ssh`) are ignored.
+fish report. Reports from elsewhere (a shell inside `ssh`) never become the
+pane's directory: the session passes every report to the tracker
+(`blocks.noteCwd`), where it places a nested shell's blocks, but only this
+machine's change `session.cwd` and `PaneData.cwd`. kitty's
+`kitty-shell-cwd://host/path` form is accepted too.
 
 - Each change is written to the pane's `PaneData.cwd` (`updatePaneData` in
   `src/actions.ts`: through the mounted layout's handle if the tab is
@@ -364,7 +429,8 @@ environment, resize, an 8 MB flood, exit codes, kill, terminal scaling, a
 terminal surviving a re-dock, focus after layout changes, and shell
 integration (OSC 7), automatic tab titles, the close confirmation, and
 M4–M7 features: blocks from the shell's OSC 133 marks (command, output,
-exit status), settings reaching a live terminal, the generated menu bar,
+exit status), a nested shell started by `eval`ing the ssh remote command
+(nested blocks, back to the root scope on `exit`, pane cwd unchanged), settings reaching a live terminal, the generated menu bar,
 editor file writes with the stale-save check, and fuzzy file listing; and
 plugins (M8): the example plugin imported and loaded through `plugin://`,
 its pane opened from a generated command, its stylesheet, skills (code,
@@ -458,6 +524,40 @@ after C), whether the **alternate screen** is active
 (`buffer.onBufferChange`), and whether the shell has **integration**:
 `pending` until the first mark, `absent` if none came within 3 s of the
 first output.
+
+### Nested shells
+
+A shell started inside a command prints marks of its own: `ssh host` with
+our integration on the remote (see SSH above), or a remote with another
+terminal's OSC 133 script. The tracker tells them apart by `aid`:
+
+- The aid of the first mark is the root shell's. If the first mark has
+  none (another terminal's integration locally), nothing below applies.
+- **Enter**: an A with a different aid (or none) while a root command
+  runs. The outer block (`ssh host`) ends there, holding the banner, and
+  the snapshot's `nested` is set.
+- While nested, the nested shell's commands are blocks in the same flat
+  list, with `nested: true` and the `host`/`cwd` of the last OSC 7 since
+  the root command started (both unset if it sent none, never the local
+  ones).
+- **Leave**: any mark with the root aid. A nested block still running
+  (`exit`, or the connection dropped mid-command) ends with the root D's
+  status. Otherwise (⌃D at the nested prompt) a closing block is added for
+  the outer command: its output is what followed the last prompt line
+  ("Connection to host closed."), its status the root D's, its duration
+  the whole session; it is not a second history entry.
+- The session also leaves the scope (`resetScope`, no closing block) when
+  the root shell is in the foreground again (`isShell`), in case its marks
+  were missed.
+- Remote blocks get no git lookup and the terminal no file links while
+  nested. "Run again" needs the prompt to be in the block's scope.
+  History: the tracker keeps each command with its scope (`""` for the
+  root, the host, or `"nested"`); at a nested prompt the editor's history
+  and suggestions use that scope's commands only, and nothing from a
+  nested shell is saved to `history.json`. AI context names the remote
+  host instead of the local OS, branch and shell.
+- The header and the input's footer show `host:path` for a directory on
+  another machine.
 
 ### What is shown
 

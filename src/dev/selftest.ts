@@ -8,6 +8,7 @@ import { isConfirming } from "../components/ui/ConfirmDialog";
 import { findPane } from "../state/layout";
 import { findTabOfPane, selectActiveTab, useAppStore } from "../state/store";
 import { peekSession, sessionCount } from "../terminal/sessions";
+import type { TerminalSession } from "../terminal/session";
 import { menuSpecs } from "../commands/nativeMenu";
 import { findFiles, readTextFile, writeTextFile } from "../ipc/fs";
 import { getSettings, useSettings } from "../settings/settings";
@@ -312,6 +313,10 @@ async function featureChecks(checks: Check[]): Promise<void> {
     });
   }
 
+  // A nested shell started the way `ssh host` starts one (the remote
+  // command, run here instead of on a remote), gets blocks of its own.
+  if (atPrompt && canRun(session)) await nestedShellCheck(checks, session);
+
   // Settings reach live terminals.
   const fontSize = getSettings().fontSize;
   useSettings.getState().updateSettings({ fontSize: fontSize + 1.5 });
@@ -356,6 +361,41 @@ async function featureChecks(checks: Check[]): Promise<void> {
     name: "palette: lists files under the terminal's directory",
     ok: typeof found !== "string",
     detail: typeof found === "string" ? found : found.paths.length,
+  });
+}
+
+/**
+ * MID-64: `eval` of the remote command `ssh host` would send starts an
+ * integrated shell with its own aid in a temporary directory; its commands
+ * become nested blocks and `exit` returns to the root scope with the pane's
+ * cwd unchanged. Skipped when the shell has no ssh wrapper (fish, or the
+ * setting off).
+ */
+async function nestedShellCheck(checks: Check[], session: TerminalSession): Promise<void> {
+  const cwdBefore = session.cwd;
+  const count = () => session.blocks.snapshot().blocks.length;
+  const lastBlock = () => session.blocks.snapshot().blocks[count() - 1];
+  const before = count();
+  session.runCommand('[ -n "${_midterm_ssh_dir-}" ] && eval "$(cat "$_midterm_ssh_dir/remote-command")"');
+  const nested = await waitFor(() => session.blocks.snapshot().nested && canRun(session), 8000);
+  if (!nested) {
+    const last = lastBlock();
+    // `[ -n … ]` failed: no wrapper in this shell.
+    if (last?.exitCode === 1 && count() === before + 1) return;
+    checks.push({ name: "ssh: the remote command starts a nested shell", ok: false, detail: session.blocks.snapshot() });
+    return;
+  }
+  const inner = count();
+  session.runCommand("echo nested-$((40+2))");
+  const ran = await waitFor(() => count() > inner && lastBlock()?.exitCode !== undefined, 8000);
+  const block = lastBlock();
+  const output = block ? blockOutput(session, block) : "";
+  session.runCommand("exit");
+  const back = await waitFor(() => !session.blocks.snapshot().nested && canRun(session), 8000);
+  checks.push({
+    name: "ssh: a nested shell's commands are nested blocks, and exit returns",
+    ok: ran && block?.nested === true && output.includes("nested-42") && back && session.cwd === cwdBefore,
+    detail: { nested: block?.nested, output: output.slice(0, 100), back, cwd: session.cwd, cwdBefore },
   });
 }
 

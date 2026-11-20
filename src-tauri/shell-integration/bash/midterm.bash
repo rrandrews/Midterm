@@ -34,6 +34,14 @@
 if [ -z "${_midterm_si_loaded-}" ]; then
 _midterm_si_loaded=1
 
+# Started over ssh (see ssh/bootstrap.sh), this file is in a temporary
+# directory: bash has read it, so it goes.
+if [ -n "${MIDTERM_SI_EPHEMERAL-}" ]; then
+  command rm -f -- "$MIDTERM_SI_EPHEMERAL/bash/midterm.bash"
+  command rmdir -- "$MIDTERM_SI_EPHEMERAL/bash" "$MIDTERM_SI_EPHEMERAL" 2>/dev/null
+  builtin unset MIDTERM_SI_EPHEMERAL
+fi
+
 if [ -r /etc/profile ]; then
   builtin source /etc/profile
 fi
@@ -44,6 +52,23 @@ for _midterm_si_file in ~/.bash_profile ~/.bash_login ~/.profile; do
   fi
 done
 builtin unset _midterm_si_file
+
+# `ssh host` loads this integration on the remote too (see the zsh script):
+# an `ssh` function adds the remote command for plain interactive logins,
+# unless the user's startup files defined their own.
+if [ -n "${MIDTERM_SSH_DIR-}" ]; then
+  _midterm_ssh_dir=$MIDTERM_SSH_DIR
+  builtin unset MIDTERM_SSH_DIR
+  if ! builtin declare -F ssh >/dev/null; then
+    ssh() {
+      if command sh "$_midterm_ssh_dir/should-wrap.sh" "$@"; then
+        command ssh -t "$@" "$(<"$_midterm_ssh_dir/remote-command")"
+      else
+        command ssh "$@"
+      fi
+    }
+  fi
+fi
 
 # Percent-encodes $1 byte by byte for a file:// URL into _midterm_encoded.
 _midterm_urlencode() {
@@ -80,18 +105,21 @@ _midterm_report_cwd() {
 # end of PROMPT_COMMAND until the first command of the next command line.
 _midterm_ran=
 _midterm_armed=
+# This shell's id in its marks (`aid=`), so the terminal can tell them from
+# the marks of a shell nested inside it (over ssh).
+_midterm_aid=$$.$RANDOM
 # OSC 133;B, wrapped in \[ \] so that bash does not count it as visible.
-_midterm_mark_b='\[\e]133;B\a\]'
+_midterm_mark_b='\[\e]133;B;aid='"$_midterm_aid"'\a\]'
 
 _midterm_prompt_command() {
   local ret=$?  # exit status of the last command, for OSC 133;D
   _midterm_armed=
   if [[ -n $_midterm_ran ]]; then
     _midterm_ran=
-    builtin printf '\033]133;D;%s\007' "$ret"
+    builtin printf '\033]133;D;%s;aid=%s\007' "$ret" "$_midterm_aid"
   fi
   _midterm_report_cwd
-  builtin printf '\033]133;A\007'
+  builtin printf '\033]133;A;aid=%s\007' "$_midterm_aid"
   # Pass the status on to the user's hooks, except under errexit, where a
   # failing hook would end the shell.
   [[ $- == *e* ]] && builtin return 0
@@ -128,7 +156,7 @@ _midterm_debug_trap() {
       # (Under functrace the trap also fires inside functions, ours too.)
       _midterm_armed=
       _midterm_ran=1
-      builtin printf '\033]133;C\007'
+      builtin printf '\033]133;C;aid=%s\007' "$_midterm_aid"
     fi
   fi
   [[ ${1-} == chain ]] && builtin return $ret

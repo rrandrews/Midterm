@@ -127,7 +127,13 @@ export class TerminalSession {
       }),
     );
 
-    registerFileLinks(this.term, paneId, () => this.currentCwd);
+    // Paths a shell over ssh prints are not files here.
+    registerFileLinks(
+      this.term,
+      paneId,
+      () => this.currentCwd,
+      () => !this.blocks.snapshot().nested,
+    );
 
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
@@ -364,11 +370,12 @@ export class TerminalSession {
     if (this.phase !== "idle") return;
     this.phase = "starting";
 
-    const { shell, shellArgs } = terminalSettings();
+    const { shell, shellArgs, sshIntegration } = terminalSettings();
     spawnPty({
       cwd: this.currentCwd,
       shell: shell || undefined,
       shellArgs,
+      sshIntegration,
       cols: this.term.cols,
       rows: this.term.rows,
       onData: (bytes) => this.receive(bytes),
@@ -444,11 +451,12 @@ export class TerminalSession {
    * inside `ssh`) are not directories here and are ignored.
    */
   private isLocal(host: string): boolean {
-    if (host === "" || host === "localhost") return true;
     const local = localHostname();
-    if (local) return host === local || host === local.replace(/\.local$/, "");
+    if (local) return host === "" || host === "localhost" || host === local || host === local.replace(/\.local$/, "");
+    // Without the host name (outside Tauri), the first report is taken to be
+    // this machine's: `localhost` too, so a later `file://box/…` is not.
     this.firstHost ??= host;
-    return host === this.firstHost;
+    return host === this.firstHost || ((host === "" || host === "localhost") && (this.firstHost === "" || this.firstHost === "localhost"));
   }
 
   private scheduleForegroundCheck(delay = FOREGROUND_CHECK_MS): void {
@@ -463,6 +471,9 @@ export class TerminalSession {
 
   private noteForeground(current: PtyForeground | null): void {
     if (this.disposed) return;
+    // The root shell has the terminal again, so no nested shell (ssh) is
+    // running, whatever marks were missed.
+    if (current?.isShell) this.blocks.resetScope();
     const last = this.lastForeground;
     this.lastForeground = current;
     if (last?.pid !== current?.pid || last?.name !== current?.name) {
@@ -472,7 +483,12 @@ export class TerminalSession {
 
   private handleCwdReport(data: string): void {
     const reported = parseOsc7(data);
-    if (!reported || !this.isLocal(reported.host) || reported.path === this.currentCwd) return;
+    if (!reported) return;
+    const local = this.isLocal(reported.host);
+    // Every report, remote ones too, places a nested shell's blocks.
+    this.blocks.noteCwd({ cwd: reported.path, host: local ? undefined : reported.host });
+    // Only this machine's directories become the pane's (splits open there).
+    if (!local || reported.path === this.currentCwd) return;
     this.currentCwd = reported.path;
     this.events.onCwdChange(this, reported.path);
   }

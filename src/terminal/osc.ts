@@ -12,7 +12,8 @@ export function parseOsc7(data: string): ReportedCwd | null {
   } catch {
     return null;
   }
-  if (url.protocol !== "file:") return null;
+  // kitty's integration reports `kitty-shell-cwd://host/path` instead.
+  if (url.protocol !== "file:" && url.protocol !== "kitty-shell-cwd:") return null;
   let path: string;
   try {
     path = decodeURIComponent(url.pathname);

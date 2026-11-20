@@ -35,6 +35,8 @@ export type TerminalSettings = {
   shell: string;
   /** Arguments for `shell` (ignored when `shell` is empty). */
   shellArgs: string[];
+  /** `ssh host` loads the shell integration on the remote (blocks over ssh). */
+  sshIntegration: boolean;
 };
 
 export const SCROLLBACK_RANGE = { min: 0, max: 1_000_000 } as const;
@@ -87,6 +89,13 @@ export const TERMINAL_FIELDS: SettingField[] = [
     hint: "Used with a custom shell; quote arguments containing spaces",
     placeholder: "-l",
     default: [],
+  },
+  {
+    key: "sshIntegration",
+    type: "toggle",
+    label: "Shell integration over ssh",
+    hint: "`ssh host` loads it on the remote for blocks there (nothing is left behind). New terminals; `command ssh` skips it once.",
+    default: true,
   },
 ];
 

@@ -67,9 +67,19 @@ function readLogicalLine(term: Terminal, y: number): { text: string; cells: IBuf
 }
 
 /** Registers the link provider on `term`. `cwd` is the shell's current directory. */
-export function registerFileLinks(term: Terminal, paneId: string, cwd: () => string | undefined): IDisposable {
+export function registerFileLinks(
+  term: Terminal,
+  paneId: string,
+  cwd: () => string | undefined,
+  /** False while the paths printed are not on this machine (a shell over ssh). */
+  enabled: () => boolean = () => true,
+): IDisposable {
   return term.registerLinkProvider({
     provideLinks(y, callback) {
+      if (!enabled()) {
+        callback(undefined);
+        return;
+      }
       const { text, cells } = readLogicalLine(term, y);
       const matches = findFileLinks(text).filter(
         (match) => cells[match.start]?.y <= y && cells[match.end - 1]?.y >= y,
