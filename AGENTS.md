@@ -11,6 +11,7 @@ Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with eac
 - Prefer trusted, actively maintained open-source libraries over rolling your own when a library solves the problem well. Before adding a dependency, check recent releases and adoption. Don't add a dependency for something a few lines of code handle, and don't reimplement what an existing dependency already does.
 
 ## Testing
+- Developer `tauri dev` builds: `MIDTERM_KEYSTORE=file` keeps AI keys in `~/.config/midterm-dev/keys.json` instead of the Keychain (no password prompt per rebuild; debug builds only). See docs/ai.md#keys.
 - For active testing use `bun run dev:mcp` to start an app version that can be monitored via the tauri mcp server. It is self-contained: vite on port 1430 (runs alongside the developer's `tauri dev` on 1420), its own app data (`com.ron.midterm.mcp`) and in-memory AI keys (no Keychain unless `MIDTERM_KEYSTORE=os` is set), so no backup/restore of settings is needed.
 
 ## Repo

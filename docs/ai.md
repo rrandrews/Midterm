@@ -425,6 +425,23 @@ the OS store, `MIDTERM_KEYSTORE=memory` forces memory in any build
 (`keys::select_store`). The chosen store is logged once at startup
 (`ai keys: using the Memory store`).
 
+OS store reads are cached for the life of the app (set and delete update
+the cache; errors are not cached), so the OS asks at most once per account
+per launch, not once per request.
+
+**Key file for debug builds.** A `tauri dev` binary is ad-hoc signed with
+no Team ID, so the Keychain item's partition list ties it to the hash of
+one build, and every rebuild asks for the login password, even with the
+item set to "Allow all applications". `MIDTERM_KEYSTORE=file` (debug builds
+on Unix only; release and `tauri-mcp` builds ignore it, so a variable
+exported in your shell never gives an agent's `dev:mcp` instance your keys) keeps keys in a JSON file instead:
+`MIDTERM_KEYS_FILE`, or `~/.config/midterm-dev/keys.json`, an object of
+account → key. The directory is created 700 and the file written 600,
+atomically (temp file + rename). A file readable by group or others is
+refused ("run chmod 600"), and malformed JSON is an error rather than an
+empty store, so a write never overwrites it. Keys in the Keychain are not
+copied over; save them again in Settings → AI.
+
 ### Commands
 
 Arguments are camelCase on the wire (Tauri's default); results are
