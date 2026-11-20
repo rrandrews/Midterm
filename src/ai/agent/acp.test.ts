@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AcpEvent, AcpPromptRequest, AcpStop, AcpToolResult } from "../../ipc/ai";
 import type { RegisteredSkill, ToolResult } from "../../plugins/skills";
 import type { SkillTool } from "../../plugins/types";
-import { type AcpDeps, CONTINUE_PROMPT, MAX_ACP_TOOL_CALLS, runAcpTurn } from "./acp";
+import { type AcpDeps, CONTINUE_PROMPT, MAX_ACP_TOOL_CALLS, SESSION_LOST, runAcpTurn } from "./acp";
 import { type ConfirmAnswer, type Conversation, type ConversationHandle, type TranscriptItem, newConversation } from "./loop";
 import { ACP_PROMPT_LINE, buildToolset } from "./tools";
 
@@ -368,5 +368,99 @@ describe("runAcpTurn", () => {
     expect(tools(t.h.get().items)[0].status).toBe("cancelled");
     // The prompt was over: no late result.
     expect(t.results).toEqual([]);
+  });
+
+  it("drops a call the agent withdraws: a pending confirmation is declined, nothing runs, no result", async () => {
+    let asked: AbortSignal | undefined;
+    const t = setup(
+      [
+        async ({ emit }) => {
+          emit({ type: "toolCall", callId: "w", name: WRITE, input: { command: "rm x" } });
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          emit({ type: "toolCallCancelled", callId: "w" });
+          await tick();
+          emit({ type: "text", text: "Never mind." });
+          return "end";
+        },
+      ],
+      {
+        ask: (signal) => {
+          asked = signal;
+          return new Promise((resolve) => signal.addEventListener("abort", () => resolve("deny")));
+        },
+      },
+    );
+    await t.run("x");
+    const c = t.h.get();
+    expect(asked?.aborted).toBe(true);
+    expect(tools(c.items)[0]).toMatchObject({ status: "cancelled" });
+    expect(JSON.parse(tools(c.items)[0].result!).error).toBe("Withdrawn by the CLI");
+    expect(t.results).toEqual([]);
+    expect(t.cancelled).toEqual([]);
+    expect(last(c.items)).toMatchObject({ type: "assistant", text: "Never mind." });
+  });
+
+  it("skips a call withdrawn before its turn in the queue", async () => {
+    let asked = false;
+    const t = setup(
+      [
+        async ({ emit }) => {
+          emit({ type: "toolCall", callId: "w", name: WRITE, input: { command: "ls" } });
+          emit({ type: "toolCallCancelled", callId: "w" });
+          await tick();
+          return "end";
+        },
+      ],
+      {
+        ask: async () => {
+          asked = true;
+          return "allow";
+        },
+      },
+    );
+    await t.run("x");
+    expect(asked).toBe(false);
+    expect(t.invoked).toEqual([]);
+    expect(tools(t.h.get().items)[0].status).toBe("cancelled");
+    expect(t.results).toEqual([]);
+  });
+
+  it("notes a new session for a conversation that had one", async () => {
+    const t = setup([
+      async ({ emit }) => {
+        emit({ type: "sessionStarted" });
+        emit({ type: "text", text: "First." });
+        return "end";
+      },
+      async ({ emit }) => {
+        emit({ type: "sessionStarted" });
+        emit({ type: "text", text: "Fresh." });
+        return "end";
+      },
+    ]);
+    await t.run("one");
+    expect(t.h.get().items.some((item) => item.type === "note")).toBe(false);
+    await t.run("two");
+    expect(types(t.h.get().items)).toEqual(["user", "assistant", "user", "note", "assistant"]);
+    expect(t.h.get().items[3]).toMatchObject({ text: SESSION_LOST });
+  });
+
+  it("cancels the prompt and shows the error when a tool result cannot be delivered", async () => {
+    const t = setup([
+      async ({ emit, cancelled }) => {
+        emit({ type: "toolCall", callId: "r", name: READ, input: {} });
+        await cancelled;
+        return "cancelled";
+      },
+    ]);
+    t.deps.toolResult = async () => {
+      throw { kind: "other", message: "the session is gone" };
+    };
+    await t.run("x");
+    const c = t.h.get();
+    expect(t.cancelled).toEqual(["r1"]);
+    expect(last(c.items)).toMatchObject({ type: "error", message: "Could not send a tool result to the CLI: the session is gone" });
+    expect(c.resume).toBe("continue");
+    expect(c.status).toBe("idle");
   });
 });

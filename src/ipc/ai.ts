@@ -256,10 +256,17 @@ function mockAgentTurn(request: AgentTurnRequest, onEvent: (event: AgentEvent) =
 
 /* ---- ACP sessions (ai_acp_prompt; CLI profiles) ---- */
 
-/** A message on `ai_acp_prompt`'s channel. `toolCall` names use our wire names (no `mcp__midterm__` prefix). */
+/**
+ * A message on `ai_acp_prompt`'s channel. `toolCall` names use our wire names (no `mcp__midterm__` prefix).
+ * `toolCallCancelled`: the agent withdrew that call (decline its confirmation, don't run it, send no result).
+ * `sessionStarted` (first, when it applies): this prompt started a new session, so for a conversation that
+ * had one, the earlier context is gone.
+ */
 export type AcpEvent =
   | { type: "text"; text: string }
   | { type: "toolCall"; callId: string; name: string; input: unknown }
+  | { type: "toolCallCancelled"; callId: string }
+  | { type: "sessionStarted" }
   | { type: "foreignTool"; id: string; title: string; status: "running" | "done" | "failed" | "denied" };
 
 export type AcpStop = "end" | "length" | "refused" | "maxRequests" | "cancelled";

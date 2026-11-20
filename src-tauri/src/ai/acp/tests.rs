@@ -277,7 +277,7 @@ async fn session_new_and_config_options() {
     let req = running.peer.expect("session/prompt").await;
     assert_eq!(
         req["params"]["prompt"],
-        json!([{ "type": "text", "text": " /context" }])
+        json!([{ "type": "text", "text": "\u{200B}/context" }])
     );
     running
         .peer
@@ -303,7 +303,9 @@ async fn unknown_model_fails_with_the_offered_values() {
         panic!("{ended:?}")
     };
     assert!(
-        e.message.contains("gpt-x") && e.message.contains("default, opus, sonnet, haiku"),
+        e.message.contains("gpt-x")
+            && e.message.contains("default, opus, sonnet, haiku")
+            && e.message.contains("availableModels"),
         "{}",
         e.message
     );
@@ -393,6 +395,17 @@ fn events_serialize_camel_case() {
         serde_json::to_value(e).unwrap(),
         json!({ "type": "foreignTool", "id": "i", "title": "Bash", "status": "denied" })
     );
+    assert_eq!(
+        serde_json::to_value(AcpEvent::ToolCallCancelled {
+            call_id: "c".into()
+        })
+        .unwrap(),
+        json!({ "type": "toolCallCancelled", "callId": "c" })
+    );
+    assert_eq!(
+        serde_json::to_value(AcpEvent::SessionStarted).unwrap(),
+        json!({ "type": "sessionStarted" })
+    );
 }
 
 #[test]
@@ -471,11 +484,54 @@ fn permission_policy() {
     );
 }
 
+/// JavaScript's `trim()`: Unicode white space and the byte order mark.
+fn js_trim(text: &str) -> &str {
+    text.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}')
+}
+
+/// The adapter's `parseRemoteControlCommand` (src/remote-control.ts):
+/// `/^\/remote-control(?:\s+([\s\S]*))?$/` on the trimmed text.
+fn adapter_remote_control(text: &str) -> bool {
+    js_trim(text)
+        .strip_prefix("/remote-control")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+/// The adapter's `parseMcpCommand` (src/mcp-command.ts): `/mcp` as the
+/// first word of the trimmed text.
+fn adapter_mcp(text: &str) -> bool {
+    js_trim(text).split_whitespace().next() == Some("/mcp")
+}
+
 #[test]
 fn prompts_with_a_leading_slash_are_escaped() {
-    assert_eq!(CLAUDE_CODE.prompt_text("/help me"), " /help me");
+    let zw = agents::ZERO_WIDTH_SPACE;
+    assert_eq!(CLAUDE_CODE.prompt_text("/help me"), format!("{zw}/help me"));
     assert_eq!(CLAUDE_CODE.prompt_text("a /b"), "a /b");
-    assert_eq!(CLAUDE_CODE.prompt_text(" /x"), " /x");
+    assert_eq!(CLAUDE_CODE.prompt_text(" /x"), format!("{zw} /x"));
+    assert_eq!(
+        CLAUDE_CODE.prompt_text("\u{FEFF}\n/x"),
+        format!("{zw}\u{FEFF}\n/x")
+    );
+    // The adapter trims before it matches its own commands: a leading space
+    // would not stop them, the escape does.
+    for text in [
+        "/remote-control",
+        " /remote-control",
+        "\t/remote-control off",
+        "\u{a0}/remote-control name",
+        "\n/mcp",
+        " /mcp reconnect all",
+    ] {
+        assert!(
+            adapter_remote_control(text) || adapter_mcp(text),
+            "{text:?}"
+        );
+        let sent = CLAUDE_CODE.prompt_text(text);
+        assert!(!js_trim(&sent).starts_with('/'), "{sent:?}");
+        assert!(!adapter_remote_control(&sent), "{sent:?}");
+        assert!(!adapter_mcp(&sent), "{sent:?}");
+    }
 }
 
 #[test]
@@ -734,6 +790,179 @@ async fn cancel_answers_pending_calls_and_stops_events() {
 }
 
 #[tokio::test]
+async fn a_withdrawn_call_is_cancelled_in_the_webview_while_the_turn_goes_on() {
+    let (mut running, new) = started("", None, Timing::default()).await;
+    let server = new["mcpServers"][0]["serverId"].clone();
+    let (emit, mut events) = collector();
+    let reply = prompt(&running, 3, "go", emit);
+    let peer = &mut running.peer;
+    let req = peer.expect("session/prompt").await;
+    peer.mcp(
+        "c",
+        &server,
+        "tools/call",
+        json!({ "name": "term__run", "arguments": {}, "_meta": { "claudecode/toolUseId": "tu9" } }),
+    );
+    assert!(matches!(next(&mut events).await, AcpEvent::ToolCall { .. }));
+    peer.send(
+        json!({ "jsonrpc": "2.0", "method": "$/cancel_request", "params": { "requestId": "c" } }),
+    );
+    assert_eq!(
+        next(&mut events).await,
+        AcpEvent::ToolCallCancelled {
+            call_id: "tu9".into()
+        }
+    );
+    // The SDK answers the withdrawn request itself.
+    let result = peer.response("c").await;
+    assert_eq!(result["error"]["code"], -32800, "{result}");
+    // A late result is ignored; the turn itself goes on.
+    running.shared.deliver(
+        "tu9",
+        ToolOutcome {
+            content: "late".into(),
+            is_error: false,
+        },
+    );
+    let peer = &mut running.peer;
+    peer.update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "ok" } }));
+    assert_eq!(
+        next(&mut events).await,
+        AcpEvent::Text { text: "ok".into() }
+    );
+    peer.reply(&req, json!({ "stopReason": "end_turn" }));
+    assert_eq!(reply.await.unwrap().unwrap(), Stop::End);
+}
+
+#[tokio::test]
+async fn a_prompt_right_after_a_cancel_waits_for_the_cancelled_one() {
+    let (mut running, _) = started("", None, Timing::default()).await;
+    let (emit, _events) = collector();
+    let first = prompt(&running, 1, "one", emit);
+    let req = running.peer.expect("session/prompt").await;
+    running.tx.send(Command::Cancel { turn: 1 }).unwrap();
+    // The webview settled at the cancel; its caller is gone.
+    drop(first);
+    running.peer.expect("session/cancel").await;
+    let (emit, _events) = collector();
+    let second = prompt(&running, 2, "two", emit);
+    // Not rejected, and not sent before the cancelled prompt settles.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    running
+        .peer
+        .reply(&req, json!({ "stopReason": "cancelled" }));
+    let req = running.peer.expect("session/prompt").await;
+    assert_eq!(req["params"]["prompt"][0]["text"], "two");
+    running
+        .peer
+        .reply(&req, json!({ "stopReason": "end_turn" }));
+    assert_eq!(second.await.unwrap().unwrap(), Stop::End);
+    // A prompt while one is answering (not cancelled) is still refused.
+    let (emit, _events) = collector();
+    let _third = prompt(&running, 3, "three", emit);
+    running.peer.expect("session/prompt").await;
+    let (emit, _events) = collector();
+    let fourth = prompt(&running, 4, "four", emit);
+    let e = fourth.await.unwrap().unwrap_err();
+    assert!(e.message.contains("still answering"), "{}", e.message);
+}
+
+#[tokio::test]
+async fn a_deferred_prompt_fails_when_the_cancel_never_settles() {
+    let timing = Timing {
+        cancel_grace: Duration::from_millis(300),
+        ..Timing::default()
+    };
+    let (mut running, _) = started("", None, timing).await;
+    let (emit, _events) = collector();
+    let first = prompt(&running, 1, "one", emit);
+    running.peer.expect("session/prompt").await;
+    running.tx.send(Command::Cancel { turn: 1 }).unwrap();
+    drop(first);
+    let (emit, _events) = collector();
+    let (reply, second) = oneshot::channel();
+    running
+        .tx
+        .send(Command::Prompt {
+            turn: 2,
+            text: "two".into(),
+            emit,
+            reply,
+        })
+        .unwrap();
+    let (ended, mut state, mut rx) = tokio::time::timeout(WAIT, running.task)
+        .await
+        .unwrap()
+        .unwrap();
+    let Ended::Failed(e) = ended else {
+        panic!("{ended:?}")
+    };
+    state.fail_all(&e, &mut rx);
+    let e = second.await.unwrap().unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Timeout, "{}", e.message);
+    assert!(
+        e.message.contains("Retry starts a new one"),
+        "{}",
+        e.message
+    );
+    drop(running.peer);
+}
+
+#[tokio::test]
+async fn an_error_that_ends_the_agents_session_ends_ours() {
+    let (mut running, _) = started("", None, Timing::default()).await;
+    // An ordinary error leaves the session usable.
+    let (emit, _events) = collector();
+    let reply = prompt(&running, 1, "one", emit);
+    let req = running.peer.expect("session/prompt").await;
+    running.peer.send(json!({ "jsonrpc": "2.0", "id": req["id"],
+        "error": { "code": -32603, "message": "Internal error: overloaded" } }));
+    let e = reply.await.unwrap().unwrap_err();
+    assert!(e.message.contains("overloaded"), "{}", e.message);
+    assert!(!running.task.is_finished());
+    // The CLI under the adapter died: the session ends, so Retry starts fresh.
+    let (emit, _events) = collector();
+    let reply = prompt(&running, 2, "two", emit);
+    let req = running.peer.expect("session/prompt").await;
+    running.peer.send(json!({ "jsonrpc": "2.0", "id": req["id"], "error": { "code": -32603,
+        "message": "Internal error: The Claude Agent process exited unexpectedly. Please start a new session." } }));
+    let e = reply.await.unwrap().unwrap_err();
+    assert!(e.message.contains("exited unexpectedly"), "{}", e.message);
+    let (ended, _, _) = tokio::time::timeout(WAIT, running.task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(ended, Ended::Failed(_)), "{ended:?}");
+}
+
+#[test]
+fn errors_that_end_the_agents_session() {
+    let error = |code: i32, message: &str, data: Option<Value>| {
+        let mut e = agent_client_protocol::Error::new(code, message.to_string());
+        e.data = data;
+        e
+    };
+    let ended = |e: &agent_client_protocol::Error| CLAUDE_CODE.session_ended(e);
+    assert!(ended(&error(
+        -32603,
+        "Internal error: The Claude Agent session has ended. Please start a new session.",
+        None
+    )));
+    assert!(ended(&error(
+        -32002,
+        "Resource not found",
+        Some(json!({ "sessionId": "s1" }))
+    )));
+    assert!(!ended(&error(
+        -32002,
+        "Resource not found: file:///x",
+        Some(json!({ "uri": "file:///x" }))
+    )));
+    assert!(!ended(&error(-32603, "Internal error: overloaded", None)));
+    assert!(!ended(&error(-32000, "Authentication required", None)));
+}
+
+#[tokio::test]
 async fn agent_death_mid_turn_fails_the_prompt() {
     let (running, _) = started("", None, Timing::default()).await;
     let Running {
@@ -885,6 +1114,19 @@ mod process {
     /// starts a background `sleep` (whose pid it writes to `$1`'s file),
     /// then answers ACP requests line by line.
     fn fake_adapter(dir: &Path, cli: &Path, pid_file: &Path) -> PathBuf {
+        fake_adapter_with(dir, cli, pid_file, true)
+    }
+
+    /// [`fake_adapter`]; unless `closes`, it ignores `session/close` and
+    /// stays (with its `sleep`) after its stdin closes.
+    fn fake_adapter_with(dir: &Path, cli: &Path, pid_file: &Path, closes: bool) -> PathBuf {
+        let close = if closes {
+            r#"echo '{"jsonrpc":"2.0","id":'$id',"result":{}}'"#
+        } else {
+            ":"
+        };
+        let after = if closes { "" } else { "wait\n" };
+        let name = if closes { "fake-acp" } else { "stubborn-acp" };
         let body = format!(
             r#"[ "$CLAUDE_CODE_EXECUTABLE" = "{cli}" ] || {{ echo "bad CLAUDE_CODE_EXECUTABLE" >&2; exit 7; }}
 [ -z "$CLAUDECODE" ] || {{ echo "CLAUDECODE leaked" >&2; exit 7; }}
@@ -903,14 +1145,14 @@ while IFS= read -r line; do
       echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s1","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"pong"}}}}}}}}'
       echo '{{"jsonrpc":"2.0","id":'$id',"result":{{"stopReason":"end_turn"}}}}' ;;
     *'"method":"session/close"'*)
-      echo '{{"jsonrpc":"2.0","id":'$id',"result":{{}}}}' ;;
+      {close} ;;
   esac
 done
-"#,
+{after}"#,
             cli = cli.display(),
             pid = pid_file.display()
         );
-        script(dir, "fake-acp", &body)
+        script(dir, name, &body)
     }
 
     #[tokio::test]
@@ -936,6 +1178,7 @@ done
             .await
             .unwrap();
         assert_eq!(stop, Stop::End);
+        assert_eq!(events.recv().await.unwrap(), AcpEvent::SessionStarted);
         assert_eq!(
             events.recv().await.unwrap(),
             AcpEvent::Text {
@@ -944,10 +1187,18 @@ done
         );
         let sleep = read_pid(&pid_file).await;
         assert!(alive(sleep));
-        let cwd = manager.sessions.lock().unwrap()["conv"].dir.clone();
+        let cwd = manager
+            .processes
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .1
+            .clone();
         assert!(cwd.exists());
-        // A second prompt reuses the session.
-        let (emit, _events) = collector();
+        // A second prompt reuses the session (no `sessionStarted`).
+        let (emit, mut events) = collector();
         manager
             .prompt(
                 &discovery,
@@ -961,10 +1212,33 @@ done
             )
             .await
             .unwrap();
+        assert_eq!(
+            events.recv().await.unwrap(),
+            AcpEvent::Text {
+                text: "pong".into()
+            }
+        );
         assert_eq!(manager.count(), 1);
         manager.close("conv").await;
         assert!(gone(sleep).await, "the adapter's group survived close");
         assert!(!cwd.exists());
+        // After the session is gone, the next prompt says it starts a new one.
+        let (emit, mut events) = collector();
+        manager
+            .prompt(
+                &discovery,
+                "main",
+                "conv",
+                &target(&cli, &adapter),
+                "",
+                &[],
+                "after",
+                emit,
+            )
+            .await
+            .unwrap();
+        assert_eq!(events.recv().await.unwrap(), AcpEvent::SessionStarted);
+        manager.close("conv").await;
         // Closing an unknown conversation is a no-op.
         manager.close("never-started").await;
     }
@@ -1004,6 +1278,66 @@ done
     }
 
     #[tokio::test]
+    async fn app_exit_reaches_sessions_still_shutting_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = script(dir.path(), "claude", "exit 0\n");
+        let discovery = Discovery::with_path_var("/usr/bin:/bin");
+        let manager = Arc::new(AcpManager::default());
+        let mut sessions = Vec::new();
+        for (owner, conv) in [("w1", "a"), ("w2", "b")] {
+            let pid_file = dir.path().join(format!("{conv}.pid"));
+            let adapter = fake_adapter_with(dir.path(), &cli, &pid_file, false);
+            let (emit, _events) = collector();
+            manager
+                .prompt(
+                    &discovery,
+                    owner,
+                    conv,
+                    &target(&cli, &adapter),
+                    "",
+                    &tools(),
+                    "x",
+                    emit,
+                )
+                .await
+                .unwrap();
+            sessions.push(read_pid(&pid_file).await);
+        }
+        let dirs: Vec<PathBuf> = manager
+            .processes
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(_, d)| d.clone())
+            .collect();
+        assert_eq!(dirs.len(), 2);
+        // Both are closing (the adapter ignores session/close and stays
+        // after its stdin closes): they left the session map...
+        manager.close_owned_by("w2");
+        let m = manager.clone();
+        let closing = tokio::spawn(async move { m.close("a").await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(manager.count(), 0);
+        assert!(alive(sessions[0]) && alive(sessions[1]));
+        // ...but app exit still kills them and removes their directories.
+        manager.close_all();
+        for d in &dirs {
+            assert!(!d.exists(), "{} survived app exit", d.display());
+        }
+        for pid in &sessions {
+            assert!(gone(*pid).await, "a closing session survived app exit");
+        }
+        closing.await.unwrap();
+        for _ in 0..100 {
+            if manager.processes.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(manager.processes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn closing_during_startup_kills_the_group() {
         let dir = tempfile::tempdir().unwrap();
         let cli = script(dir.path(), "claude", "exit 0\n");
@@ -1031,6 +1365,61 @@ done
         let e = pending.await.unwrap().unwrap_err();
         assert!(e.message.contains("closed"), "{}", e.message);
         assert!(gone(sleep).await);
+    }
+
+    /// Answers `initialize` and `session/new`, then stops reading its stdin
+    /// (it becomes `sleep`, same pid, written to the pid file).
+    fn deaf_adapter(dir: &Path, pid_file: &Path) -> PathBuf {
+        let body = format!(
+            r#"echo $$ > "{pid}"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -E -n 's/.*"id":("[^"]*"|[0-9]+).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{{"jsonrpc":"2.0","id":'$id',"result":{{"protocolVersion":1,"agentCapabilities":{{"mcpCapabilities":{{"acp":true}},"sessionCapabilities":{{"close":{{}}}}}}}}}}' ;;
+    *'"method":"session/new"'*)
+      echo '{{"jsonrpc":"2.0","id":'$id',"result":{{"sessionId":"s1"}}}}'
+      exec sleep 300 ;;
+  esac
+done
+"#,
+            pid = pid_file.display()
+        );
+        script(dir, "deaf-acp", &body)
+    }
+
+    #[tokio::test]
+    async fn an_adapter_that_stops_reading_is_killed_when_the_prompt_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = script(dir.path(), "claude", "exit 0\n");
+        let pid_file = dir.path().join("deaf.pid");
+        let adapter = deaf_adapter(dir.path(), &pid_file);
+        let discovery = Discovery::with_path_var("/usr/bin:/bin");
+        let mut manager = AcpManager::default();
+        manager.timing.idle = Duration::from_millis(200);
+        // Far more than a pipe holds: the write blocks.
+        let text = "x".repeat(4 << 20);
+        let (emit, _events) = collector();
+        let e = tokio::time::timeout(
+            WAIT,
+            manager.prompt(
+                &discovery,
+                "main",
+                "c",
+                &target(&cli, &adapter),
+                "",
+                &[],
+                &text,
+                emit,
+            ),
+        )
+        .await
+        .expect("the prompt hung on the blocked write")
+        .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Timeout, "{}", e.message);
+        let pid = read_pid(&pid_file).await;
+        assert!(gone(pid).await, "the adapter survived");
+        assert_eq!(manager.count(), 0);
     }
 
     #[tokio::test]
@@ -1152,7 +1541,7 @@ async fn live_acp() {
                     false,
                 ),
                 AcpEvent::Text { text: t } => text.push_str(&t),
-                AcpEvent::ForeignTool { .. } => {}
+                _ => {}
             }
         }
         text

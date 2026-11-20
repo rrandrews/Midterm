@@ -51,6 +51,16 @@ pub enum AcpEvent {
         name: String,
         input: serde_json::Value,
     },
+    /// The agent withdrew a `toolCall` before its result: drop it (decline
+    /// a pending confirmation, do not run the tool, send no result).
+    ToolCallCancelled {
+        #[serde(rename = "callId")]
+        call_id: String,
+    },
+    /// This prompt starts a new session (sent first). For a conversation
+    /// that had one, the earlier context is gone: its session was evicted,
+    /// failed or ended with its window.
+    SessionStarted,
     /// A tool call that is not Midterm's (shown muted; it should not happen).
     ForeignTool {
         id: String,
@@ -96,7 +106,6 @@ struct Handle {
     tx: mpsc::UnboundedSender<Command>,
     shared: Arc<Shared>,
     group: GroupHandle,
-    dir: PathBuf,
     last_used: Instant,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -107,10 +116,18 @@ impl Handle {
     }
 }
 
+/// Every adapter process not yet reaped, with its working directory, by
+/// spawn number. A session leaves `sessions` when it is closed, but stays
+/// here until its task has shut the process down and removed the directory,
+/// so app exit still finds it.
+type Processes = Arc<Mutex<HashMap<u64, (GroupHandle, PathBuf)>>>;
+
 /// The live sessions, keyed by conversation id and owned by a window label.
 pub struct AcpManager {
     sessions: Mutex<HashMap<String, Handle>>,
+    processes: Processes,
     next_turn: AtomicU64,
+    next_process: AtomicU64,
     pub timing: Timing,
 }
 
@@ -118,7 +135,9 @@ impl Default for AcpManager {
     fn default() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            processes: Arc::default(),
             next_turn: AtomicU64::new(1),
+            next_process: AtomicU64::new(1),
             timing: Timing::default(),
         }
     }
@@ -183,7 +202,9 @@ impl AcpManager {
                     model: target.model.trim().to_string(),
                     effort: target.effort,
                 };
-                self.start(owner, conversation, setup, launch, target)?
+                let tx = self.start(owner, conversation, setup, launch, target)?;
+                emit(AcpEvent::SessionStarted);
+                tx
             }
         };
         self.send_prompt(tx, text, emit).await
@@ -250,15 +271,21 @@ impl AcpManager {
         let state = State::new(spec, shared.clone(), timing);
         let (tx, rx) = mpsc::unbounded_channel();
         let dir = launch.dir.path().to_path_buf();
-        let task = tokio::spawn(session::run_process(
-            child, stdin, stdout, setup, state, rx, launch.dir,
-        ));
+        let id = self.next_process.fetch_add(1, Ordering::SeqCst);
+        self.processes
+            .lock()
+            .unwrap()
+            .insert(id, (group.clone(), dir.clone()));
+        let processes = self.processes.clone();
+        let task = tokio::spawn(async move {
+            session::run_process(child, stdin, stdout, setup, state, rx, launch.dir).await;
+            processes.lock().unwrap().remove(&id);
+        });
         let handle = Handle {
             owner: owner.to_string(),
             tx: tx.clone(),
             shared,
             group,
-            dir,
             last_used: Instant::now(),
             task: Some(task),
         };
@@ -333,8 +360,9 @@ impl AcpManager {
         }
     }
 
-    /// App exit: kills every session's process group now and removes the
-    /// working directories (the tasks may never run again).
+    /// App exit: kills every adapter's process group now, sessions still
+    /// shutting down included, and removes the working directories (the
+    /// tasks may never run again).
     pub fn close_all(&self) {
         let handles: Vec<Handle> = self
             .sessions
@@ -345,8 +373,17 @@ impl AcpManager {
             .collect();
         for handle in handles {
             let _ = handle.tx.send(Command::Close);
-            handle.group.kill();
-            let _ = std::fs::remove_dir_all(&handle.dir);
+        }
+        let processes: Vec<(GroupHandle, PathBuf)> = self
+            .processes
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, p)| p)
+            .collect();
+        for (group, dir) in processes {
+            group.kill();
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 

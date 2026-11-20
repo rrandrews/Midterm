@@ -7,7 +7,9 @@
 //! A `tools/call` is not run here: it becomes a `toolCall` event for the
 //! webview, which runs the skill (with its confirmation) and answers with
 //! `ai_acp_tool_result`. If the prompt is cancelled meanwhile, the call is
-//! answered with an error and a later result for it is ignored.
+//! answered with an error and a later result for it is ignored. If the agent
+//! withdraws the one call (`$/cancel_request`), the webview is told with a
+//! `toolCallCancelled` event.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -122,6 +124,15 @@ impl Shared {
         emit(event);
     }
 
+    /// Emits to turn `id` while it is running and not cancelled.
+    fn emit_to(&self, id: u64, event: AcpEvent) {
+        let emit = match self.turn.lock().unwrap().as_ref() {
+            Some(t) if t.id == id && !t.cancelled => t.emit.clone(),
+            _ => return,
+        };
+        emit(event);
+    }
+
     /// Delivers the webview's result for `call_id`. Unknown (finished or
     /// cancelled) calls are ignored.
     pub fn deliver(&self, call_id: &str, outcome: ToolOutcome) {
@@ -132,16 +143,14 @@ impl Shared {
     }
 
     /// Registers a call: its id (the agent's tool use id when given and
-    /// free) and where its result arrives. `None` when no turn is running.
-    fn register(
-        &self,
-        preferred: Option<&str>,
-    ) -> Option<(String, Emit, oneshot::Receiver<ToolOutcome>)> {
+    /// free), its turn and where its result arrives. `None` when no turn is
+    /// running.
+    fn register(&self, preferred: Option<&str>) -> Option<Registered> {
         // The turn stays locked while the call is added, so a cancel either
         // sees the call (and drops it) or is seen here.
         let turn = self.turn.lock().unwrap();
-        let emit = match turn.as_ref() {
-            Some(t) if !t.cancelled => t.emit.clone(),
+        let (turn_id, emit) = match turn.as_ref() {
+            Some(t) if !t.cancelled => (t.id, t.emit.clone()),
             _ => return None,
         };
         let mut pending = self.pending.lock().unwrap();
@@ -151,8 +160,20 @@ impl Shared {
         };
         let (tx, rx) = oneshot::channel();
         pending.insert(id.clone(), tx);
-        Some((id, emit, rx))
+        Some(Registered {
+            id,
+            turn: turn_id,
+            emit,
+            rx,
+        })
     }
+}
+
+struct Registered {
+    id: String,
+    turn: u64,
+    emit: Emit,
+    rx: oneshot::Receiver<ToolOutcome>,
 }
 
 /// The `midterm` MCP server.
@@ -259,7 +280,13 @@ async fn call(
         .get("_meta")
         .and_then(|m| m.get("claudecode/toolUseId"))
         .and_then(Value::as_str);
-    let Some((call_id, emit, rx)) = shared.register(tool_use) else {
+    let Some(Registered {
+        id: call_id,
+        turn,
+        emit,
+        rx,
+    }) = shared.register(tool_use)
+    else {
         return Ok(McpOutcome::Result(call_result(CANCELLED_CALL, true)));
     };
     emit(AcpEvent::ToolCall {
@@ -273,7 +300,13 @@ async fn call(
         _ = context.operation_cancellation().cancelled() => None,
     };
     shared.awaiting.fetch_sub(1, Ordering::SeqCst);
-    shared.pending.lock().unwrap().remove(&call_id);
+    // Still pending: the agent withdrew this one call (`$/cancel_request`)
+    // while the turn goes on, so the webview drops it (a confirmation still
+    // open is declined, the tool is not run).
+    let withdrawn = shared.pending.lock().unwrap().remove(&call_id).is_some();
+    if withdrawn {
+        shared.emit_to(turn, AcpEvent::ToolCallCancelled { call_id });
+    }
     shared.touch();
     Ok(McpOutcome::Result(match outcome {
         Some(o) => call_result(&o.content, o.is_error),

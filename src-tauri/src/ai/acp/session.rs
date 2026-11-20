@@ -294,6 +294,9 @@ pub struct State {
     pub timing: Timing,
     current: Option<Current>,
     queue: VecDeque<Command>,
+    /// Prompts that arrived while a cancelled prompt was still settling;
+    /// they start once it has (the cancel grace bounds the wait).
+    deferred: VecDeque<Command>,
     updates: Updates,
     /// The system prompt to put in front of the first prompt, when the agent
     /// could not take it on `session/new`.
@@ -308,6 +311,7 @@ impl State {
             timing,
             current: None,
             queue: VecDeque::new(),
+            deferred: VecDeque::new(),
             updates: Updates::default(),
             pending_system: None,
         }
@@ -320,7 +324,11 @@ impl State {
             let _ = reply.send(Err(error.clone()));
         }
         rx.close();
-        let queued: Vec<Command> = self.queue.drain(..).collect();
+        let queued: Vec<Command> = self
+            .deferred
+            .drain(..)
+            .chain(self.queue.drain(..))
+            .collect();
         let mut rest = Vec::new();
         while let Ok(cmd) = rx.try_recv() {
             rest.push(cmd);
@@ -335,26 +343,47 @@ impl State {
 
 /// Runs the session over `transport` until it ends. Prompts still waiting
 /// afterwards are left in `state` and `rx` for the caller to fail.
+///
+/// Once the session has ended, the connection gets `close_grace` to flush
+/// what it still has to write; an adapter that stopped reading its stdin
+/// would hold it forever, so the connection (and the transport) is dropped
+/// then instead.
 pub async fn run(
     transport: impl ConnectTo<Client> + 'static,
     setup: Setup,
     state: &mut State,
     rx: &mut mpsc::UnboundedReceiver<Command>,
 ) -> Ended {
-    let result = Client
-        .v1()
-        .name("midterm")
-        .connect_with(transport, async |cx: ConnectionTo<Agent>| {
-            Ok(drive(&cx, setup, state, rx).await)
-        })
-        .await;
-    match result {
-        Ok(ended) => ended,
-        Err(e) => {
-            eprintln!("ai acp: connection ended: {e}");
-            Ended::Lost
+    let drain = state.timing.close_grace;
+    let (done_tx, done_rx) = oneshot::channel::<()>();
+    let mut ended = None;
+    let result = {
+        let connection =
+            Client
+                .v1()
+                .name("midterm")
+                .connect_with(transport, async |cx: ConnectionTo<Agent>| {
+                    ended = Some(drive(&cx, setup, state, rx).await);
+                    let _ = done_tx.send(());
+                    Ok(())
+                });
+        let drained = async {
+            if done_rx.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(drain).await;
+        };
+        tokio::select! {
+            result = connection => Some(result),
+            () = drained => None,
         }
+    };
+    match result {
+        Some(Err(e)) => eprintln!("ai acp: connection ended: {e}"),
+        None => eprintln!("ai acp: the agent did not take the rest of its input; dropping it"),
+        Some(Ok(())) => {}
     }
+    ended.unwrap_or(Ended::Lost)
 }
 
 /// Startup's outcome: the session and what it supports.
@@ -419,6 +448,11 @@ async fn drive(
     let mut ticker = tokio::time::interval(Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        if state.current.is_none()
+            && let Some(cmd) = state.deferred.pop_front()
+        {
+            state.queue.push_front(cmd);
+        }
         let next = match state.queue.pop_front() {
             Some(cmd) => Some(cmd),
             None => tokio::select! {
@@ -426,7 +460,11 @@ async fn drive(
                 message = session.read_update() => {
                     shared.touch();
                     match message {
-                        Ok(message) => on_message(state, message),
+                        Ok(message) => {
+                            if let Some(ended) = on_message(state, message) {
+                                return ended;
+                            }
+                        }
                         Err(e) => {
                             eprintln!("ai acp: session channel failed: {e}");
                             return Ended::Lost;
@@ -465,10 +503,21 @@ async fn drive(
                 if reply.is_closed() {
                     continue; // cancelled before it started
                 }
-                if state.current.is_some() {
-                    let _ = reply.send(Err(AiError::other(
-                        "the agent is still answering the previous message",
-                    )));
+                if let Some(current) = &state.current {
+                    if current.cancelled {
+                        // `ai_cancel` settled the previous prompt for the
+                        // webview, but the agent has not stopped yet.
+                        state.deferred.push_back(Command::Prompt {
+                            turn,
+                            text,
+                            emit,
+                            reply,
+                        });
+                    } else {
+                        let _ = reply.send(Err(AiError::other(
+                            "the agent is still answering the previous message",
+                        )));
+                    }
                     continue;
                 }
                 let mut text = spec.prompt_text(&text);
@@ -525,7 +574,15 @@ fn watchdog(state: &mut State) -> Option<Ended> {
     if let Some(deadline) = current.cancel_deadline {
         if tokio::time::Instant::now() >= deadline {
             eprintln!("ai acp: a cancelled prompt did not settle; killing the session");
-            return Some(Ended::Failed(AiError::cancelled()));
+            // For the prompts deferred behind it (the cancelled one's caller
+            // is gone).
+            return Some(Ended::Failed(AiError::new(
+                ErrorKind::Timeout,
+                format!(
+                    "the agent did not stop the previous message within {} s, so its session was closed; Retry starts a new one",
+                    state.timing.cancel_grace.as_secs()
+                ),
+            )));
         }
         return None;
     }
@@ -538,20 +595,22 @@ fn watchdog(state: &mut State) -> Option<Ended> {
     None
 }
 
-fn on_message(state: &mut State, message: SessionMessage) {
+/// Handles one message of the session; `Some` when the session is over.
+fn on_message(state: &mut State, message: SessionMessage) -> Option<Ended> {
     match message {
         SessionMessage::PromptResponse(result) => {
-            if state.current.is_none() {
-                return;
-            }
+            state.current.as_ref()?;
             // The connection went away: the session's end reports it, with
             // what the adapter said.
             if let Err(e) = &result
                 && (agent_client_protocol::is_incoming_transport_closed(e)
                     || agent_client_protocol::is_connection_terminated(e))
             {
-                return;
+                return None;
             }
+            // An error that ends the agent's session (the CLI under the
+            // adapter died) ends this one too, so a retry starts fresh.
+            let mut ended = None;
             let result = match result {
                 Ok(response) => {
                     let reason = serde_json::to_value(response.stop_reason)
@@ -560,43 +619,58 @@ fn on_message(state: &mut State, message: SessionMessage) {
                         .unwrap_or_default();
                     Ok(stop(&reason))
                 }
-                Err(e) => Err(acp_error(state.spec, &e)),
+                Err(e) => {
+                    let error = acp_error(state.spec, &e);
+                    if state.spec.session_ended(&e) {
+                        ended = Some(Ended::Failed(error.clone()));
+                    }
+                    Err(error)
+                }
             };
             finish(state, result);
+            ended
         }
-        SessionMessage::Message(dispatch) => match dispatch {
-            Dispatch::Notification(message) => {
-                if message.method() != "session/update" {
-                    return;
-                }
-                let Some(update) = message.params().get("update") else {
-                    return;
-                };
-                for event in state.updates.map(state.spec, update) {
-                    state.shared.emit(event);
-                }
+        SessionMessage::Message(dispatch) => {
+            on_dispatch(state, dispatch);
+            None
+        }
+        _ => None,
+    }
+}
+
+/// A notification or request from the agent.
+fn on_dispatch(state: &mut State, dispatch: agent_client_protocol::v1::Dispatch) {
+    match dispatch {
+        Dispatch::Notification(message) => {
+            if message.method() != "session/update" {
+                return;
             }
-            Dispatch::Request(message, responder) => {
-                if message.method() != "session/request_permission" {
-                    let _ = responder
-                        .respond_with_error(agent_client_protocol::Error::method_not_found());
-                    return;
-                }
-                let params = message.params();
-                let cancelled = state.current.as_ref().is_none_or(|c| c.cancelled);
-                let (answer, allowed) = permission(state.spec, params, cancelled);
-                let tool_call = params.get("toolCall").unwrap_or(&Value::Null);
-                if !allowed
-                    && !state.spec.is_ours(tool_call)
-                    && let Some(event) = state.updates.denied(tool_call)
-                {
-                    state.shared.emit(event);
-                }
-                let _ = responder.respond(answer);
+            let Some(update) = message.params().get("update") else {
+                return;
+            };
+            for event in state.updates.map(state.spec, update) {
+                state.shared.emit(event);
             }
-            Dispatch::Response(..) => {}
-        },
-        _ => {}
+        }
+        Dispatch::Request(message, responder) => {
+            if message.method() != "session/request_permission" {
+                let _ =
+                    responder.respond_with_error(agent_client_protocol::Error::method_not_found());
+                return;
+            }
+            let params = message.params();
+            let cancelled = state.current.as_ref().is_none_or(|c| c.cancelled);
+            let (answer, allowed) = permission(state.spec, params, cancelled);
+            let tool_call = params.get("toolCall").unwrap_or(&Value::Null);
+            if !allowed
+                && !state.spec.is_ours(tool_call)
+                && let Some(event) = state.updates.denied(tool_call)
+            {
+                state.shared.emit(event);
+            }
+            let _ = responder.respond(answer);
+        }
+        Dispatch::Response(..) => {}
     }
 }
 

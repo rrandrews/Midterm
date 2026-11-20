@@ -438,6 +438,16 @@ MID-82 spike:
   "initialize"` (the MCP config stays off the CLI's argv) and `allowedTools`
   = `mcp__midterm__<name>` for each of Midterm's tools. These win over the
   adapter's defaults.
+- **User settings still reach the adapter.** `settingSources: []` only
+  applies to the CLI; the adapter resolves the settings itself
+  (`src/settings.ts`, the SDK's `resolveSettings` on `~/.claude/settings.json`
+  or `$CLAUDE_CONFIG_DIR`, plus managed settings; the empty working directory
+  has no project settings). From them it takes the initial permission mode
+  (Midterm sets `mode` = `default` anyway), the default model (`model`, used
+  when the profile's model is empty) and an `availableModels` allowlist that
+  narrows the `model` option's values. There is no option or variable to
+  isolate this: `CLAUDE_CONFIG_DIR` would also move Claude Code's sign-in.
+  So the unknown-model error mentions that an allowlist may be the cause.
 - **MCP-over-ACP**: Midterm's tools are served to the agent as the MCP
   server `midterm` over the same connection (`tools.rs`, hand-written
   against the SDK's `McpService`: MCP revision 2026-07-28, stateless;
@@ -447,17 +457,25 @@ MID-82 spike:
   use id when given, else `call-<n>`; `name` without the `mcp__midterm__`
   prefix) and waits for `ai_acp_tool_result`. If the prompt is cancelled
   meanwhile, the call is answered with an error ("The user stopped this
-  request; the tool was not run.") and a later result is ignored.
+  request; the tool was not run.") and a later result is ignored. If the
+  agent withdraws just that call (`$/cancel_request`; the SDK answers it)
+  while the prompt goes on, the webview gets `toolCallCancelled` for it:
+  it declines a confirmation still open, does not run the tool and sends no
+  result.
 - **Config options** (`session/set_config_option`, after `session/new`):
   `mode` = `default`; `model` = the profile's model matched against the
   option's values (exactly, then ignoring case; aliases such as `sonnet`
   are values; empty keeps the agent's default; an unlisted model fails with
-  the list it offers); `thought_level` = the profile's effort, resolved as
+  the list it offers and a hint about an `availableModels` allowlist); `thought_level` = the profile's effort, resolved as
   for the one-shot CLI (Midterm's pick: low; `default`: not set) and clamped
   to the levels offered.
-- **Prompts**: the text of a message that starts with `/` is sent with a
-  leading space (Claude Code would run it as a slash command; `" /context"`
-  reaches the model as text).
+- **Prompts**: the text of a message that starts with `/`, after any
+  white space, is sent with a zero-width space (U+200B) in front. Claude
+  Code would run it as a slash command, and the adapter runs
+  `/remote-control` and `/mcp` itself after JavaScript's `trim()`, so a
+  leading space is not enough (`" /remote-control"` would turn on Remote
+  Control). `trim()` keeps U+200B; verified live that `"\u200B/context"`
+  and `"\u200B/remote-control"` reach the model as text.
 
 **Permissions.** The agent asks `session/request_permission` before a
 tool. For Midterm's tools (the SDK name `mcp__midterm__…`) Midterm answers
@@ -479,11 +497,22 @@ prompt (`system` and `tools` are only used then), kept for the later ones.
   destroyed (`close_owned_by`, the window label owns it), at app exit
   (`close_all` kills every group and removes the directories), or when the
   process dies. The process's whole group is killed when its task is
-  dropped. A dead or closed session is forgotten: the conversation's next
-  prompt starts a fresh one.
+  dropped. A closed session leaves the session map at once but stays in a
+  registry of unreaped processes (group and directory) until its task has
+  shut the process down and removed the directory, so `close_all` also
+  reaches sessions still shutting down. A dead or closed session is
+  forgotten: the conversation's next prompt starts a fresh one, and its
+  first event is `sessionStarted` (the webview notes the lost context when
+  the conversation had a session).
+- An error answer that ends the agent's own session (ACP's
+  resource-not-found naming a session, or the adapter's "… Please start a
+  new session.", sent when the `claude` process under it died or its query
+  stream ended) ends Midterm's session too, so Retry starts a fresh one.
 - If the caller of `ai_acp_prompt` goes away or `ai_cancel` arrives, the
-  turn is cancelled (`session/cancel`); a prompt for a session that is
-  still answering fails.
+  turn is cancelled (`session/cancel`). A prompt that arrives while the
+  cancelled one is still settling waits for it (at most the 5 s cancel
+  grace); a prompt for a session that is still answering (not cancelled)
+  fails.
 
 **Timeouts** (`session::Timing`): **30 s** from spawn to the config
 options set (`timeout`: "<adapter> did not start within 30 s"). An **idle
@@ -491,9 +520,14 @@ watchdog**: a prompt fails with `timeout` when the agent sends nothing for
 180 s (scaled with effort like HTTP: ×2 high, ×3 xhigh and max), and the
 clock is **paused while a tool call waits for the webview** (a confirmation
 can take as long as the user needs). After a cancel the agent has **5 s** to
-settle the prompt, else the session is killed and the prompt ends
-`cancelled`. Closing: `session/close` 2 s, then the process's own exit 2 s
-before the group is killed.
+settle the prompt, else the session is killed, the prompt ends `cancelled`
+and a prompt waiting behind it fails with `timeout` ("the agent did not stop
+the previous message within 5 s, so its session was closed; Retry starts a
+new one"). Closing: `session/close` 2 s, then the process's own exit 2 s
+before the group is killed. When a session ends, the connection gets 2 s to
+flush what it still has to write; an adapter that stopped reading its stdin
+(a large prompt blocked mid-write) does not hold the shutdown: the
+connection is dropped, the group killed and the process reaped.
 
 **Errors.** Stop reasons map `max_tokens` → `length`, `refusal` →
 `refused`, `max_turn_requests` → `maxRequests`, `cancelled` → `cancelled`,
@@ -641,7 +675,9 @@ type AgentStatus = { ready: boolean, adapter?: { path: string, version: string }
   the first prompt starts (`system` and `tools` are only used then; see
   [ACP sessions](#acp-sessions)). `onEvent` gets `text` (reply text),
   `toolCall` (`callId`, `name`, `input`: run it and answer with
-  `ai_acp_tool_result`) and `foreignTool` (`id`, `title`, `status` running,
+  `ai_acp_tool_result`), `toolCallCancelled` (`callId`: the agent withdrew
+  that call; send no result), `sessionStarted` (first, when this prompt
+  started a new session) and `foreignTool` (`id`, `title`, `status` running,
   done, failed or denied: a tool the CLI ran itself). The result is the stop
   reason. `target` must be a CLI profile the agent supports; an API target
   rejects with `other`, an unsupported CLI with the not-supported message.
@@ -754,12 +790,17 @@ ACP (`acp/tests.rs`, `cargo test ai::acp`): an in-process fake agent over a
 duplex transport drives `session.rs` (handshake and `session/new` shape,
 config options and picks, an unknown model, an adapter without MCP-over-ACP,
 stop reasons, updates → events, the permission policy, the leading-slash
-escape, version and Node.js judgments, death messages without adapter log
-lines, an MCP round trip with permissions, cancel answering pending calls
-and stopping events, the agent dying mid-turn, the idle watchdog pausing
-for tool calls, the startup timeout). Fake adapter scripts exercise
-`AcpManager` end to end: a session and `close` killing its process group,
-window close and app exit killing groups, closing during startup, a dying
+escape against the adapter's trim-based command parsing, version and
+Node.js judgments, death messages without adapter log lines, an MCP round
+trip with permissions, cancel answering pending calls and stopping events,
+a withdrawn call (`toolCallCancelled`), a prompt waiting behind a cancel
+(and failing when the cancel never settles), errors that end the agent's
+session, the agent dying mid-turn, the idle watchdog pausing for tool
+calls, the startup timeout). Fake adapter scripts exercise `AcpManager`
+end to end: a session and `close` killing its process group (and
+`sessionStarted` on a new session only), window close and app exit killing
+groups, app exit reaching sessions still shutting down, closing during
+startup, an adapter that stops reading its stdin mid-prompt, a dying
 adapter's stderr, unsupported CLIs and a missing adapter.
 `MIDTERM_ACP_ADAPTER=<path> cargo test live_acp -- --ignored --nocapture`
 runs the real adapter and Claude Code (haiku, low effort) through a tool
@@ -791,7 +832,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `commands.ts` | Commands, the terminal menu's per-pane switch and block items (`blockAiMenuItems`), registration (the Agent plugin and the `/agent` handler too). |
 | `agent/tools.ts` | Pure: `buildToolset(skills, { acp? })` → `{ system, tools, resolve, loadSkill }`, wire names, `AGENT_SYSTEM_PROMPT`; the ACP variant caps names at 64 and adds a prompt line that our tools may appear under an `mcp__midterm__` prefix. Tested in `tools.test.ts`. |
 | `agent/loop.ts` | The loop, pure apart from injected `LoopDeps` (`turn`, `cancel`, `invoke`, `ask`, `contextLine`): `runTurn`, `runToolCall` (one tool call: resolve, confirm, invoke, redact, clip; shared by both drivers), the transcript item types, limits, result clipping. Tested in `loop.test.ts` with fakes. |
-| `agent/acp.ts` | The ACP driver `runAcpTurn` (CLI profiles), pure apart from `AcpDeps`: one `ai_acp_prompt` per message, events → transcript items, `MAX_ACP_TOOL_CALLS`, `CONTINUE_PROMPT`. Tested in `acp.test.ts` with fakes. |
+| `agent/acp.ts` | The ACP driver `runAcpTurn` (CLI profiles), pure apart from `AcpDeps`: one `ai_acp_prompt` per message, events → transcript items, `MAX_ACP_TOOL_CALLS`, `CONTINUE_PROMPT`, `SESSION_LOST`. Tested in `acp.test.ts` with fakes. |
 | `agent/conversation.ts` | The conversation store (`useAgent`, keyed by id), owners (card or pane), runtime (abort controller, pending confirmations), cards (`askAgent`, `dismissCard`), Agent pane slots (`holdPaneConversation`, `newPaneConversation`), the work pane, the context line; picks the backend from the profile (`runTurn` for API, `runAcpTurn` for CLI) and closes a dropped conversation's ACP session. |
 | `agent/actions.ts` | What the commands, menus and `/agent` do: `askAgentAbout`, `promptForAgent`, `continueInPane`, `openAgent`, `agentNewConversation`. |
 | `agent/AgentCard.tsx`, `AgentPane.tsx`, `Transcript.tsx`, `plugin.tsx` | The card (rendered by `PaneHost`), the Agent pane, the shared transcript, the `agent` plugin. Styles in `src/styles/agent.css`. |
@@ -1221,7 +1262,13 @@ the tool loop; the webview only feeds it and runs the tools:
   "CLI tool: <title>" row with its status (a tool the CLI ran itself,
   which the lockdown should have prevented; its permission request is rejected). Events are
   handled in order, so a call waiting for confirmation holds back what
-  follows.
+  follows; `toolCallCancelled` is handled at once instead (the call it
+  withdraws may be the one holding the queue): its confirmation is
+  declined, the tool aborted or never started, the row shows "Withdrawn by
+  the CLI" and no result is sent.
+- **Tool result delivery**: if `ai_acp_tool_result` fails, the CLI would
+  wait for that result forever, so the prompt is cancelled and an error
+  "Could not send a tool result to the CLI: …" offers **Continue**.
 - **Stop** cancels the prompt (`ai_cancel`), declines a pending
   confirmation and aborts the tool; the answer so far stays, marked
   stopped, and a call still running gets "Cancelled by the user". Stop
@@ -1243,7 +1290,10 @@ the tool loop; the webview only feeds it and runs the tools:
   it. A session the backend evicted (more than 8 alive), lost to a crash or
   closed with its window is simply started fresh by the next prompt, with
   the same frozen system and tools but **no memory** of the earlier
-  messages (the transcript still shows them).
+  messages (the transcript still shows them). The backend's
+  `sessionStarted` event then adds a note (`SESSION_LOST`: "The CLI session
+  had ended, so a new one was started; the earlier context is gone.") when
+  the conversation's session had seen prompts.
 
 ### Commands
 

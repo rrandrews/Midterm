@@ -11,6 +11,7 @@ import {
   itemOf,
   patchItem,
   removeItem,
+  resultContent,
   runToolCall,
   stopped,
 } from "./loop";
@@ -27,6 +28,11 @@ import {
  * - `toolCall` (one of our tools) runs through `runToolCall`, the same
  *   resolve / confirm / invoke / redact path as the API loop, one call at a
  *   time, and its result goes back with `ai_acp_tool_result`;
+ * - `toolCallCancelled` (the agent withdrew one call while the prompt goes
+ *   on) is handled at once, not in turn: a pending confirmation is
+ *   declined, the tool is not run (or is aborted) and no result is sent;
+ * - `sessionStarted` (the backend started a new session for this prompt)
+ *   adds a note when the conversation had one: its earlier context is gone;
  * - `foreignTool` (a tool the CLI ran itself: the lockdown leaked) is a
  *   muted row.
  *
@@ -41,6 +47,9 @@ export const MAX_ACP_TOOL_CALLS = 30;
 export const CONTINUE_PROMPT = "Continue where you left off.";
 
 const CAPPED = `Not run: the limit of ${MAX_ACP_TOOL_CALLS} tool calls per message was reached`;
+const WITHDRAWN = "Withdrawn by the CLI";
+/** The note when a conversation's session was replaced (evicted, failed, or ended with its window). */
+export const SESSION_LOST = "The CLI session had ended, so a new one was started; the earlier context is gone.";
 
 export type AcpDeps = ToolCallDeps & {
   prompt(request: AcpPromptRequest, onEvent: (event: AcpEvent) => void): Promise<{ stop: AcpStop }>;
@@ -93,7 +102,13 @@ async function onePrompt(h: ConversationHandle, text: string, deps: AcpDeps, sig
   let settled = false;
   let calls = 0;
   let capped = false;
+  let delivery: AiError | undefined;
   const foreign = new Map<string, number>();
+  /** The session has seen earlier prompts: a new session means lost context. */
+  const hadSession = conversation.messages.length > 0;
+  /** Calls the agent withdrew, and the running calls' own abort. */
+  const withdrawn = new Set<string>();
+  const running = new Map<string, AbortController>();
 
   /** Ends the streaming answer: trimmed, or removed when empty. */
   const endAnswer = (patch: { stopped?: boolean; cut?: boolean } = {}): boolean => {
@@ -135,8 +150,35 @@ async function onePrompt(h: ConversationHandle, text: string, deps: AcpDeps, sig
         deps.cancel(requestId);
       }
     }
-    const { content, isError } = await runToolCall(h, call, deps, local.signal, skip);
-    if (!settled) await deps.toolResult({ conversationId: conversation.id, callId: call.id, content, isError }).catch(() => {});
+    if (!skip && withdrawn.has(call.id)) skip = { status: "cancelled", error: WITHDRAWN };
+    // Aborts on Stop, when the prompt settles, or when the agent withdraws this call.
+    const own = new AbortController();
+    const abortOwn = () => own.abort();
+    local.signal.addEventListener("abort", abortOwn, { once: true });
+    if (local.signal.aborted) own.abort();
+    running.set(call.id, own);
+    let result: { content: string; isError: boolean };
+    try {
+      result = await runToolCall(h, call, deps, own.signal, skip);
+    } finally {
+      running.delete(call.id);
+      local.signal.removeEventListener("abort", abortOwn);
+    }
+    if (withdrawn.has(call.id)) {
+      const row = h.get().items.find((item) => item.type === "tool" && item.callId === call.id);
+      if (row) patchItem(h, row.id, { status: "cancelled", result: resultContent({ error: WITHDRAWN }) });
+      return;
+    }
+    if (settled) return;
+    try {
+      await deps.toolResult({ conversationId: conversation.id, callId: call.id, content: result.content, isError: result.isError });
+    } catch (caught) {
+      // The CLI would wait for this result forever: stop the prompt and say why.
+      if (!settled && !delivery) {
+        delivery = toAiError(caught);
+        deps.cancel(requestId);
+      }
+    }
   };
 
   const onForeign = (event: Extract<AcpEvent, { type: "foreignTool" }>) => {
@@ -152,11 +194,18 @@ async function onePrompt(h: ConversationHandle, text: string, deps: AcpDeps, sig
   // Handled in order, one at a time: a tool call (and its confirmation) holds back what follows it.
   let queue: Promise<void> = Promise.resolve();
   const onEvent = (event: AcpEvent) => {
+    if (event.type === "toolCallCancelled") {
+      // Not queued: the call it withdraws may be holding the queue.
+      withdrawn.add(event.callId);
+      running.get(event.callId)?.abort();
+      return;
+    }
     queue = queue
       .then(() => {
         if (event.type === "text") onText(event.text);
         else if (event.type === "toolCall") return onToolCall(event);
         else if (event.type === "foreignTool") onForeign(event);
+        else if (event.type === "sessionStarted" && hadSession) addItem(h, { type: "note", text: SESSION_LOST });
       })
       .catch((error: unknown) => console.error("An agent event failed:", error));
   };
@@ -182,6 +231,13 @@ async function onePrompt(h: ConversationHandle, text: string, deps: AcpDeps, sig
   /** The session has seen this prompt (the context line is not sent again). */
   const seen = () => h.update((c) => ({ ...c, messages: [...c.messages, { role: "user", text }] }));
 
+  if (delivery) {
+    endAnswer({ stopped: true });
+    seen();
+    addItem(h, { type: "error", message: `Could not send a tool result to the CLI: ${delivery.message}` });
+    h.update((c) => ({ ...c, resume: "continue" }));
+    return;
+  }
   if (capped) {
     endAnswer({ stopped: true });
     seen();

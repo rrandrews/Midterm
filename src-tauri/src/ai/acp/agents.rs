@@ -169,13 +169,47 @@ impl AgentSpec {
     }
 
     /// The prompt text as sent. Claude Code runs a message that starts with
-    /// `/` as a slash command (its skills and commands stay listed), so a
-    /// leading space is added; verified live that `" /context"` reaches the
-    /// model as text while `"/context"` runs the command.
+    /// `/` as a slash command (its skills and commands stay listed), and the
+    /// adapter serves `/remote-control` and `/mcp` itself after JavaScript's
+    /// `trim()`, so a leading space is not enough. A zero-width space goes in
+    /// front of text that starts with `/` after any whitespace: `trim()`
+    /// keeps it, and Claude Code does not see a command. Verified live that
+    /// `"\u{200B}/context"` and `"\u{200B}/remote-control"` reach the model
+    /// as text.
     pub fn prompt_text(&self, text: &str) -> String {
         match self.kind {
-            CliKind::ClaudeCode if text.starts_with('/') => format!(" {text}"),
+            CliKind::ClaudeCode if js_trim_start(text).starts_with('/') => {
+                format!("{ZERO_WIDTH_SPACE}{text}")
+            }
             _ => text.to_string(),
+        }
+    }
+
+    /// Whether an error answer to `session/prompt` means the agent's session
+    /// is gone for good, so the next prompt needs a new one: ACP's "resource
+    /// not found" naming a session, and for Claude Code the adapter's
+    /// "... Please start a new session." (the `claude` process died, or its
+    /// query stream ended; `src/acp-agent.ts`).
+    pub fn session_ended(&self, e: &agent_client_protocol::Error) -> bool {
+        if e.code == agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND
+            && e.data
+                .as_ref()
+                .is_some_and(|d| d.get("sessionId").is_some())
+        {
+            return true;
+        }
+        match self.kind {
+            CliKind::ClaudeCode => {
+                let said = |text: &str| {
+                    e.message.contains(text)
+                        || e.data
+                            .as_ref()
+                            .and_then(Value::as_str)
+                            .is_some_and(|d| d.contains(text))
+                };
+                said("Please start a new session")
+            }
+            _ => false,
         }
     }
 
@@ -187,6 +221,15 @@ impl AgentSpec {
             CliKind::Antigravity => "Sign in with `agy acp --login`.",
         }
     }
+}
+
+/// What [`AgentSpec::prompt_text`] puts in front of a slash.
+pub const ZERO_WIDTH_SPACE: char = '\u{200B}';
+
+/// `text` without the leading characters JavaScript's `trim()` removes
+/// (Unicode white space and the byte order mark; U+200B is not one).
+pub fn js_trim_start(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}')
 }
 
 /* ---- Stub override ---- */
@@ -280,7 +323,9 @@ pub fn pick_mode(options: &[SessionConfigOption], mode: &str) -> Option<Pick> {
 /// The profile's model, matched against the `model` option's values: exactly,
 /// then ignoring case (aliases such as `sonnet` are values). An empty model
 /// leaves the agent's default; a model the agent does not offer is an error
-/// listing what it does offer.
+/// listing what it does offer. Claude Code's adapter narrows the list to an
+/// `availableModels` allowlist in the user's or managed settings, which it
+/// reads itself whatever `settingSources` says (see `docs/ai.md`).
 pub fn pick_model(options: &[SessionConfigOption], model: &str) -> Result<Option<Pick>, AiError> {
     let model = model.trim();
     if model.is_empty() {
@@ -298,7 +343,7 @@ pub fn pick_model(options: &[SessionConfigOption], model: &str) -> Result<Option
     match found {
         Some(value) => Ok(pick(option, value.clone())),
         None => Err(AiError::other(format!(
-            "The agent does not offer the model {model:?}. It offers: {}.",
+            "The agent does not offer the model {model:?}. It offers: {}. An `availableModels` list in your Claude Code settings (~/.claude/settings.json) or a managed policy may be limiting the models.",
             offered.join(", ")
         ))),
     }
