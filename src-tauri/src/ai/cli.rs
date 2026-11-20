@@ -161,10 +161,16 @@ impl Discovery {
         let out_file = dir.path().join("last-message.txt");
         let (args, stdin) = match kind {
             CliKind::ClaudeCode => (claude_args(model, system), Some(prompt.to_string())),
-            CliKind::Codex => (
-                codex_args(model, dir.path(), &out_file),
-                Some(combined_prompt(system, prompt)),
-            ),
+            CliKind::Codex => {
+                let system_file = dir.path().join("instructions.md");
+                std::fs::write(&system_file, system_or_default(system)).map_err(|e| {
+                    AiError::other(format!("could not write the instructions file: {e}"))
+                })?;
+                (
+                    codex_args(model, dir.path(), &out_file, &system_file),
+                    Some(prompt.to_string()),
+                )
+            }
             CliKind::Antigravity => (agy_args(model, &combined_prompt(system, prompt)), None),
         };
         let mut run = self.base_run(program, args, SUGGEST_TIMEOUT).await;
@@ -189,13 +195,45 @@ impl Discovery {
     }
 }
 
-/// `claude -p`, prompt on stdin. `--tools ""` turns every built-in tool off,
+/// Sent as the system prompt when the caller has none, so a CLI's own
+/// default (a coding agent's long instructions) is never used.
+const DEFAULT_SYSTEM: &str = "You are a helpful assistant. Reply concisely.";
+
+fn system_or_default(system: &str) -> &str {
+    if system.trim().is_empty() {
+        DEFAULT_SYSTEM
+    } else {
+        system
+    }
+}
+
+/// A TOML basic string, for `codex -c key=value` overrides.
+fn toml_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `claude -p`, prompt on stdin. `--system-prompt` replaces Claude Code's own
+/// system prompt (always passed, see [`DEFAULT_SYSTEM`]), and `--safe-mode`
+/// leaves out the user's CLAUDE.md files, skills, plugins, hooks, output
+/// styles and MCP servers. `--tools ""` turns every built-in tool off,
 /// `--strict-mcp-config` with no config loads no MCP servers,
 /// `--permission-mode dontAsk` denies anything that would ask, and
 /// `--no-session-persistence` keeps these runs out of the user's history.
 pub fn claude_args(model: &str, system: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "-p".into(),
+        "--safe-mode".into(),
         "--output-format".into(),
         "text".into(),
         "--tools".into(),
@@ -208,10 +246,8 @@ pub fn claude_args(model: &str, system: &str) -> Vec<OsString> {
         "--effort".into(),
         "low".into(),
     ];
-    if !system.trim().is_empty() {
-        args.push("--system-prompt".into());
-        args.push(system.into());
-    }
+    args.push("--system-prompt".into());
+    args.push(system_or_default(system).into());
     if !model.trim().is_empty() {
         args.push("--model".into());
         args.push(model.trim().into());
@@ -219,14 +255,17 @@ pub fn claude_args(model: &str, system: &str) -> Vec<OsString> {
     args
 }
 
-/// `codex exec -`, prompt (system text first; there is no system flag) on
-/// stdin. The user's `config.toml` is not loaded (`--ignore-user-config`;
+/// `codex exec -`, prompt on stdin. The system prompt is written to
+/// `system_file` and replaces Codex's own base instructions
+/// (`model_instructions_file`); the permissions, apps, collaboration-mode
+/// and environment sections it would add are turned off, and no AGENTS.md
+/// is read (`project_doc_max_bytes=0`). The user's `config.toml` is not loaded (`--ignore-user-config`;
 /// sign-in still comes from `CODEX_HOME`), so MCP servers and other tools
 /// configured there are not available to a run fed with terminal output;
 /// `mcp_servers={}` makes sure of it. Read-only sandbox, no session files,
 /// allowed outside a git repository, low reasoning effort, final message
 /// written to `out_file` (stdout also carries progress).
-pub fn codex_args(model: &str, cwd: &Path, out_file: &Path) -> Vec<OsString> {
+pub fn codex_args(model: &str, cwd: &Path, out_file: &Path, system_file: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "exec".into(),
         "--ignore-user-config".into(),
@@ -240,11 +279,30 @@ pub fn codex_args(model: &str, cwd: &Path, out_file: &Path) -> Vec<OsString> {
         "never".into(),
         "-c".into(),
         "model_reasoning_effort=\"low\"".into(),
+        "-c".into(),
+        format!(
+            "model_instructions_file={}",
+            toml_string(&system_file.to_string_lossy())
+        )
+        .into(),
+    ];
+    for key in [
+        "include_permissions_instructions",
+        "include_apps_instructions",
+        "include_collaboration_mode_instructions",
+        "include_environment_context",
+    ] {
+        args.push("-c".into());
+        args.push(format!("{key}=false").into());
+    }
+    args.extend::<[OsString; 6]>([
+        "-c".into(),
+        "project_doc_max_bytes=0".into(),
         "-C".into(),
         cwd.into(),
         "-o".into(),
         out_file.into(),
-    ];
+    ]);
     if !model.trim().is_empty() {
         args.push("-m".into());
         args.push(model.trim().into());
@@ -419,9 +477,14 @@ mod tests {
             args.windows(2)
                 .any(|w| w == ["--permission-mode", "dontAsk"])
         );
+        assert!(args.contains(&"--safe-mode".to_string()));
         let args = strings(&claude_args(" ", ""));
         assert!(!args.contains(&"--model".to_string()));
-        assert!(!args.contains(&"--system-prompt".to_string()));
+        // Claude Code's own system prompt is never used.
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--system-prompt", DEFAULT_SYSTEM])
+        );
     }
 
     #[test]
@@ -430,7 +493,20 @@ mod tests {
             "gpt-x",
             Path::new("/tmp/d"),
             Path::new("/tmp/d/o.txt"),
+            Path::new("/tmp/d/i.md"),
         ));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-c", "model_instructions_file=\"/tmp/d/i.md\""])
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-c", "project_doc_max_bytes=0"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-c", "include_environment_context=false"])
+        );
         assert_eq!(args[0], "exec");
         assert!(args.contains(&"--ignore-user-config".to_string()));
         assert!(args.windows(2).any(|w| w == ["-c", "mcp_servers={}"]));
@@ -440,8 +516,13 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["-m", "gpt-x"]));
         assert_eq!(args.last().unwrap(), "-");
         assert!(
-            !strings(&codex_args("", Path::new("/a"), Path::new("/a/o")))
-                .contains(&"-m".to_string())
+            !strings(&codex_args(
+                "",
+                Path::new("/a"),
+                Path::new("/a/o"),
+                Path::new("/a/i")
+            ))
+            .contains(&"-m".to_string())
         );
     }
 
@@ -454,6 +535,12 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--model", "gemini-x-low"]));
         assert!(!args.contains(&"--effort".to_string()));
         assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn toml_strings() {
+        assert_eq!(toml_string(r#"/a "b"\c"#), r#""/a \"b\"\\c""#);
+        assert_eq!(toml_string("a\nb"), r#""a\u000Ab""#);
     }
 
     #[test]
@@ -558,7 +645,7 @@ mod tests {
         for kind in [CliKind::ClaudeCode, CliKind::Codex, CliKind::Antigravity] {
             println!("{:?}: {:?}", kind, discovery.status(kind, None).await);
         }
-        for kind in [CliKind::ClaudeCode, CliKind::Antigravity] {
+        for kind in [CliKind::ClaudeCode, CliKind::Codex, CliKind::Antigravity] {
             let reply = discovery
                 .complete(
                     kind,
