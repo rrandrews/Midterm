@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 const host = process.env.TAURI_DEV_HOST;
+// The dev:mcp instance sets MIDTERM_DEV_PORT so it can run next to `tauri dev`.
+const port = Number(process.env.MIDTERM_DEV_PORT) || 1420;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
@@ -18,14 +20,14 @@ export default defineConfig(() => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: port + 1,
         }
       : undefined,
     watch: {

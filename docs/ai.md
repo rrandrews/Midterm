@@ -250,6 +250,14 @@ ask whether a key is set; **no command returns a key**. The calls run on
 the blocking pool, since the OS may show a prompt (a re-signed dev build can
 trigger a Keychain "allow access" dialog). CLI providers take no key.
 
+Builds with the `tauri-mcp` cargo feature (`bun run dev:mcp`) keep keys in a
+process-wide in-memory map instead, with the same set/delete/status
+semantics, so the agent-driven instance never touches the developer's
+Keychain; keys are gone when it exits. `MIDTERM_KEYSTORE=os` opts back into
+the OS store, `MIDTERM_KEYSTORE=memory` forces memory in any build
+(`keys::select_store`). The chosen store is logged once at startup
+(`ai keys: using the Memory store`).
+
 ### Commands
 
 Arguments are camelCase on the wire (Tauri's default); results are

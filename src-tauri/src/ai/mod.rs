@@ -8,7 +8,7 @@ pub mod commands;
 pub mod effort;
 mod error;
 mod http;
-mod keys;
+pub(crate) mod keys;
 mod openai;
 mod process;
 mod provider;
