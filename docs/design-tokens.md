@@ -102,6 +102,7 @@ theme can add `--pane-<plugin id>`.
 | Active-pane bar | 2px, left edge |
 | Drop indicator | inset 6px in its region, 6px radius, 1px accent border |
 | Terminal padding | 10px top/bottom, 18px left |
+| Explorer rows | 24px tall, 14px indent per level; 16px file icon, 6px gap. File icons are the one place colors do not come from tokens (a set's own artwork, docs/icons.md) |
 
 ## Terminal palette
 
