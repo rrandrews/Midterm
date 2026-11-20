@@ -15,6 +15,7 @@ use serde::Serialize;
 use tokio::sync::OnceCell;
 
 use super::Reply;
+use super::acp::agents::AgentStatus;
 use super::effort::{self, Effort, Resolved};
 use super::error::{AiError, ErrorKind, truncate};
 use super::process::{self, Output, Run};
@@ -41,6 +42,10 @@ pub struct CliStatus {
     /// Set when the version is older than the flags we pass need.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outdated: Option<String>,
+    /// Whether the agent can run over ACP with this CLI; absent for CLIs
+    /// the agent does not support yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentStatus>,
 }
 
 /// The oldest version whose flags we rely on: Claude Code's `--safe-mode`
@@ -53,7 +58,7 @@ fn min_version(kind: CliKind) -> Option<(&'static str, [u32; 3])> {
 }
 
 /// The first `x.y.z` in a `--version` line.
-fn parse_version(line: &str) -> Option<[u32; 3]> {
+pub fn parse_version(line: &str) -> Option<[u32; 3]> {
     line.split(|c: char| !(c.is_ascii_digit() || c == '.'))
         .find_map(|word| {
             let mut parts = word.split('.').map(|p| p.parse::<u32>().ok());
@@ -101,8 +106,17 @@ impl Discovery {
         kind: CliKind,
         path_override: Option<&str>,
     ) -> Result<PathBuf, AiError> {
+        self.locate_named(kind.binary(), path_override).await
+    }
+
+    /// [`locate`](Self::locate) for any executable name.
+    pub async fn locate_named(
+        &self,
+        binary: &str,
+        path_override: Option<&str>,
+    ) -> Result<PathBuf, AiError> {
         let path_var = self.path_var().await;
-        let name = path_override.unwrap_or(kind.binary());
+        let name = path_override.unwrap_or(binary);
         let found = if name.contains('/') || name.contains('\\') {
             let path = expand_home(name, shell_path::home_dir().as_deref());
             shell_path::is_executable(&path).then_some(path)
@@ -112,13 +126,22 @@ impl Discovery {
         found.ok_or_else(|| {
             let message = match path_override {
                 Some(p) => format!("no executable at {p:?}"),
-                None => format!(
-                    "`{}` was not found on the login shell's PATH",
-                    kind.binary()
-                ),
+                None => format!("`{binary}` was not found on the login shell's PATH"),
             };
             AiError::new(ErrorKind::NotFound, message)
         })
+    }
+
+    /// The first line `program --version` prints, if it succeeds.
+    pub async fn version_line(&self, program: PathBuf) -> Option<String> {
+        let run = self
+            .base_run(program, vec!["--version".into()], VERSION_TIMEOUT)
+            .await;
+        process::run(run)
+            .await
+            .ok()
+            .filter(|o| o.success)
+            .and_then(|o| first_line(&o.stdout).or_else(|| first_line(&o.stderr)))
     }
 
     async fn base_run(&self, program: PathBuf, args: Vec<OsString>, timeout: Duration) -> Run {
@@ -144,22 +167,17 @@ impl Discovery {
                 path: None,
                 version: None,
                 outdated: None,
+                agent: None,
             };
         };
-        let run = self
-            .base_run(program.clone(), vec!["--version".into()], VERSION_TIMEOUT)
-            .await;
-        let version = process::run(run)
-            .await
-            .ok()
-            .filter(|o| o.success)
-            .and_then(|o| first_line(&o.stdout).or_else(|| first_line(&o.stderr)));
+        let version = self.version_line(program.clone()).await;
         let outdated = outdated_note(kind, version.as_deref());
         CliStatus {
             found: true,
             path: Some(program.to_string_lossy().into_owned()),
             version,
             outdated,
+            agent: None,
         }
     }
 
@@ -273,7 +291,7 @@ fn mentions_effort(output: &Output) -> bool {
 /// default (a coding agent's long instructions) is never used.
 const DEFAULT_SYSTEM: &str = "You are a helpful assistant. Reply concisely.";
 
-fn system_or_default(system: &str) -> &str {
+pub fn system_or_default(system: &str) -> &str {
     if system.trim().is_empty() {
         DEFAULT_SYSTEM
     } else {
@@ -462,6 +480,11 @@ fn first_line(text: &str) -> Option<String> {
 /// The error for a CLI that exited unsuccessfully: the tail of what it said,
 /// as `auth` when that looks like a login problem.
 pub fn failure_error(kind: CliKind, output: &Output) -> AiError {
+    failure_error_named(kind.binary(), output)
+}
+
+/// [`failure_error`] for any executable name.
+pub fn failure_error_named(binary: &str, output: &Output) -> AiError {
     let said = if output.stderr.trim().is_empty() {
         &output.stdout
     } else {
@@ -490,9 +513,9 @@ pub fn failure_error(kind: CliKind, output: &Output) -> AiError {
         None => "was killed".to_string(),
     };
     let message = if tail.is_empty() {
-        format!("`{}` {status}", kind.binary())
+        format!("`{binary}` {status}")
     } else {
-        format!("`{}` {status}: {}", kind.binary(), truncate(&tail, 400))
+        format!("`{binary}` {status}: {}", truncate(&tail, 400))
     };
     AiError::new(
         if auth {

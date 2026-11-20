@@ -2,6 +2,7 @@
 //! provider and never sees a key: it calls the commands in `commands.rs`,
 //! and this module makes the HTTP request or runs the CLI. See `docs/ai.md`.
 
+pub mod acp;
 pub mod agent;
 mod anthropic;
 mod cli;
@@ -255,6 +256,8 @@ pub struct AiManager {
     /// the lookup failed (it is not retried until restart).
     anthropic_caps: Mutex<HashMap<(String, String), Option<AnthropicCaps>>>,
     rejections: Rejections,
+    /// The agent's ACP sessions (CLI profiles).
+    pub acp: acp::AcpManager,
 }
 
 impl AiManager {
@@ -718,9 +721,45 @@ impl AiManager {
         }
     }
 
+    /// One prompt of an agent conversation with a CLI profile, over ACP
+    /// (see `acp/`). `owner` is the calling window's label.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn acp_prompt(
+        &self,
+        owner: &str,
+        conversation: &str,
+        target: &Target,
+        system: &str,
+        tools: &[agent::ToolDef],
+        text: &str,
+        emit: acp::tools::Emit,
+    ) -> Result<acp::Stop, AiError> {
+        self.acp
+            .prompt(
+                &self.discovery,
+                owner,
+                conversation,
+                target,
+                system,
+                tools,
+                text,
+                emit,
+            )
+            .await
+    }
+
     pub async fn cli_status(&self, provider: &ProviderConfig) -> Result<cli::CliStatus, AiError> {
         match provider.id.backend() {
-            Backend::Cli(kind) => Ok(self.discovery.status(kind, provider.cli_path()).await),
+            Backend::Cli(kind) => {
+                let mut status = self.discovery.status(kind, provider.cli_path()).await;
+                if let Some(spec) = acp::agents::spec(kind) {
+                    status.agent = Some(
+                        acp::agents::status(&self.discovery, spec, &status, provider.acp_path())
+                            .await,
+                    );
+                }
+                Ok(status)
+            }
             _ => Err(AiError::other(format!(
                 "{} is not a CLI provider",
                 provider.id.as_str()
@@ -786,6 +825,7 @@ mod tests {
             id: ProviderId::Custom,
             base_url: Some(server.url.clone()),
             cli_path: None,
+            acp_path: None,
         };
         // Custom keys are optional; a broken keychain must not matter here.
         let manager = &manager;
@@ -982,6 +1022,7 @@ mod tests {
             id: ProviderId::Antigravity,
             base_url: None,
             cli_path: Some(fake.to_string_lossy().into_owned()),
+            acp_path: None,
         };
         let target = Target {
             provider: config,
@@ -1053,6 +1094,7 @@ mod tests {
             id: ProviderId::Openai,
             base_url: None,
             cli_path: None,
+            acp_path: None,
         };
         let target = Target {
             provider: config,

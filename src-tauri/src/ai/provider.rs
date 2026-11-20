@@ -32,6 +32,10 @@ pub struct ProviderConfig {
     /// Overrides where a CLI provider's executable is.
     #[serde(default)]
     pub cli_path: Option<String>,
+    /// Overrides where the CLI's ACP adapter is (same forms as `cliPath`);
+    /// no UI sets it yet.
+    #[serde(default)]
+    pub acp_path: Option<String>,
 }
 
 /// What a request goes to: a model profile as the webview resolved it for a
@@ -197,6 +201,14 @@ impl ProviderConfig {
             ProviderId::Custom => format!("custom:{}", self.base_url()?),
             id => id.as_str().to_string(),
         })
+    }
+
+    /// The ACP adapter path override, if any (blank counts as none).
+    pub fn acp_path(&self) -> Option<&str> {
+        self.acp_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     }
 
     /// The CLI path override, if any (blank counts as none).

@@ -132,6 +132,7 @@ pub fn run() {
                 let label = webview.window().label().to_string();
                 webview.state::<PtyManager>().kill_owned_by(&label);
                 webview.state::<WatchManager>().stop_owned_by(&label);
+                webview.state::<ai::AiManager>().acp.close_owned_by(&label);
             }
         })
         .on_menu_event(|app, event| {
@@ -179,6 +180,9 @@ pub fn run() {
             ai::commands::ai_suggest,
             ai::commands::ai_stream,
             ai::commands::ai_agent_turn,
+            ai::commands::ai_acp_prompt,
+            ai::commands::ai_acp_tool_result,
+            ai::commands::ai_acp_close,
             ai::commands::ai_cancel,
             ai::commands::ai_models,
             ai::commands::ai_effort_options,
@@ -200,6 +204,7 @@ pub fn run() {
         } => {
             app.state::<PtyManager>().kill_owned_by(&label);
             app.state::<WatchManager>().stop_owned_by(&label);
+            app.state::<ai::AiManager>().acp.close_owned_by(&label);
         }
         // The Dock icon was clicked: show the app again if it was hidden by
         // its close button (`app_hide_on_close`) or its window minimized.
@@ -209,6 +214,7 @@ pub fn run() {
         RunEvent::Exit => {
             app.state::<PtyManager>().kill_all();
             app.state::<WatchManager>().stop_all();
+            app.state::<ai::AiManager>().acp.close_all();
         }
         _ => {}
     });

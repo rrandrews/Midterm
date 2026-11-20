@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
+use super::acp::{AcpEvent, AcpReply};
 use super::agent::{AgentEvent, AgentMessage, AgentTurn, ToolDef};
 use super::cli::CliStatus;
 use super::error::{AiError, truncate};
@@ -139,8 +140,75 @@ pub async fn ai_agent_turn(
         .await
 }
 
-/// Cancels a running `ai_suggest`, `ai_stream` or `ai_agent_turn`. Unknown
-/// or finished ids are ignored.
+/// One prompt of an agent conversation with a CLI profile, over ACP (see
+/// `acp/`). The first prompt for `conversationId` starts the session;
+/// `system` and `tools` are only used then. Reply text, Midterm tool calls
+/// (answer each with `ai_acp_tool_result`) and foreign tool calls go to
+/// `onEvent`. Errors and `ai_cancel(requestId)` work as for `ai_stream`.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn ai_acp_prompt(
+    window: tauri::Window,
+    manager: State<'_, AiManager>,
+    request_id: String,
+    conversation_id: String,
+    target: Target,
+    system: String,
+    tools: Vec<ToolDef>,
+    text: String,
+    on_event: tauri::ipc::Channel<AcpEvent>,
+) -> Result<AcpReply, AiError> {
+    // Closed by `ai_cancel` under the gate's lock: no event after it.
+    let gate = Arc::new(Gate::default());
+    let open = gate.clone();
+    let emit = Arc::new(move |event: AcpEvent| {
+        open.pass(|| {
+            // The webview may have gone away; the result still settles.
+            let _ = on_event.send(event);
+        });
+    });
+    let work = manager.acp_prompt(
+        window.label(),
+        &conversation_id,
+        &target,
+        &system,
+        &tools,
+        &text,
+        emit,
+    );
+    let stop = manager
+        .cancellable_gated(&request_id, Some(gate), work)
+        .await?;
+    Ok(AcpReply { stop })
+}
+
+/// The result of a `toolCall` event. Results for calls that already ended
+/// (the prompt finished or was cancelled) are ignored.
+#[tauri::command]
+pub fn ai_acp_tool_result(
+    manager: State<'_, AiManager>,
+    conversation_id: String,
+    call_id: String,
+    content: String,
+    is_error: bool,
+) {
+    manager
+        .acp
+        .tool_result(&conversation_id, &call_id, content, is_error);
+}
+
+/// Ends a conversation's ACP session and its process. No session: no-op.
+#[tauri::command]
+pub async fn ai_acp_close(
+    manager: State<'_, AiManager>,
+    conversation_id: String,
+) -> Result<(), AiError> {
+    manager.acp.close(&conversation_id).await;
+    Ok(())
+}
+
+/// Cancels a running `ai_suggest`, `ai_stream`, `ai_agent_turn` or
+/// `ai_acp_prompt`. Unknown or finished ids are ignored.
 #[tauri::command]
 pub fn ai_cancel(manager: State<'_, AiManager>, request_id: String) {
     manager.cancel(&request_id);

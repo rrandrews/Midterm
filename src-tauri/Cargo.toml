@@ -46,6 +46,14 @@ base64 = "0.23"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "system-proxy", "json"] }
 keyring = "4.2"
 tokio = { version = "1", features = ["process", "time", "macros", "sync", "io-util", "rt"] }
+# The agent over ACP (src/ai/acp): CLI agents run as long-lived ACP sessions
+# and Midterm serves its tools to them as an MCP server over the same
+# connection (MCP-over-ACP, still unstable). Note: the crate turns on
+# serde_json's `preserve_order`, so `serde_json::Map` keeps insertion order
+# across the whole backend.
+agent-client-protocol = { version = "5.4", features = ["unstable_mcp_over_acp"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["net", "rt-multi-thread"] }
