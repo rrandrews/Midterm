@@ -47,15 +47,18 @@ function patch(paneId: string, id: number, change: Partial<EditorRequest>): void
   if (entry?.id === id) setEntry(paneId, { ...entry, ...change });
 }
 
-/** Starts a request for the pane's editor (cancelling the one before). */
+/** Starts a request for the pane's editor (cancelling the one before, whose `restore` it keeps). */
 export function startEditorRequest(
   paneId: string,
   options: { line: string; restore: string; busy: string; run: () => CmdRequest },
 ): void {
+  // Replacing a loading request: the editor is empty by now, so what it held before that request is what comes back.
+  const previous = useEditorRequests.getState()[paneId];
+  const restore = previous?.status === "loading" ? previous.restore : options.restore;
   running.get(paneId)?.cancel();
   running.delete(paneId);
   const id = ++counter;
-  setEntry(paneId, { id, line: options.line, status: "loading", busy: options.busy, restore: options.restore, applied: false });
+  setEntry(paneId, { id, line: options.line, status: "loading", busy: options.busy, restore, applied: false });
   const request = options.run();
   running.set(paneId, request);
   request.result.then(

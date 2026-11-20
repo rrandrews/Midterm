@@ -1,6 +1,6 @@
 import { ClipboardCopy, Copy, RotateCw, Sparkles, Wrench } from "lucide-react";
 import { fixBlock } from "../../ai/blockAi";
-import { explainBlock, pruneNotes } from "../../ai/blockNotes";
+import { explainBlock } from "../../ai/blockNotes";
 import { featureReady } from "../../ai/profiles";
 import { useSettings } from "../../settings/settings";
 import { useThemeRevision } from "../../theme/state";
@@ -84,14 +84,6 @@ export function BlocksView({
   const branch = useBranch(snapshot.nested ? undefined : where.cwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
   const promptScope = scopeOf(snapshot.nested, snapshot.location);
   const aiReady = useSettings((state) => featureReady("explain", state));
-
-  // AI notes of blocks that are gone (cleared, out of the scrollback) go too.
-  useEffect(() => {
-    pruneNotes(
-      session.paneId,
-      snapshot.blocks.map((block) => block.id),
-    );
-  }, [session, snapshot]);
 
   return (
     <div

@@ -122,7 +122,8 @@ export function trimOutput(output: string, limits: OutputLimits = DEFAULT_LIMITS
 
 /** A context block as the prompt shows it: `$ command`, `(in cwd)` when it differs from `cwd`, the output, `[exit N]`. */
 export function formatBlock(block: ContextBlock, cwd: string | undefined, limits?: OutputLimits): string {
-  const lines = [`$ ${clip(block.command.trim(), COMMAND_CHARS)}`];
+  // Redacted before it is clipped, so a cut cannot hide a secret from the patterns.
+  const lines = [`$ ${clip(redact(block.command.trim()), COMMAND_CHARS)}`];
   if (block.cwd && block.cwd !== cwd) lines.push(`(in ${block.cwd})`);
   const output = trimOutput(block.output, limits);
   if (output) lines.push(output);
@@ -147,7 +148,7 @@ export function contextBody(input: ContextInput): string {
     const command = input.recentCommands[i].trim();
     if (command && !inBlocks.has(command) && !recent.includes(command)) recent.unshift(command);
   }
-  if (recent.length) parts.push(`Earlier commands (oldest first):\n${recent.map((c) => clip(c, COMMAND_CHARS)).join("\n")}`);
+  if (recent.length) parts.push(`Earlier commands (oldest first):\n${recent.map((c) => clip(redact(c), COMMAND_CHARS)).join("\n")}`);
 
   if (input.blocks.length) {
     const blocks = input.blocks.map((block) => formatBlock(block, input.cwd));

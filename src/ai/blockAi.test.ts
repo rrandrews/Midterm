@@ -83,6 +83,13 @@ describe("contextInputOf a block", () => {
     expect(body).not.toContain("$ make");
   });
 
+  it("leaves out commands run after it whose blocks are gone", () => {
+    const target = block("make", { exitCode: 2 });
+    // "rm -rf build" ran after it, and its block was erased.
+    const input = contextInputOf(source([target], { "": ["cd proj", "make", "rm -rf build"] }), { limit: 5, block: target });
+    expect(input.recentCommands).toEqual(["cd proj"]);
+  });
+
   it("gives a remote block the remote host's facts, not this machine's", () => {
     const local = block("ls");
     const remote = block("cat /etc/nope", { nested: true, host: "box", cwd: "/srv", exitCode: 1 });

@@ -581,7 +581,8 @@ block)`), directory and branch (from when it ran), the remote host when it
 ran over ssh, and only what came before it: the same shell's finished
 blocks before it, and the earlier commands without it and without the
 commands of the blocks after it (the pane's command list is de-duplicated,
-so they are left out by text). The block itself is not in the body; the
+so the list is cut where the block's command was last run, and the later
+blocks' commands are left out by text). The block itself is not in the body; the
 headings say "Commands run before the one in question".
 
 The pure part is `contextInputOf(source, { limit, block?, branch? })`;
@@ -592,8 +593,9 @@ append their own question to `body`.
 `contextBody` strips escape sequences from each output, redacts it, and
 only then trims it (`trimOutput`) to its first 15 and last 25 lines (240
 characters per line, 3000 per block; the block a request is about gets
-`{ head: 40, tail: 80, chars: 12000 }`). Redacting first means a secret that straddles a cut
-is still recognised. The whole prompt is redacted again at the end. `redact` replaces:
+`{ head: 40, tail: 80, chars: 12000 }`). Commands are likewise redacted before they are
+clipped to 500 characters. Redacting first means a secret that straddles a
+cut is still recognised. The whole prompt is redacted again at the end. `redact` replaces:
 
 - PEM private keys;
 - well-known token shapes: OpenAI and Anthropic `sk-…`, GitHub `ghp_` and
@@ -756,7 +758,10 @@ ready profile (`featureReady("explain")`).
   `canReplay(session, block)` holds (same shell, at a prompt). The same
   request ending in "Corrected command:", with `FIX_SYSTEM_PROMPT` (only
   the corrected command on one line, nothing if there is none), budget 400,
-  not streamed (`aiSuggest`, then `parseSuggestion`). It goes through
+  not shown as it arrives, then `parseSuggestion`. It goes through
+  `aiStream` rather than `aiSuggest` for the stop reason: a reply cut off at
+  the token limit is refused ("The fix was cut off at the token limit.")
+  instead of landing as a partial command. It goes through
   `startEditorRequest`: the line `fix: <command>` shows above the editor
   with "fixing the command… esc cancels", and the command **lands in the
   editor, never run**. Esc or ⌃C cancels and puts the editor's previous
@@ -770,8 +775,10 @@ prompt again.
 memory only: `{ status: loading | streaming | done | error, text, error?,
 cut?, stopped?, collapsed }`. One request per block (Explain again or Retry
 restarts it); several blocks may stream at once. Stop cancels the request
-and keeps the text so far. `pruneNotes` runs from `BlocksView` whenever
-the snapshot changes (blocks cleared or out of the scrollback), and
+and keeps the text so far. While a pane has notes, `blockNotes.ts`
+subscribes to its block tracker and runs `pruneNotes` whenever the blocks
+change (cleared or out of the scrollback), also while the pane shows the
+classic terminal; and
 `dropPaneNotes` when the pane's session ends (`onSessionDisposed`, hooked
 up by `installAi`); both cancel requests in flight. Without a ready
 profile, Explain puts "Choose a model for Explain and fix in Settings → AI."

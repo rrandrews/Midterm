@@ -84,6 +84,13 @@ describe("buildContext", () => {
 });
 
 describe("contextBody", () => {
+  it("redacts commands before clipping them", () => {
+    // The password runs past the 500-character cut, its `@` after it.
+    const command = `curl https://user:${"a".repeat(475)}SECRETzzzzzz@example.com`;
+    const body = contextBody({ recentCommands: [command], blocks: [{ command: command.replace("curl", "wget"), exitCode: 0, output: "" }] });
+    expect(body).not.toContain("SECRET");
+  });
+
   it("is the prompt without its question", () => {
     const input = { os: "macOS", cwd: "~", recentCommands: ["ls"], blocks: [] };
     const built = buildContext(input);

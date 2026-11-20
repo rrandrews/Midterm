@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { type StreamReply, toAiError } from "../ipc/ai";
 import type { Block } from "../terminal/blocks";
+import { peekSession } from "../terminal/sessions";
 import { EXPLAIN_MAX_TOKENS, NO_MODEL_MESSAGE, explainRequest } from "./blockAi";
 import { targetFor } from "./profiles";
 import { type TextStream, streamText } from "./stream";
@@ -9,8 +10,9 @@ import { type TextStream, streamText } from "./stream";
  * AI notes under blocks (Explain), per pane and block, outside React and in
  * memory only. One request per block (asking again restarts it); several
  * blocks may stream at once. Notes of blocks that left the scrollback are
- * pruned by the blocks view, and a pane's notes go with its session
- * (`dropPaneNotes`, hooked up by `installAi`).
+ * pruned as the pane's blocks change (watched while it has notes, whether
+ * or not the blocks view is mounted), and a pane's notes go with its
+ * session (`dropPaneNotes`, hooked up by `installAi`).
  */
 
 export type BlockNoteStatus = "loading" | "streaming" | "done" | "error";
@@ -31,6 +33,24 @@ export const useBlockNotes = create<Record<string, Record<number, BlockNote>>>()
 
 const running = new Map<string, { cancel: () => void }>();
 const key = (paneId: string, blockId: number) => `${paneId}\u0000${blockId}`;
+/** Per pane with notes: unsubscribes from its block tracker. */
+const watchers = new Map<string, () => void>();
+
+/** Prunes the pane's notes whenever its blocks change, until it has none. */
+function watch(paneId: string): void {
+  if (watchers.has(paneId)) return;
+  const session = peekSession(paneId);
+  if (!session) return;
+  watchers.set(
+    paneId,
+    session.blocks.subscribe(() => pruneNotes(paneId, session.blocks.snapshot().blocks.map((block) => block.id))),
+  );
+}
+
+function unwatch(paneId: string): void {
+  watchers.get(paneId)?.();
+  watchers.delete(paneId);
+}
 
 export function noteOf(paneId: string, blockId: number): BlockNote | undefined {
   return useBlockNotes.getState()[paneId]?.[blockId];
@@ -46,6 +66,7 @@ function setNote(paneId: string, blockId: number, note: BlockNote | null): void 
     else delete next[paneId];
     return next;
   }, true);
+  if (!useBlockNotes.getState()[paneId]) unwatch(paneId);
 }
 
 function patchNote(paneId: string, blockId: number, change: Partial<BlockNote>): void {
@@ -117,6 +138,7 @@ export function runNote(
 /** Explain: streams an explanation of `block` into its note (restarting one that runs). */
 export function explainBlock(paneId: string, block: Block): void {
   if (!block.command.trim() || block.end === undefined) return;
+  watch(paneId);
   if (!targetFor("explain")) {
     cancelRunning(paneId, block.id);
     setNote(paneId, block.id, { status: "error", text: "", error: NO_MODEL_MESSAGE, collapsed: false });
@@ -158,6 +180,7 @@ export function pruneNotes(paneId: string, liveBlockIds: Iterable<number>): void
 
 /** The pane's session ended: all its notes go. */
 export function dropPaneNotes(paneId: string): void {
+  unwatch(paneId);
   const notes = useBlockNotes.getState()[paneId];
   if (!notes) return;
   for (const id of Object.keys(notes).map(Number)) cancelRunning(paneId, id);

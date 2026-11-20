@@ -132,9 +132,16 @@ export function contextInputOf(
   const host = remote ? ((block ? block.host : snapshot.location.host) ?? "unknown") : undefined;
   let commands = source.commandsFor(scope).slice(-50);
   if (block) {
-    // The command log is de-duplicated, so later blocks' commands (and this one) are left out by text.
+    // The pane's command list is de-duplicated (a command run again moves
+    // to the end), so it is cut where this command was last run, and the
+    // commands of the blocks after it are left out by text. Commands whose
+    // blocks were erased after it are cut off that way too, unless this
+    // command was run again after them.
+    const target = block.command.trim();
+    const last = commands.map((command) => command.trim()).lastIndexOf(target);
+    if (last >= 0) commands = commands.slice(0, last);
     const later = new Set(snapshot.blocks.slice(at < 0 ? snapshot.blocks.length : at).map((b) => b.command.trim()));
-    later.add(block.command.trim());
+    later.add(target);
     commands = commands.filter((command) => !later.has(command.trim()));
   }
   return {

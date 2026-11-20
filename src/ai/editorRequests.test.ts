@@ -89,6 +89,12 @@ describe("editor requests", () => {
     expect(entry()).toMatchObject({ status: "done", result: "new" });
   });
 
+  it("a request replacing a loading one keeps its restore text", () => {
+    start(fake(), "git sta");
+    start(fake(), "");
+    expect(cancelEditorRequest("pane")).toBe("git sta");
+  });
+
   it("keeps a loading request when the editor is emptied", () => {
     start(fake());
     clearEditorRequest("pane");

@@ -1,4 +1,4 @@
-import { aiCancel, aiSuggest, toAiError } from "../ipc/ai";
+import { aiCancel, aiStream, toAiError } from "../ipc/ai";
 import { blockOutput, canReplay } from "../terminal/blockMode";
 import type { Block } from "../terminal/blocks";
 import { peekSession } from "../terminal/sessions";
@@ -13,7 +13,7 @@ import type { CmdRequest } from "./slash";
  * (see docs/ai.md#explain-and-fix). Both use the `explain` feature's model
  * profile. Explain streams Markdown into a note under the block
  * (src/ai/blockNotes.ts); Fix asks for one corrected command and puts it in
- * the blocks editor, never runs it.
+ * the blocks editor, never runs it (one request, not shown as it streams).
  */
 
 export type BlockRequest = { system: string; prompt: string };
@@ -92,8 +92,11 @@ export function fixCommand(paneId: string, block: Block): CmdRequest {
     if (!context || !shown) throw { kind: "other", message: "This terminal is not available." };
     if (cancelled) throw { kind: "cancelled", message: "Cancelled" };
     const request = buildFixRequest(context.body, shown);
-    const { text } = await aiSuggest({ requestId, target, system: request.system, prompt: request.prompt, maxTokens: FIX_MAX_TOKENS });
-    const command = parseSuggestion(text);
+    // Through the streaming path for its stop reason: a fix cut off at the
+    // token limit may still parse as a command, minus what matters.
+    const reply = await aiStream({ requestId, target, system: request.system, prompt: request.prompt, maxTokens: FIX_MAX_TOKENS }, () => {});
+    if (reply.stop === "length") throw { kind: "other", message: "The fix was cut off at the token limit." };
+    const command = parseSuggestion(reply.text);
     if (!command) throw { kind: "empty", message: "The model has no fix for this command." };
     return command;
   })().catch((error: unknown) => {
