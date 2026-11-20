@@ -19,6 +19,27 @@ fn app_quit(app: AppHandle) {
     app.exit(0);
 }
 
+/// The window's close button: on macOS this hides the app instead of closing
+/// the window, as Mac apps do; its shells keep running, and clicking the
+/// Dock icon (`RunEvent::Reopen`) or ⌘-Tab brings it back. Returns whether it
+/// hid; elsewhere it returns false and the window closes as usual.
+#[tauri::command]
+fn app_hide_on_close(app: AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = app.hide() {
+            eprintln!("app_hide_on_close: {error}");
+            return false;
+        }
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
 /// This machine's host name, as shells report it in OSC 7 (`gethostname`).
 #[tauri::command]
 fn local_hostname() -> Option<String> {
@@ -99,6 +120,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_quit,
+            app_hide_on_close,
             local_hostname,
             menu::menu_set,
             pty::commands::pty_spawn,
@@ -147,6 +169,17 @@ pub fn run() {
         } => {
             app.state::<PtyManager>().kill_owned_by(&label);
             app.state::<WatchManager>().stop_owned_by(&label);
+        }
+        // The Dock icon was clicked: show the app again if it was hidden by
+        // its close button (`app_hide_on_close`) or its window minimized.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            let _ = app.show();
+            for window in app.webview_windows().values() {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }
         // Last chance to make sure no shell outlives the app.
         RunEvent::Exit => {
