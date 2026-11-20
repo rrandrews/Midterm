@@ -1,4 +1,3 @@
-import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
@@ -12,6 +11,7 @@ import { localHostname } from "../ipc/system";
 import { BlockTracker } from "./blocks";
 import { branchOf } from "./gitBranch";
 import { registerFileLinks } from "./fileLinkProvider";
+import { fitTerminal } from "./fit";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { type TerminalConfig, terminalConfig, terminalSettings } from "./settings";
@@ -70,7 +70,6 @@ export class TerminalSession {
   private readonly search = new SearchAddon();
   private copyTimer: ReturnType<typeof setTimeout> | undefined;
   private bellTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly fit = new FitAddon();
   private readonly resizeObserver = new ResizeObserver(() => this.scheduleFit());
   /** Commands and their output, from the shell's OSC 133 marks (blocks mode). */
   readonly blocks: BlockTracker;
@@ -117,7 +116,6 @@ export class TerminalSession {
     this.currentCwd = initialCwd;
     this.host.className = "terminal-host";
 
-    this.term.loadAddon(this.fit);
     this.term.loadAddon(this.search);
     this.host.classList.toggle("is-solid", terminalSettings().terminalBackground === "solid");
     this.term.loadAddon(new Unicode11Addon());
@@ -507,7 +505,7 @@ export class TerminalSession {
     // A hidden or collapsed host has no size to fit to.
     if (!this.attached || !this.host.clientWidth || !this.host.clientHeight) return;
     try {
-      this.fit.fit();
+      fitTerminal(this.term);
     } catch (error) {
       console.warn("Terminal fit failed:", error);
     }

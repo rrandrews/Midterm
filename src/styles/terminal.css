@@ -25,6 +25,27 @@
   cursor: text;
 }
 
+/*
+ * Scroll bar: slim and drawn over the content, like the app's native
+ * (overlay) scroll bars. xterm sizes it inline from `overviewRuler.width`
+ * (14px by default), hence !important; the terminal is fitted without a
+ * strip for it (src/terminal/fit.ts).
+ */
+.terminal-host .xterm-scrollable-element > .scrollbar.vertical {
+  width: 10px !important;
+}
+.terminal-host .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  left: 3px !important;
+  width: 5px !important;
+  border-radius: 3px;
+}
+.terminal-host .xterm-scrollable-element > .scrollbar.vertical:hover > .slider,
+.terminal-host .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
+  left: 2px !important;
+  width: 7px !important;
+  border-radius: 4px;
+}
+
 /* `terminalBackground: "solid"`: a flat background instead of the pane gradient. */
 .pane-terminal:has(.terminal-host.is-solid) {
   background: var(--terminal-solid);

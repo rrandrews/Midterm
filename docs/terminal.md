@@ -70,8 +70,11 @@ before the PTY handle is known are acknowledged as soon as it is.
   for the crispest text and the cheapest frames.
 - Fonts are preloaded in `main.tsx` before any terminal opens, because xterm
   measures its cell size from the font when it opens.
-- `FitAddon` refits on a `ResizeObserver`, at most once per frame, and only
-  while the host has a size.
+- `fitTerminal` (`src/terminal/fit.ts`) refits on a `ResizeObserver`, at
+  most once per frame, and only while the host has a size. It replaces
+  `@xterm/addon-fit`, which keeps a strip free for xterm's 14px scroll bar;
+  ours is a slim overlay over the last column (`terminal.css`), like the
+  app's native scroll bars.
 
 ### Find, bell, copy on select
 
