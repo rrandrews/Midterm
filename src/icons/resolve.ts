@@ -11,7 +11,8 @@ import type { IconMapping, IconQuery } from "./types";
  * - folders: folder name (path tails too), then `folder` /
  *   `folderExpanded`.
  *
- * Under a light theme the set's `light` mappings are tried first. All
+ * Under a light theme the set's `light` mappings (fallbacks included) are
+ * tried first; any name match still beats any fallback. All
  * lookups are case-insensitive and go through `Map`s: files are really
  * called `constructor` and `__proto__`.
  */
@@ -98,10 +99,14 @@ export function specificIcon(index: IconIndex, query: IconQuery): string | undef
   return (query.light && index.light ? specificIn(index.light, query) : undefined) ?? specificIn(index, query);
 }
 
-/** The set's fallback for the kind of entry. */
-export function defaultIcon(index: IconIndex, query: IconQuery): string | undefined {
+function defaultIn(index: IconIndex, query: IconQuery): string | undefined {
   if (query.kind === "file") return index.file;
   return query.expanded ? (index.folderExpanded ?? index.folder) : index.folder;
+}
+
+/** The set's fallback for the kind of entry; under a light theme, its `light` fallback first. */
+export function defaultIcon(index: IconIndex, query: IconQuery): string | undefined {
+  return (query.light && index.light ? defaultIn(index.light, query) : undefined) ?? defaultIn(index, query);
 }
 
 export function iconIdFor(index: IconIndex, query: IconQuery, specificOnly = false): string | undefined {

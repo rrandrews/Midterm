@@ -14,6 +14,14 @@ const index = buildIndex({
   light: { fileExtensions: { ts: "ts-light" } },
 });
 
+const withLightDefaults = buildIndex({
+  file: "file",
+  folder: "folder",
+  folderExpanded: "folder-open",
+  fileExtensions: { ts: "ts" },
+  light: { file: "file-light", folder: "folder-light", fileExtensions: { md: "md-light" } },
+});
+
 const file = (name: string, extra: Partial<IconQuery> = {}): IconQuery => ({ name, kind: "file", expanded: false, light: false, ...extra });
 const dir = (name: string, expanded = false, extra: Partial<IconQuery> = {}): IconQuery => ({ name, kind: "dir", expanded, light: false, ...extra });
 
@@ -59,6 +67,18 @@ describe("iconIdFor", () => {
   it("tries light mappings first under a light theme", () => {
     expect(iconIdFor(index, file("a.ts", { light: true }))).toBe("ts-light");
     expect(iconIdFor(index, file("a.json", { light: true }))).toBe("json");
+  });
+
+  it("uses light fallbacks under a light theme, after any name match", () => {
+    const light = (q: IconQuery) => iconIdFor(withLightDefaults, { ...q, light: true });
+    expect(light(file("notes"))).toBe("file-light");
+    expect(light(file("a.ts"))).toBe("ts");
+    expect(light(file("a.md"))).toBe("md-light");
+    expect(light(dir("lib"))).toBe("folder-light");
+    // No light folderExpanded: the light folder, as for the top level.
+    expect(light(dir("lib", true))).toBe("folder-light");
+    expect(iconIdFor(withLightDefaults, file("notes"))).toBe("file");
+    expect(iconIdFor(withLightDefaults, dir("lib", true))).toBe("folder-open");
   });
 
   it("does not trip over names of Object.prototype members", () => {

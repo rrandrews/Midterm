@@ -25,14 +25,17 @@ const NONE: LoadedIconSet = { id: "none", icon: () => null };
 type IconState = {
   /** Custom sets, without their icons. */
   custom: IconSetInfo[];
-  /** Sets ready to draw, by id. */
-  loaded: Record<string, LoadedIconSet>;
+  /** Sets ready to draw, by id. A Map: a custom set may be called `constructor`. */
+  loaded: ReadonlyMap<string, LoadedIconSet>;
 };
 
 export const useIconState = create<IconState>()(() => ({
   custom: [],
   // The synchronous sets, so they draw on the first frame.
-  loaded: { none: NONE, minimal: minimalSet },
+  loaded: new Map([
+    ["none", NONE],
+    ["minimal", minimalSet],
+  ]),
 }));
 
 export function allIconSets(): IconSetInfo[] {
@@ -109,14 +112,19 @@ function infoOf(set: IconSet): IconSetInfo {
 }
 
 function saveIndex(custom: IconSetInfo[]): void {
-  const loaded = { ...useIconState.getState().loaded };
-  useIconState.setState({ custom, loaded });
+  useIconState.setState({ custom });
   void file
     ?.set(
       "index",
       custom.map(({ bundled: _bundled, ...info }) => info),
     )
     .catch((error) => console.error("Could not save the icon sets:", error));
+}
+
+function forgetLoaded(id: string): void {
+  const loaded = new Map(useIconState.getState().loaded);
+  loaded.delete(id);
+  useIconState.setState({ loaded });
 }
 
 /** An id not used by any icon set, from `base`. */
@@ -135,8 +143,7 @@ export function saveIconSet(set: IconSet): IconSet {
   const index = custom.findIndex((info) => info.id === saved.id);
   const info = infoOf(saved);
   // Drop a stale loaded copy.
-  const { [saved.id]: _stale, ...loaded } = useIconState.getState().loaded;
-  useIconState.setState({ loaded });
+  forgetLoaded(saved.id);
   loading.delete(saved.id);
   saveIndex(index === -1 ? [...custom, info] : custom.map((candidate, i) => (i === index ? info : candidate)));
   return saved;
@@ -146,8 +153,7 @@ export function deleteIconSet(id: string): void {
   sets.delete(id);
   loading.delete(id);
   void file?.set(`set:${id}`, null).catch((error) => console.error("Could not delete the icon set:", error));
-  const { [id]: _gone, ...loaded } = useIconState.getState().loaded;
-  useIconState.setState({ loaded });
+  forgetLoaded(id);
   saveIndex(useIconState.getState().custom.filter((info) => info.id !== id));
   // Themes naming it fall through to the settings; the settings fall back to the default.
   if (getSettings().iconSet === id) useSettings.getState().updateSettings({ iconSet: DEFAULT_ICON_SET_ID });
@@ -196,14 +202,14 @@ async function load(id: string): Promise<LoadedIconSet | null> {
 
 /** The set, loading it if needed (once). Null if it does not exist or failed to load. */
 export function loadIconSet(id: string): Promise<LoadedIconSet | null> {
-  const ready = useIconState.getState().loaded[id];
+  const ready = useIconState.getState().loaded.get(id);
   if (ready) return Promise.resolve(ready);
   let pending = loading.get(id);
   if (!pending) {
     pending = load(id).then(
       (set) => {
         if (set && loading.get(id) === pending) {
-          useIconState.setState((state) => ({ loaded: { ...state.loaded, [id]: set } }));
+          useIconState.setState((state) => ({ loaded: new Map(state.loaded).set(id, set) }));
         }
         return set;
       },
@@ -227,7 +233,7 @@ export function useActiveIconSet(): { set: LoadedIconSet | null; light: boolean 
   useIconState((state) => state.custom);
   const loaded = useIconState((state) => state.loaded);
   const id = activeIconSetId();
-  const set = loaded[id] ?? null;
+  const set = loaded.get(id) ?? null;
   useEffect(() => {
     if (!set) void loadIconSet(id);
   }, [id, set]);
