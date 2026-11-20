@@ -33,13 +33,19 @@
  */
 .terminal-host .xterm-scrollable-element > .scrollbar.vertical {
   width: 10px !important;
+  /* The track lies over the last column: clicks there reach the text. */
+  pointer-events: none !important;
 }
 .terminal-host .xterm-scrollable-element > .scrollbar.vertical > .slider {
   left: 3px !important;
   width: 5px !important;
   border-radius: 3px;
+  pointer-events: auto;
 }
-.terminal-host .xterm-scrollable-element > .scrollbar.vertical:hover > .slider,
+.terminal-host .xterm-scrollable-element > .scrollbar.vertical.invisible > .slider {
+  pointer-events: none;
+}
+.terminal-host .xterm-scrollable-element > .scrollbar.vertical > .slider:hover,
 .terminal-host .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
   left: 2px !important;
   width: 7px !important;
