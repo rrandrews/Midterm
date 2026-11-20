@@ -353,7 +353,8 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 |---|---|
 | `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `PROVIDERS` (names, API or CLI, key needed); `toAiError`. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, cancellable. |
 | `context.ts` | Pure: `buildContext` (system prompt and prompt), `redact`, `trimOutput`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
-| `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `providerConfig`. |
+| `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `providerReady`, `providerConfig`, `localPrediction`. |
+| `predict.ts` | Pure: local next-command prediction from the command log (`predictNext`, `tokenize`). Unit-tested in `predict.test.ts`. |
 | `AiSection.tsx` | Settings → AI. |
 | `commands.ts` | Commands, the terminal menu's per-pane switch, registration. |
 
@@ -363,7 +364,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 
 | Field | Meaning |
 |---|---|
-| `suggestions` | On by default, but inert until a provider is chosen (and a model, for APIs; a base URL for `custom`). |
+| `suggestions` | On by default. Local predictions work right away; model requests wait until a provider is chosen (and a model, for APIs; a base URL for `custom`). |
 | `provider` | A provider id, or empty for none. |
 | `model` | The model id. Empty means the CLI's default, for CLI providers only. |
 | `baseUrl` | For `custom`. |
@@ -372,8 +373,8 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `effort` | Reasoning effort by provider id: missing (Midterm's pick), `default` (send nothing) or a level. See "Reasoning effort". |
 
 A pane's own switch is `aiSuggestions: false` in the terminal pane's data
-(terminal menu → "AI suggestions in this pane", shown in blocks mode once AI
-is set up).
+(terminal menu → "Suggestions in this pane", shown while suggestions are
+on). It turns off local predictions too.
 
 Keys never pass through the settings. The key field is write-only: Save
 sends it to `ai_key_set`, and the UI only ever learns `ai_key_status`. A
@@ -419,13 +420,44 @@ The reply goes through `parseSuggestion`: the first line, with code fences,
 backticks and a leading `$` removed. Empty replies, replies over 500
 characters, or replies containing control characters give no suggestion.
 
+### Local prediction
+
+Before a model is asked, the engine looks for a likely follow-up to the
+pane's last command in the **command log** (`src/terminal/commandLog.ts`):
+pairs of (command, the next command run in the same terminal), oldest
+first, up to 5000, saved to `command-log.json` in the app data directory.
+`runFromBlocks` records a pair whenever this machine's shell runs a command
+from the blocks editor; commands at a nested shell's prompt (over ssh) are
+not recorded, and no local prediction is made there.
+
+`predictNext` (`predict.ts`) scores every logged pair against the last
+command, at three levels:
+
+| Level | Weight | Matches when | Example |
+|---|---|---|---|
+| exact | 1 | the logged command is the same line | `git add .` → `git commit` |
+| template | 0.8 | same program and word count; every word that differs is quoted free text, or an argument (not a flag) the next command reused, as a word or a path prefix | `mkdir foo` → `cd foo` gives `cd bar` after `mkdir bar`; `git commit -m "…"` → `git push` |
+| last argument | 0.5 | same program, and the logged command's last argument was reused | `mkdir -p a` → `cd a` gives `cd c` after `mkdir c` |
+
+Reused arguments are substituted (and shell-quoted if needed). A pair of
+the same program that teaches nothing still counts against the candidates
+at a quarter weight. Each pair's weight halves every 1000 pairs back. The
+best candidate is used only with **at least 2 supporting pairs and at
+least half of the weighted total**; otherwise the model is asked as below.
+
+A local prediction is shown at once (no pause, focus or provider needed),
+counts as this prompt's answer (no request follows), and is labelled
+"predicted from history" in the footer. "Suggest now" always asks the
+model.
+
 ### Engine
 
 The blocks input editor (`BlockInput.tsx`) remounts at every prompt and
 reports to the engine:
 
 - `atPrompt(paneId)`: on mount, on focus, and when the editor becomes
-  empty. It asks only if all of these hold:
+  empty. A local prediction (above) answers at once if there is one.
+  Otherwise it asks only if all of these hold:
   - AI is configured and the pane's switch is on;
   - the pane is the active one and the window has focus;
   - no backoff is in force;
@@ -464,7 +496,8 @@ Any change to `settings.ai` cancels everything and clears the backoff, and
 so does saving a key.
 
 State for the UI is `useAiSuggestions[paneId]`: `{ promptKey, status:
-loading | ready | none | error, text?, error?, dismissed? }`.
+loading | ready | none | error, source?: local | ai, text?, error?,
+dismissed? }`.
 
 ### Blocks input
 
@@ -473,8 +506,9 @@ types, the AI suggestion stays only while it continues the typed text;
 otherwise the history's suggestion shows. ⇥ or → accepts the suggestion
 into the editor, and it is never run. Esc dismisses it.
 
-The footer shows where the suggestion comes from ("AI suggestion" or "from
-history"), a pulsing "AI…" while a request runs, or "AI unavailable" with
+The footer shows where the suggestion comes from ("AI suggestion",
+"predicted from history" for a local prediction, or "from history" for a
+prefix match), a pulsing "AI…" while a request runs, or "AI unavailable" with
 the error as a tooltip.
 
 ### Commands

@@ -4,6 +4,7 @@ import { canReplay, replayBlock, runFromBlocks } from "./blockMode";
 import type { TerminalSession } from "./session";
 
 vi.mock("./history", () => ({ recordCommand: vi.fn() }));
+vi.mock("./commandLog", () => ({ recordPair: vi.fn() }));
 
 /** A session at a prompt of the shell in `scope`. */
 function fakeSession(scope: string) {
@@ -13,6 +14,7 @@ function fakeSession(scope: string) {
     runCommand,
     blocks: {
       scope,
+      commandsFor: () => [],
       snapshot: () => ({ integration: "present", phase: "prompt", altScreen: false, nested: scope !== "" }),
     },
   } as unknown as TerminalSession;

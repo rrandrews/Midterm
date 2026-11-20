@@ -5,6 +5,7 @@ import { findPane } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
 import { rowsText } from "./blockRender";
 import { type Block, outputRows, scopeOf } from "./blocks";
+import { recordPair } from "./commandLog";
 import { recordCommand } from "./history";
 import type { TerminalSession } from "./session";
 import { peekSession } from "./sessions";
@@ -73,7 +74,11 @@ export function runFromBlocks(session: TerminalSession, command: string, scope?:
   if (scope !== undefined && session.blocks.scope !== scope) return;
   // A nested shell's commands (over ssh) stay out of this machine's history.
   const root = !session.blocks.snapshot().nested;
-  if (session.runCommand(command) && root) recordCommand(command);
+  const previous = root ? session.blocks.commandsFor("").slice(-1)[0] : undefined;
+  if (session.runCommand(command) && root) {
+    recordCommand(command);
+    recordPair(previous, command);
+  }
 }
 
 /**

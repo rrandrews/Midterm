@@ -10,8 +10,8 @@ const MAX_ROWS = 12;
 /**
  * The blocks mode command line: a textarea with history (↑/↓) and an
  * autosuggestion drawn as ghost text (⇥ or → accepts, ⏎ runs, ⇧⏎ adds a
- * line). At an empty prompt the suggestion comes from the AI provider, if
- * one is set up (src/ai/engine.ts); once the user types, the history's
+ * line). At an empty prompt the suggestion is predicted from the command
+ * log, or else comes from the AI provider if one is set up (src/ai/engine.ts); once the user types, the history's
  * suggestion wins unless the AI's continues what was typed. Esc dismisses
  * the AI suggestion. Shown only while the shell waits at a prompt (so it
  * remounts at every prompt).
@@ -66,9 +66,17 @@ export function BlockInput({
   const aiContinues = aiText !== undefined && aiText.length > value.length && aiText.startsWith(value);
 
   const fromHistory = walk.index === -1 && caretAtEnd ? suggestion(entries, value) : undefined;
-  const source: "ai" | "history" | undefined =
-    walk.index !== -1 || !caretAtEnd ? undefined : aiContinues ? "ai" : fromHistory ? "history" : undefined;
-  const suggested = source === "ai" ? aiText : source === "history" ? fromHistory : undefined;
+  const source: "ai" | "local" | "history" | undefined =
+    walk.index !== -1 || !caretAtEnd
+      ? undefined
+      : aiContinues
+        ? ai?.source === "local"
+          ? "local"
+          : "ai"
+        : fromHistory
+          ? "history"
+          : undefined;
+  const suggested = source === "ai" || source === "local" ? aiText : source === "history" ? fromHistory : undefined;
   const ghost = suggested?.slice(value.length) ?? "";
 
   const set = (next: string) => {
@@ -127,7 +135,7 @@ export function BlockInput({
       event.preventDefault();
       set(walk.draft);
       setWalk({ index: -1, draft: "", entries: [] });
-    } else if (event.key === "Escape" && ai && (source === "ai" || ai.status === "loading" || ai.status === "error")) {
+    } else if (event.key === "Escape" && ai && (source === "ai" || source === "local" || ai.status === "loading" || ai.status === "error")) {
       event.preventDefault();
       dismiss(paneId);
     } else if (event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -188,7 +196,15 @@ export function BlockInput({
   );
 }
 
-function SuggestionStatus({ source, loading, error }: { source?: "ai" | "history"; loading: boolean; error?: string }) {
+function SuggestionStatus({
+  source,
+  loading,
+  error,
+}: {
+  source?: "ai" | "local" | "history";
+  loading: boolean;
+  error?: string;
+}) {
   if (loading) return <span className="blocks-ai-status animate-pulse">AI…</span>;
   if (error)
     return (
@@ -197,6 +213,7 @@ function SuggestionStatus({ source, loading, error }: { source?: "ai" | "history
       </span>
     );
   if (source === "ai") return <span className="blocks-ai-status">AI suggestion · esc dismisses</span>;
+  if (source === "local") return <span className="blocks-ai-status">predicted from history · esc dismisses</span>;
   if (source === "history") return <span className="blocks-ai-status">from history</span>;
   return null;
 }
