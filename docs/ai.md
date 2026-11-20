@@ -15,6 +15,7 @@ runs the CLI. The webview's CSP stays "nothing remote"
 |---|---|
 | `mod.rs` | `AiManager` (Tauri state): dispatch by provider, the `max_tokens` budget, cancellation registry, lazy HTTP client. |
 | `commands.rs` | The Tauri commands below. Thin. |
+| `effort.rs` | Reasoning effort: levels offered per provider and model, Midterm's pick, clamping, token headroom, timeout scaling. |
 | `provider.rs` | `ProviderId`, `ProviderConfig`, default base URLs, which backend each provider uses. |
 | `openai.rs` | OpenAI-compatible chat completions adapter. |
 | `anthropic.rs` | Anthropic Messages adapter (raw HTTP). |
@@ -61,12 +62,15 @@ hard-coded anywhere: the UI lists them with `ai_models`.
 Common to every HTTP request: one non-streaming call, a system prompt and
 one user message, **no sampling parameters** (`temperature`, `top_p`,
 `top_k`: current Claude models reject them, and reasoning models on other
-providers do too), reasoning effort asked to be **low**, and a generous
-`max_tokens`. On current models `max_tokens` covers reasoning as well as the
-reply, and too small a limit ends in an empty reply, so the backend sends
-`maxTokens` (the reply budget, default 512, clamped to 16–32000) **plus 4096
-tokens of headroom** (`output_budget` in `mod.rs`). Timeouts: 10 s to
-connect, 60 s in total.
+providers do too), a reasoning effort (see "Reasoning effort" below), and a
+generous `max_tokens`. On current models `max_tokens` covers reasoning as
+well as the reply, and too small a limit ends in an empty reply, so the
+backend sends `maxTokens` (the reply budget, default 512, clamped to
+16–32000) **plus headroom that grows with effort**: 4096 up to low, 8192 for
+medium, 16384 for high and "Provider default", 32768 for xhigh and max
+(`output_budget` in `mod.rs`, `effort::headroom`). Timeouts: 10 s to connect,
+60 s in total, doubled for high and "Provider default", tripled for xhigh
+and max.
 
 **OpenAI-compatible** (`openai.rs`), `POST {base}/chat/completions`:
 
@@ -77,16 +81,18 @@ connect, 60 s in total.
 
 | Provider | Token field | Effort field |
 |---|---|---|
-| OpenAI | `max_completion_tokens` (its reasoning models reject `max_tokens`) | `reasoning_effort: "low"` |
-| DeepSeek | `max_tokens` | `reasoning_effort: "low"` |
-| Gemini | `max_tokens` | `reasoning_effort: "low"` |
-| OpenRouter | `max_tokens` | `reasoning: { effort: "low", exclude: true }` (its normalized form) |
-| custom | `max_tokens` | none (unknown server) |
+| OpenAI | `max_completion_tokens` (its reasoning models reject `max_tokens`) | `reasoning_effort` |
+| DeepSeek | `max_tokens` | `reasoning_effort`; off is `thinking: { type: "disabled" }` |
+| Gemini | `max_tokens` | `reasoning_effort` (mapped server-side to its thinking level or budget) |
+| OpenRouter | `max_tokens` | `reasoning: { effort, exclude: true }` (its normalized form) |
+| custom | `max_tokens` | `reasoning_effort` when the user picked a level; nothing by default |
 
 The system message uses role `system` (OpenAI maps it to `developer` for
-its reasoning models). If the provider answers **400 with a body mentioning
-"reasoning" or "effort"** (a model without reasoning), the request is sent
-once more without the effort field. Auth is `Authorization: Bearer <key>`,
+its reasoning models). If the provider answers **400 or 422 with a body
+mentioning "reasoning", "effort" or "thinking"** (a model without
+reasoning, or a level it does not take), the request is sent once more
+without the effort field, and that provider, base URL, model and level are
+remembered until restart, so later requests skip the failed attempt. Auth is `Authorization: Bearer <key>`,
 left out for `custom` without a key.
 
 The reply is `choices[0].message.content` (a string, or an array of
@@ -110,10 +116,29 @@ shim):
 ```
 
 Headers `x-api-key` and `anthropic-version: 2026-10-21` (the current API
-version; nothing it changed is used here). No `thinking` field: current
-models think adaptively by default (and some reject turning it off), older
-ones run without it. A 400 mentioning `effort`/`output_config` (models
-without the effort parameter) is retried once without `output_config`. The
+version; nothing it changed is used here). The model's capabilities come
+from `GET {base}/models/{id}` (`capabilities.effort.<level>.supported`,
+`capabilities.thinking.types.{adaptive,enabled}.supported`, `max_tokens`),
+looked up once per model per launch (a failure for lack of a key or
+network is retried next time; any other is remembered). The reasoning
+fields (`anthropic::plan`):
+
+- Midterm's pick: `output_config: { effort: "low" }` and no `thinking`
+  field, as before: current models think adaptively by default (and some
+  reject turning it off), older ones run without it.
+- A level the user picked, on a model with effort: `output_config.effort`
+  plus `thinking: { type: "adaptive" }` when the model supports it (on
+  Opus 4.6–4.8 this turns thinking on; they run without it by default).
+- A model with only budget thinking (Haiku 4.5, Sonnet 4.5 and older): off
+  sends nothing; low/medium/high send `thinking: { type: "enabled",
+  budget_tokens: 1024 / 4096 / 16384 }` with `max_tokens` = reply + budget,
+  capped at the model's output limit (`1024 <= budget < max_tokens`, or no
+  thinking).
+- Capabilities unknown: `output_config.effort` only.
+
+A 400/422 mentioning `effort`, `output_config`, `thinking` or
+`budget_tokens` is retried once with neither field, and remembered as
+above. The
 reply is the concatenated `text` blocks of `content`. `stop_reason:
 "refusal"` is `refused`, with `stop_details.explanation` as the message
 when present. No text is `empty`, with a token-limit hint on `stop_reason:
@@ -121,6 +146,33 @@ when present. No text is `empty`, with a token-limit hint on `stop_reason:
 
 Models: `GET {base}/models?limit=1000`, following `has_more` / `last_id`
 (`after_id`), up to 10 pages.
+
+### Reasoning effort
+
+`settings.ai.effort[provider]` is unset (Midterm's pick), `default` (send
+nothing; the provider decides) or a level: `none` (off), `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`. The backend (`effort.rs`) decides what each
+provider and model offers and clamps a stored level that the model does not
+offer to the nearest one below it (else the lowest above); the stored
+setting is not rewritten. Midterm's pick reproduces the requests from before
+the setting existed: low everywhere, nothing for `custom` or an Antigravity
+model chosen by id, off for an Anthropic model with only budget thinking.
+
+| Provider | Levels offered | How |
+|---|---|---|
+| OpenAI | full ladder; `gpt-6.2*`, `gpt-6.1-sol*`, `gpt-6-astra*`: low–max; other `gpt-6*`: off + low–max | id prefix |
+| Anthropic | the model's `capabilities.effort` leaves; budget-only models: off, low, medium, high; unknown capabilities: low–max | Models API |
+| Gemini | `gemini-4-neon`/`-hydrogen`: low–xhigh; other `gemini-4-`, `gemini-3.8-flash`, `gemini-3.1-pro`, `gemini-2.5-pro`: low–high; `gemini-3-pro`: low, high; other `gemini-3`: minimal–high; other `gemini-2.5-`: off + low–high; else low–high | id prefix |
+| DeepSeek | off, low, high, max | one list |
+| OpenRouter | full ladder (it normalizes) | — |
+| custom | off, low, medium, high (dropped if rejected) | — |
+| Claude Code, Codex | low–max | the CLI clamps |
+| Antigravity | low–max; none when the model id ends in a level (`…-low`) | id suffix |
+
+Model families are matched by id prefix (OpenRouter's `vendor/` prefix is
+ignored): the providers other than Anthropic have no API that lists effort
+levels. This is the one place model ids are hard-coded; an unknown id gets
+the provider's full ladder and relies on the retry above.
 
 ### CLI providers
 
@@ -141,7 +193,8 @@ looked up on that PATH. The CLI is always run with the resolved PATH (an
 Code refuses to start "inside another session" when those are inherited).
 
 Every run: a fresh empty temporary directory as the working directory
-(deleted afterwards), stdout/stderr captured, a 120 s timeout, its own
+(deleted afterwards), stdout/stderr captured, a 120 s timeout (scaled with
+effort like HTTP), its own
 process group, and the whole group is SIGKILLed on timeout or cancel
 (`process.rs`). The group is never signalled once the CLI has been reaped
 (its id could be reused), and output still held open by a leftover
@@ -153,9 +206,9 @@ November 2026:
 
 | CLI | Version checked | Invocation |
 |---|---|---|
-| Claude Code | 2.1.328 | `claude -p --safe-mode --output-format text --tools "" --strict-mcp-config --disable-slash-commands --permission-mode dontAsk --no-session-persistence --effort low --system-prompt S [--model M]`, prompt on stdin. `--tools ""` turns off every built-in tool. `--system-prompt` is always passed (a one-line default when the caller has none), so Claude Code's own system prompt is never used; `--safe-mode` leaves out the user's CLAUDE.md files, skills, plugins, hooks and output styles. Claude Code still adds its environment and account context block; no supported flag removes it (`--bare` would, but it drops OAuth sign-in). |
-| Codex | codex-cli 0.170.0 | `codex exec --ignore-user-config -c mcp_servers={} --sandbox read-only --skip-git-repo-check --ephemeral --color never -c model_reasoning_effort="low" -c model_instructions_file="<tmp>/instructions.md" -c include_{permissions,apps,collaboration_mode}_instructions=false -c include_environment_context=false -c project_doc_max_bytes=0 -C <tmp> -o <tmp>/last-message.txt [-m M] -`, prompt on stdin. The system prompt is written to `instructions.md` and replaces Codex's base instructions; the extra instruction sections and AGENTS.md are turned off. The reply is read from the `-o` file (stdout carries progress). The user's `config.toml` (and the MCP servers in it) is not loaded, so a run fed with terminal output has no side-effecting tools; sign-in still comes from `CODEX_HOME`. |
-| Antigravity | 1.5.12 | `agy --sandbox --disable-slash-commands --output-format text (--model M \| --effort low) -p "<system>\n\n<prompt>"`. `-p` takes the prompt as its value (no stdin form). Model ids carry their effort (`gemini-…-low`), so `--effort low` is passed only without a model. No `--dangerously-skip-permissions`, so tool permissions are not granted. agy has no flag to replace its own system prompt, so ours is prepended to the prompt; it runs in an empty workspace, so no project rules load. `--mode plan` is not used: it turns the reply into a planning session. |
+| Claude Code | 2.1.328 | `claude -p --safe-mode --output-format text --tools "" --strict-mcp-config --disable-slash-commands --permission-mode dontAsk --no-session-persistence [--effort E] --system-prompt S [--model M]`, prompt on stdin. `CLAUDE_CODE_EFFORT_LEVEL` (which outranks `--effort`) is removed from the environment when a level is sent. `--tools ""` turns off every built-in tool. `--system-prompt` is always passed (a one-line default when the caller has none), so Claude Code's own system prompt is never used; `--safe-mode` leaves out the user's CLAUDE.md files, skills, plugins, hooks and output styles. Claude Code still adds its environment and account context block; no supported flag removes it (`--bare` would, but it drops OAuth sign-in). |
+| Codex | codex-cli 0.170.0 | `codex exec --ignore-user-config -c mcp_servers={} --sandbox read-only --skip-git-repo-check --ephemeral --color never [-c model_reasoning_effort="E"] -c model_instructions_file="<tmp>/instructions.md" -c include_{permissions,apps,collaboration_mode}_instructions=false -c include_environment_context=false -c project_doc_max_bytes=0 -C <tmp> -o <tmp>/last-message.txt [-m M] -`, prompt on stdin. The system prompt is written to `instructions.md` and replaces Codex's base instructions; the extra instruction sections and AGENTS.md are turned off. The reply is read from the `-o` file (stdout carries progress). The user's `config.toml` (and the MCP servers in it) is not loaded, so a run fed with terminal output has no side-effecting tools; sign-in still comes from `CODEX_HOME`. A failed run whose output mentions `reasoning_effort` is run once more without it. |
+| Antigravity | 1.5.12 | `agy --sandbox --disable-slash-commands --output-format text [--effort E] [--model M] -p "<system>\n\n<prompt>"`. `-p` takes the prompt as its value (no stdin form). Model ids can carry their effort (`gemini-…-low`); then no `--effort` is passed. No `--dangerously-skip-permissions`, so tool permissions are not granted. agy has no flag to replace its own system prompt, so ours is prepended to the prompt; it runs in an empty workspace, so no project rules load. `--mode plan` is not used: it turns the reply into a planning session. |
 
 `agy -p` printed nothing without a TTY in some versions (upstream issue
 76); 1.5.12 prints normally with stdout piped, so it is run without a PTY.
@@ -208,10 +261,12 @@ type ProviderId = "openai" | "anthropic" | "deepseek" | "openrouter" | "gemini" 
 type ProviderConfig = { id: ProviderId; baseUrl?: string; cliPath?: string };
 
 ai_suggest({ requestId: string, provider: ProviderConfig, model: string, system: string,
-             prompt: string, maxTokens?: number }) -> { text: string }
+             prompt: string, maxTokens?: number, effort?: EffortLevel }) -> { text: string }
 ai_cancel({ requestId: string }) -> void
 ai_models({ provider: ProviderConfig }) -> string[]
-ai_test({ provider: ProviderConfig, model: string }) -> { ok: boolean, message: string }
+ai_test({ provider: ProviderConfig, model: string, effort?: EffortLevel }) -> { ok: boolean, message: string }
+ai_effort_options({ provider: ProviderConfig, model: string, effort?: EffortLevel })
+    -> { levels: Effort[], effective: Effort | null, note: string | null }
 ai_key_set({ provider: ProviderConfig, key: string }) -> void
 ai_key_delete({ provider: ProviderConfig }) -> void
 ai_key_status({ provider: ProviderConfig }) -> boolean
@@ -220,7 +275,7 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
 
 - `ai_suggest`: `model` is required for HTTP providers and optional for CLIs
   (empty = the CLI's default). `maxTokens` is the reply budget; headroom for
-  reasoning is added.
+  reasoning is added. `effort` is the stored setting (absent: Midterm's pick).
 - `ai_cancel`: aborts the HTTP request or kills the CLI; the pending
   `ai_suggest` rejects with `cancelled`. A cancel that arrives before its
   `ai_suggest` registered is remembered (the last 64), so the request is
@@ -238,6 +293,12 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
   Needs a key (except `custom`).
 - `ai_test`: a tiny request ("Reply with OK", 16 reply tokens). Never
   rejects for provider failures: they come back as `{ ok: false, message }`.
+  The message names the effort sent, or says it was rejected.
+- `ai_effort_options`: the levels offered for the model (lowest first; the
+  UI adds "Automatic" and "Provider default"), what the stored setting
+  would send, and a note (e.g. an Antigravity model id that sets its own
+  effort). For Anthropic it looks up the model's capabilities (needs the
+  key); the result is cached with the requests'.
 - `ai_key_set` trims the key and rejects an empty one; `ai_key_delete` of a
   missing key succeeds. All three key commands take the full
   `ProviderConfig` and reject CLI providers. For `custom`, `baseUrl` is
@@ -258,7 +319,7 @@ Every command rejects with `{ kind, message }`:
 | `http` | Any other non-2xx status; the message has the status and the provider's error message. |
 | `refused` | Anthropic `stop_reason: "refusal"`, OpenAI `message.refusal`, `finish_reason: "content_filter"`. |
 | `empty` | The model returned no text (with a hint when the token limit was hit). |
-| `timeout` | 60 s for HTTP, 120 s for a CLI run. |
+| `timeout` | 60 s for HTTP, 120 s for a CLI run (×2 at high or "Provider default", ×3 at xhigh or max). |
 | `cancelled` | `ai_cancel` was called. |
 | `notFound` | A CLI's executable was not found (or `cliPath` is not executable). |
 | `other` | Everything else: no model chosen, bad base URL, keychain failure, unexpected response, CLI failure. A redirect (3xx) comes back as `http`. |
@@ -268,7 +329,9 @@ Every command rejects with `{ kind, message }`:
 `cargo test ai::` in `src-tauri/`. Adapters run against `stub.rs` (a
 hand-rolled HTTP server on `127.0.0.1:0` serving canned responses and
 recording requests): success, request shape (no sampling fields, effort
-fields, headers), retry without effort, refusal, empty, 401/5xx, unreachable
+fields per level, Anthropic adaptive and budget shapes), retry without effort
+(400 and 422) and its memo per level, Anthropic capabilities parsing and
+the budget invariant, refusal, empty, 401/5xx, unreachable
 server, model listing and pagination, cancel mid-request, a cancel or
 replacement landing after the result is ready, redaction before
 truncation, keychain accounts (`custom` bound to its URL), and keyless
@@ -276,9 +339,10 @@ truncation, keychain accounts (`custom` bound to its URL), and keyless
 exercised by tests. CLI tests use
 fake executables (flags, empty working directory, stdin) and check that
 cancel kills the process group. Pure helpers (PATH markers, merge, lookup,
-argument builders, response parsing, ANSI stripping) have unit tests.
+argument builders, response parsing, ANSI stripping, effort levels,
+clamping, headroom) have unit tests.
 `cargo test live_clis -- --ignored --nocapture` runs the CLIs installed on
-the machine (spends a little quota).
+the machine at low and medium effort (spends a little quota).
 
 ## Frontend
 
@@ -305,6 +369,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `baseUrl` | For `custom`. |
 | `cliPaths` | Executable overrides, by provider id. |
 | `contextBlocks` | Finished blocks sent as context (0–20, default 5). |
+| `effort` | Reasoning effort by provider id: missing (Midterm's pick), `default` (send nothing) or a level. See "Reasoning effort". |
 
 A pane's own switch is `aiSuggestions: false` in the terminal pane's data
 (terminal menu → "AI suggestions in this pane", shown in blocks mode once AI
@@ -426,6 +491,9 @@ the error as a tooltip.
   executable path (CLIs).
 - The model: free text, plus the provider's live list (`ai_models`) with a
   refresh.
+- Reasoning effort: Automatic, Provider default, and the levels
+  `ai_effort_options` returns for the model. The hint says what is sent when
+  a level is clamped, or when nothing is.
 - Test (`ai_test`) and "Preview what is sent".
 
 ### Self-test
