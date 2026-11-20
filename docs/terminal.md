@@ -27,8 +27,8 @@ The shell is spawned on the first `attach`, once the terminal has a size.
 (`createPaneState` in `src/plugins/paneState.ts`). Nothing disposes a
 session directly. Instead, whenever the store changes (and whenever a
 terminal is released) every session that is **both** held by no mounted
-component **and** has no `terminal` pane with its id anywhere in the store
-is disposed.
+component **and** has no terminal pane (classic or block) with its id
+anywhere in the store is disposed.
 
 That one rule covers closing a pane, a tab or a workspace, and changing a
 pane's kind. When adding features that move panes around, keep the pane in
@@ -385,15 +385,29 @@ bun run tauri dev --config '{"build":{"devUrl":"http://localhost:1420/?selftest=
 
 It runs harmless commands in your login shell. Dev builds only.
 
-## Blocks mode
+## Block terminal (blocks mode)
 
-A terminal pane can show its output as **blocks**, one per command, with an
-input editor at the bottom, instead of the classic terminal. The pane's
-pane's `terminalMode` (`"blocks"` / `"classic"`, saved with the layout;
-`TerminalData` in `src/terminal/settings.ts`) picks it, falling back to the
-terminal plugin's `terminalMode` setting. It is toggled from
-the terminal's right-click menu or the `terminal.toggleBlocks` command
-(`src/terminal/blockMode.ts`).
+There are two built-in terminal plugins (`src/plugins/builtin/terminal.tsx`,
+kinds in `src/terminal/kinds.ts`): the **Classic terminal** (`terminal`)
+and the **Block terminal** (`block-terminal`), which shows the output as
+**blocks**, one per command, with an input editor at the bottom. Both show
+the session kept for their pane id and share the terminal settings (saved
+under `plugins.terminal.settings`; the block terminal's settings section
+edits the same values). New terminals open in Settings → General →
+Default terminal (`defaultTerminal`).
+
+Switching a pane between them (the right-click menu's "Switch to block /
+classic terminal", the `terminal.toggleBlocks` command, or Change pane
+type) changes the pane's kind (`toggleBlocks` → `setPaneKind`). The session
+survives: its liveness rule accepts both kinds, and `keepsStateOnChangeTo`
+keeps `changePaneKind` from asking about a running program. The pane
+remounts, so the input editor's draft is lost on a switch. "Blocks mode"
+below means the block terminal.
+
+Layouts saved before the split (state version 1) had one `terminal` kind
+with a per-pane `terminalMode`; `restoreState` turns a blocks pane (or, with
+no mode, any pane when the old setting was blocks) into a `block-terminal`
+pane, and the file is saved again at once.
 
 | File | Role |
 |---|---|

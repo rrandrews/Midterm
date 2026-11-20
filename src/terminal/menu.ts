@@ -7,6 +7,7 @@ import {
   copyBlockCommand,
   copyBlockOutput,
   hasIntegration,
+  otherTerminalKind,
   requestedMode,
   runFromBlocks,
   toggleBlocks,
@@ -48,13 +49,15 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
     { label: "Paste", shortcut: "⌘V", disabled: !session, run: () => pasteText().then((text) => paste(paneId, text)) },
     { label: "Select all", disabled: !session, run: () => session?.selectAll() },
     { label: "Clear", disabled: !session, run: () => session?.clear() },
-    { type: "separator" },
-    {
-      label: integration === false ? "Blocks mode (no shell integration)" : "Blocks mode",
-      checked: blocks && integration !== false,
-      run: () => toggleBlocks(paneId),
-    },
   );
+  if (otherTerminalKind(paneId)) {
+    const label = blocks
+      ? "Switch to classic terminal"
+      : integration === false
+        ? "Switch to block terminal (no shell integration)"
+        : "Switch to block terminal";
+    items.push({ type: "separator" }, { label, commandId: "terminal.toggleBlocks", run: () => toggleBlocks(paneId) });
+  }
   if (blocks && integration !== false) items.push(...aiMenuItems(paneId));
   return items;
 }

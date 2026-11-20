@@ -10,6 +10,9 @@ import type { PaneNode } from "../state/types";
 import { TerminalSession } from "./session";
 import { type TerminalData, terminalConfig } from "./settings";
 import { terminalTitle } from "./titles";
+import { CLASSIC_TERMINAL, isSessionKind } from "./kinds";
+import { getSettings } from "../settings/settings";
+import { activePlugin } from "../plugins/registry";
 
 /*
  * Live terminal sessions, keyed by pane id (a shared pane state, see
@@ -18,7 +21,12 @@ import { terminalTitle } from "./titles";
  * any tab of any workspace and nothing shows them.
  */
 
-const sessions = createPaneState<TerminalSession>({ kind: "terminal", dispose: (session) => session.dispose() });
+// Kept while the pane is either terminal kind, so switching between the
+// classic and block terminal keeps the shell.
+const sessions = createPaneState<TerminalSession>({
+  isLive: (pane) => isSessionKind(pane.data.kind),
+  dispose: (session) => session.dispose(),
+});
 /** Input to type into a pane's shell as soon as its session exists (e.g. a command to run). */
 const startupInput = new Map<string, string>();
 
@@ -42,7 +50,7 @@ function createSession(paneId: string): TerminalSession {
       if (sessions.get(exited.paneId) !== exited) return;
       const tab = findTabOfPane(useAppStore.getState(), exited.paneId);
       const pane = tab && findPane(tab.layout, exited.paneId);
-      if (pane?.data.kind === "terminal") closePaneNow(exited.paneId);
+      if (isSessionKind(pane?.data.kind)) closePaneNow(exited.paneId);
     },
     onBackgroundOutput: ({ paneId: id }) => {
       const state = useAppStore.getState();
@@ -93,6 +101,16 @@ function applyConfig(): void {
 }
 useSettings.subscribe(applyConfig);
 subscribeThemeApplied(applyConfig);
+
+/**
+ * The kind of a new pane that is sent a command (`queueStartupInput`): the
+ * default terminal if it is a built-in one (only those have a session to
+ * queue into), else the classic terminal.
+ */
+export function commandTerminalKind(): string {
+  const kind = getSettings().defaultTerminal;
+  return isSessionKind(kind) && activePlugin(kind) ? kind : CLASSIC_TERMINAL;
+}
 
 /** Number of live sessions (for tests and diagnostics). */
 export function sessionCount(): number {

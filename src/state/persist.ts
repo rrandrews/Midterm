@@ -19,7 +19,7 @@ import type { Layout, PaneData, Tab, Workspace } from "./types";
  */
 
 /** Bump when the saved shape changes incompatibly, and migrate in `restoreState`. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 type SavedTab = Pick<Tab, "id" | "title" | "titleLocked" | "layout" | "activePaneId">;
 type SavedWorkspace = Pick<Workspace, "id" | "name" | "activeTabId"> & { tabs: SavedTab[] };
@@ -129,13 +129,49 @@ function restoreWorkspace(saved: unknown, index: number): Workspace | null {
 }
 
 /**
- * The app state described by saved data, repaired where needed, or `null`
- * if it cannot be used at all (missing, wrong version, no workspaces).
+ * Version 1 had one terminal plugin with a per-pane `terminalMode` (unset:
+ * the terminal's "new terminals open in" setting). Version 2 has a plugin
+ * per mode: a blocks pane becomes a `block-terminal` pane. Rewrites every
+ * pane's data in place, wherever it sits in the layout tree.
  */
-export function restoreState(saved: unknown): AppState | null {
-  if (!isRecord(saved) || saved.version !== SCHEMA_VERSION || !Array.isArray(saved.workspaces)) {
+function migrateV1Panes(node: unknown, legacyBlocksDefault: boolean): void {
+  if (Array.isArray(node)) {
+    for (const child of node) migrateV1Panes(child, legacyBlocksDefault);
+    return;
+  }
+  if (!isRecord(node)) return;
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "data" && isRecord(value) && value.kind === "terminal") {
+      const { terminalMode, ...rest } = value;
+      const blocks = terminalMode === "blocks" || (terminalMode !== "classic" && legacyBlocksDefault);
+      node.data = { ...rest, kind: blocks ? "block-terminal" : "terminal" };
+    } else {
+      migrateV1Panes(value, legacyBlocksDefault);
+    }
+  }
+}
+
+export type RestoreOptions = {
+  /**
+   * For version 1 files: whether a terminal pane with no mode of its own was
+   * in blocks mode (the old setting, now `defaultTerminal: "block-terminal"`).
+   */
+  legacyBlocksDefault?: boolean;
+};
+
+/**
+ * The app state described by saved data, repaired where needed, or `null`
+ * if it cannot be used at all (missing, unknown version, no workspaces).
+ */
+export function restoreState(saved: unknown, { legacyBlocksDefault = false }: RestoreOptions = {}): AppState | null {
+  if (!isRecord(saved) || (saved.version !== SCHEMA_VERSION && saved.version !== 1) || !Array.isArray(saved.workspaces)) {
     return null;
   }
+  if (saved.version === 1) {
+    saved = structuredClone(saved) as Record<string, unknown>;
+    migrateV1Panes((saved as Record<string, unknown>).workspaces, legacyBlocksDefault);
+  }
+  if (!isRecord(saved) || !Array.isArray(saved.workspaces)) return null;
   const workspaces = saved.workspaces
     .map(restoreWorkspace)
     .filter((workspace): workspace is Workspace => workspace !== null);

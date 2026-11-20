@@ -4,7 +4,6 @@ import { registerPaneFocuser } from "../../layout/dock";
 import type { BlocksSnapshot } from "../../terminal/blocks";
 import type { TerminalSession } from "../../terminal/session";
 import { acquireSession, releaseSession } from "../../terminal/sessions";
-import { type TerminalMode, useTerminalSettings } from "../../terminal/settings";
 import { BlocksView } from "./BlocksView";
 import { TerminalFindBar } from "./TerminalFindBar";
 
@@ -16,19 +15,18 @@ const noSubscribe = () => () => {};
  * registry, not this component: mounting only puts the session's element on
  * screen, so the shell and its scrollback survive tab switches and re-docks.
  *
- * In blocks mode the terminal stays in place, sized as usual but invisible,
+ * With `blocks` (the block terminal) the terminal stays in place, sized as usual but invisible,
  * and `BlocksView` is drawn over it, except while a full-screen program
  * has the alternate screen, or when the shell turned out to have no
  * integration (no OSC 133 marks).
  */
-export function TerminalPane({ paneId, mode }: { paneId: string; mode?: TerminalMode }) {
+export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [session, setSession] = useState<TerminalSession | null>(null);
   // Set before the focuser is registered, which may call it at once.
   const sessionRef = useRef<TerminalSession | null>(null);
-  const defaultMode = useTerminalSettings().terminalMode;
   const snapshot = useSyncExternalStore(
     session?.blocks.subscribe ?? noSubscribe,
     session?.blocks.snapshot ?? (() => NO_BLOCKS),
@@ -42,8 +40,7 @@ export function TerminalPane({ paneId, mode }: { paneId: string; mode?: Terminal
 
   // Blocks mode applies; while Find is open the view stays mounted (keeping
   // the input editor's draft) but hidden, and the classic terminal shows.
-  const blocksMode =
-    (mode ?? defaultMode) === "blocks" && snapshot.integration !== "absent" && !snapshot.altScreen;
+  const blocksMode = blocks && snapshot.integration !== "absent" && !snapshot.altScreen;
   const showBlocks = blocksMode && finding === null;
   const editorActive = showBlocks && snapshot.integration === "present" && snapshot.phase === "prompt";
 

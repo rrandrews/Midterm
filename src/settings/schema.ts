@@ -7,7 +7,7 @@
 export const ACCENT_PRESETS = ["#8B9CFF", "#5EEAD4", "#F5A524", "#F472B6"] as const;
 
 /** Bump when the saved shape changes, and migrate in `migrateSettings`. */
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 /**
  * A plugin's entry in the settings: whether it is enabled, its own settings
@@ -59,8 +59,18 @@ export type Settings = {
    * command's default bindings; an empty list unbinds it.
    */
   keybindings: Record<string, string[]>;
-  /** Kind of the pane a new tab or a split opens (a plugin id); the terminal if that plugin is unavailable. */
+  /**
+   * Kind of the pane a new tab or a split opens (a plugin id). A terminal
+   * kind (`terminal` by default) means "the default terminal"
+   * (`defaultTerminal`); so does a plugin that is unavailable.
+   */
   defaultPaneKind: string;
+  /**
+   * The plugin new terminals open in (one flagged `terminal`): `terminal`
+   * (classic) or `block-terminal`; the classic terminal if that plugin is
+   * unavailable.
+   */
+  defaultTerminal: string;
   /** Per-plugin entries, by plugin id. */
   plugins: Record<string, PluginEntry>;
   ai: AiSettings;
@@ -77,6 +87,7 @@ export const DEFAULT_SETTINGS: Settings = {
   themeDark: "midterm-dark",
   keybindings: {},
   defaultPaneKind: "terminal",
+  defaultTerminal: "terminal",
   plugins: {},
   ai: { suggestions: true, provider: "", model: "", baseUrl: "", cliPaths: {}, contextBlocks: 5 },
 };
@@ -138,6 +149,19 @@ export function migrateSettings(raw: unknown): Record<string, unknown> {
     // The accent became an override of the theme's: the old default is the
     // default theme's own accent, so only a custom choice is kept.
     if (typeof data.accent === "string" && data.accent.toLowerCase() === "#8b9cff") data.accent = "";
+  }
+  if (version < 4) {
+    // Classic and blocks terminals became two plugins: the terminal's
+    // "new terminals open in" setting becomes the default terminal.
+    const plugins = isRecord(data.plugins) ? { ...data.plugins } : {};
+    const terminal = isRecord(plugins.terminal) ? { ...plugins.terminal } : null;
+    const settings = terminal && isRecord(terminal.settings) ? { ...terminal.settings } : null;
+    if (terminal && settings && "terminalMode" in settings) {
+      if (settings.terminalMode === "blocks" && !nonEmpty(data.defaultTerminal)) data.defaultTerminal = "block-terminal";
+      delete settings.terminalMode;
+      plugins.terminal = { ...terminal, settings };
+      data.plugins = plugins;
+    }
   }
   data.version = SETTINGS_VERSION;
   return data;
@@ -206,6 +230,7 @@ export function validateSettings(raw: unknown): Settings {
     keybindings,
     defaultPaneKind:
       typeof data.defaultPaneKind === "string" && data.defaultPaneKind ? data.defaultPaneKind : d.defaultPaneKind,
+    defaultTerminal: nonEmpty(data.defaultTerminal) ? data.defaultTerminal : d.defaultTerminal,
     plugins,
     ai: validateAi(data.ai),
   };

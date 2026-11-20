@@ -81,8 +81,11 @@ as a terminal's `cwd`) are saved to `state.json` in the app data directory
 through tauri-plugin-store, and restored before the first render.
 
 - `src/state/persist.ts`: pure `snapshotState` / `restoreState`. The saved
-  shape has a `version` (`SCHEMA_VERSION`); bump it and migrate in
-  `restoreState` when the shape changes. Restoring validates everything:
+  shape has a `version` (`SCHEMA_VERSION`, now 2); bump it and migrate in
+  `restoreState` when the shape changes. Version 1 files are still read:
+  their terminal panes become `terminal` or `block-terminal` by their saved
+  mode. The settings are loaded before the state is restored, since that
+  migration reads them (`src/main.tsx`). Restoring validates everything:
   layouts go through `normalizeWorkspaceModel`, panes whose kind is not a
   plugin id are dropped, a tab with no valid panes becomes a fresh tab, duplicate ids are
   replaced, and an unusable file means a fresh start.
@@ -132,7 +135,7 @@ Right-click menus:
 | Area | Items | Where |
 |---|---|---|
 | Any pane | the plugin's items (`pane.menu`, declarative), then split, change type, maximize, move to tab, close | `src/plugins/PaneHost.tsx`, `PaneMenuItems.tsx` (shared with the pane toolbar's ⋯ menu) |
-| Terminal (on top of the above) | copy/re-run a block (blocks mode), copy, paste, select all, clear, blocks mode | `src/terminal/menu.ts` |
+| Terminal (on top of the above) | copy/re-run a block (block terminal), copy, paste, select all, clear, switch to block/classic terminal | `src/terminal/menu.ts` |
 | Editor / viewer | save, revert, find, go to line, reveal, copy path | `src/editor/menu.ts` |
 | Tab | rename, new tab, close, close others, close to the right | `TabStrip.tsx` |
 | Workspace switcher | new, rename, delete | `WorkspaceSwitcher.tsx` |
