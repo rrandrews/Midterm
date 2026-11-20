@@ -321,6 +321,9 @@ sends it to `ai_key_set`, and the UI only ever learns `ai_key_status`. A
 - the OS and shell (the foreground program while at the prompt);
 - the working directory, with home shown as `~`;
 - the git branch;
+- at a nested shell's prompt (over ssh, see
+  [terminal.md](terminal.md#nested-shells)) instead: the remote host and
+  its directory, no OS, shell or branch, and only that shell's commands;
 - the last `contextBlocks` finished blocks: the command, its directory if
   different, its output (`blockOutput`), and the exit status;
 - up to 20 earlier commands of the same terminal (never other panes' or

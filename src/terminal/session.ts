@@ -451,11 +451,12 @@ export class TerminalSession {
    * inside `ssh`) are not directories here and are ignored.
    */
   private isLocal(host: string): boolean {
-    if (host === "" || host === "localhost") return true;
     const local = localHostname();
-    if (local) return host === local || host === local.replace(/\.local$/, "");
+    if (local) return host === "" || host === "localhost" || host === local || host === local.replace(/\.local$/, "");
+    // Without the host name (outside Tauri), the first report is taken to be
+    // this machine's: `localhost` too, so a later `file://box/…` is not.
     this.firstHost ??= host;
-    return host === this.firstHost;
+    return host === this.firstHost || ((host === "" || host === "localhost") && (this.firstHost === "" || this.firstHost === "localhost"));
   }
 
   private scheduleForegroundCheck(delay = FOREGROUND_CHECK_MS): void {
