@@ -41,6 +41,14 @@ the directories.
 the command into the new shell (`queueStartupInput` in
 `src/terminal/sessions.ts`; input waits until the shell is running).
 
+## Pickers and prompts
+
+`openPicker` shows a one-off list instead of the usual items (themes),
+with a live highlight callback. `openPrompt({ placeholder, hint?,
+onSubmit })` shows a single text field instead (AI: Ask the agent…): ⏎
+on non-empty text closes the palette and calls `onSubmit` with the
+trimmed text on the next frame; Esc cancels.
+
 ## Focus
 
 The dialog has `data-owns-keyboard`, which suspends app shortcuts while

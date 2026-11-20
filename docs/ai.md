@@ -1,7 +1,7 @@
 # AI providers
 
-Next-command suggestions in blocks mode and `/cmd` come from a model the
-user picks: an HTTP API (with a key) or a coding CLI they already have
+Next-command suggestions in blocks mode, `/cmd`, Explain and fix, and the
+agent ([Agent](#agent)) come from a model the user picks: an HTTP API (with a key) or a coding CLI they already have
 installed. Models are saved as **model profiles** (provider, model, effort,
 extra request JSON, under a name), and each feature uses the default profile
 or one of its own (see [Settings](#settings)). The
@@ -25,7 +25,8 @@ runs the CLI. The webview's CSP stays "nothing remote"
 | `anthropic.rs` | Anthropic Messages adapter (raw HTTP): `complete`, `stream` and its accumulator `MessageStream`. |
 | `http.rs` | Shared HTTP: client, `open` (status checked) + `json` (`send` is both), the effort retry, stream timeouts and chunk reads, HTTP-status → error mapping, error-body parsing. |
 | `sse.rs` | A byte-level Server-Sent Events parser (`SseParser::push`/`finish`). |
-| `stream.rs` | What the streaming adapters share: `Stop`, `Streamed`, the `StreamState` accumulator trait, `Text` (leading whitespace, trimming), and the read loop (one delta per network chunk). |
+| `stream.rs` | What the streaming adapters share: `Stop` (`end`, `length`, `tools`), `Streamed`, the `StreamState` accumulator trait, `Text` (leading whitespace, trimming), and the read loop (`read`/`read_with`: one delta per network chunk). |
+| `agent.rs` | Agent turns (`ai_agent_turn`): the wire types, both adapters' request bodies with tools and the history (assistant turns spliced in verbatim as `RawValue`), strict tool-input parsing, and the turn read loop. The adapters' accumulators (`ChatStream`, `MessageStream`) gather tool calls and the native assistant message (`finish_turn`). |
 | `cli.rs` | CLI providers: locating, status, argument builders, running. |
 | `shell_path.rs` | The login shell's PATH (marker extraction, merge, executable lookup). |
 | `process.rs` | Child process with stdin, timeout, and process-group kill on drop. |
@@ -206,6 +207,63 @@ when present. No text is `empty`, with a token-limit hint on `stop_reason:
 Models: `GET {base}/models?limit=1000`, following `has_more` / `last_id`
 (`after_id`), up to 10 pages.
 
+### Requests with tools (agent turns)
+
+`ai_agent_turn` sends one streamed request per model turn with the
+conversation so far. Everything else (token field, effort fields, retry
+without effort, extra JSON, timeouts) is as for `ai_stream`; `tools` is
+left out when the list is empty, and there is never a `tool_choice` field
+(automatic; current Claude models reject forced tool use) or
+`eager_input_streaming`.
+
+- **OpenAI-compatible**: `messages` = the system message, then per history
+  entry `{ role: "user", content }`, the assistant turn's `raw` spliced in
+  verbatim, and one `{ role: "tool", tool_call_id, content }` per tool
+  result (`isError` is not sent: the content is already an `{"error": …}`
+  object); `tools: [{ type: "function", function: { name, description,
+  parameters } }]`.
+- **Anthropic**: `system` as usual; user text as `{ role: "user", content:
+  [{ type: "text", text }] }`; `raw` spliced in; **all results of a round in
+  one user message** of `{ type: "tool_result", tool_use_id, content,
+  is_error: true? }` blocks (an empty round is skipped); `tools: [{ name,
+  description, input_schema }]`.
+- `raw` must be a JSON object and is spliced as a `serde_json::RawValue`, so
+  it is never re-encoded: thinking blocks and signatures, DeepSeek
+  `reasoning_content` and Gemini per-call extras go back byte for byte.
+  The rest of the body is merged with extra JSON first (`messages`, `tools`
+  and `system` are protected) and serialized with `messages` last.
+
+Reading the stream (the Phase 2 accumulators, extended):
+
+- **OpenAI**: `delta.tool_calls[]` by `index` (`id` and `function.name`
+  once, `function.arguments` concatenated; a call without an id gets
+  `call_<n>`). Unknown fields of the message delta and of each call (and its
+  `function`) are kept for `raw`: strings concatenated, arrays extended,
+  objects merged, other values last-wins. `raw` = `{ role: "assistant",
+  content: <as received, a <think> block included, or null>, tool_calls?,
+  …unknown }`; a JSON (non-streamed) answer's `raw` is `choices[0].message`
+  as received. `stop` is `tools` whenever there is a call, whatever
+  `finish_reason` says.
+- **Anthropic**: the whole `content` array is rebuilt in order from
+  `content_block_start`/`_delta`/`_stop`: `text` (whitespace-only text
+  blocks dropped: the API rejects them on replay), `thinking` with its
+  `signature_delta`, `redacted_thinking` as received, `tool_use` with its
+  input from the `input_json_delta` fragments, unknown blocks as received.
+  `raw` = `{ role: "assistant", content: [...] }`. `stop_reason:
+  "max_tokens"` → `length` (even with tool uses, so a cut-off call is not
+  run), else any `tool_use` → `tools`, else `end`.
+- Tool input is parsed strictly; empty arguments are `{}`. Anything that is
+  not a JSON object gives `input: null` and `invalid` with the raw text
+  (Anthropic's `raw` then carries `{}` as that block's input, so the history
+  stays valid).
+- Events: `text` (one per network chunk, through the request's `Gate` like
+  `ai_stream`'s deltas) and `toolCall` (once a call's id and name are known;
+  Anthropic at `content_block_start`). `text` in the result is trimmed, a
+  leading `<think>` block removed. No text and no calls is `empty`; refusal
+  and content filter are `refused` (that turn's tools are never run). A CLI
+  target rejects with `other`: "The agent needs an API model. Choose another
+  model for Agent in Settings → AI."
+
 ### Streaming
 
 `ai_stream` asks the same request with `"stream": true` and reads the reply
@@ -384,6 +442,9 @@ ai_suggest({ requestId: string, target: AiTarget, system: string, prompt: string
 ai_stream({ requestId: string, target: AiTarget, system: string, prompt: string,
             maxTokens?: number, onEvent: Channel<{ type: "delta", text: string }> })
     -> { text: string, stop: "end" | "length", effortDropped: boolean }
+ai_agent_turn({ requestId: string, target: AiTarget, system: string, tools: ToolDef[],
+                messages: AgentMessage[], maxTokens?: number, onEvent: Channel<AgentEvent> })
+    -> AgentTurn                                            // see Agent
 ai_cancel({ requestId: string }) -> void
 ai_models({ provider: ProviderConfig }) -> string[]         // text -> text only (see Models)
 ai_test({ target: AiTarget }) -> { ok: boolean, message: string }
@@ -406,8 +467,11 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
   cut the reply short. Errors and cancellation as for `ai_suggest`.
   `ai_suggest` and `ai_test` stay non-streaming (one-line replies, and
   `stream: false` is the most compatible path for odd servers).
+- `ai_agent_turn`: one model turn of an agent conversation (see
+  [Requests with tools](#requests-with-tools-agent-turns) and
+  [Agent](#agent)). Errors, `ai_cancel` and the gate as for `ai_stream`.
 - `ai_cancel`: aborts the HTTP request or kills the CLI; the pending
-  `ai_suggest` or `ai_stream` rejects with `cancelled`. A cancel that arrives before its
+  `ai_suggest`, `ai_stream` or `ai_agent_turn` rejects with `cancelled`. A cancel that arrives before its
   `ai_suggest` registered is remembered (the last 64), so the request is
   cancelled as soon as it starts. Cancels for ids that already started
   (the last 256) are ignored, so a late or repeated cancel never cancels a
@@ -483,7 +547,16 @@ fallback's `length` stop, cancel mid-stream (no later delta) and the gate
 closing on cancel and replacement, a stalled stream and stalled headers
 (`timeout`), and extra JSON that tries to set `stream`. Socket tests compare
 the joined deltas (TCP may merge writes); exact per-chunk grouping is tested
-on the accumulators. The credential store itself is not
+on the accumulators. Agent turns (`agent.rs`): tool definitions and
+message translation for both adapters (one Anthropic user message for a
+round's results, one OpenAI tool message each, tools left out when empty,
+no `tool_choice`), `raw` spliced byte for byte, extra JSON merged around it
+and unable to set `tools`, invalid `raw` rejected, strict input parsing, an
+OpenAI stream with two interleaved calls and unknown fields kept, the JSON
+fallback, an Anthropic stream with text, thinking + signature, redacted
+thinking and two `tool_use` blocks in order, invalid arguments flagged, stop
+mapping, refusal, error chunks, a stream cut short, CLI targets rejected,
+and cancel mid-turn (no event after it). The credential store itself is not
 exercised by tests. CLI tests use
 fake executables (flags, empty working directory, stdin) and check that
 cancel kills the process group. Pure helpers (PATH markers, merge, lookup,
@@ -499,7 +572,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 
 | File | What |
 |---|---|
-| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`. `aiStream` creates the Channel and drops deltas that arrive after the promise settled. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, a canned Markdown stream in 12 chunks 40 ms apart (both cancellable), and a model list of ~40 ids for API providers (none for CLIs). |
+| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`; the agent wire types (`ToolDef`, `AgentMessage`, `AgentEvent`, `AgentTurn`). `aiStream` and `aiAgentTurn` create the Channel and drop messages that arrive after the promise settled. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, a canned Markdown stream in 12 chunks 40 ms apart (both cancellable), an agent (`mockAgentTurn`: a `…__recent_blocks` call, then a short answer), and a model list of ~40 ids for API providers (none for CLIs). |
 | `stream.ts` | `streamText(feature, { system, prompt, maxTokens }, onText)` → `{ result, cancel }`: resolves `targetFor(feature)`, makes the request id, accumulates deltas and calls `onText(soFar)` at most once per animation frame, then once with the authoritative text. Explain uses it. Tested in `stream.test.ts` against the mock. |
 | `profiles.ts` | Pure apart from the settings store: which profile a feature uses (`profileFor`), `providerConfigOf`, `profileReady` / `profileProblem`, `featureReady` / `featureProblem`, `targetFor(feature)` (omits `extra` for CLIs), `FEATURES` (the rows under Features), `parseExtra`, and the mutations (`saveProfile`, `deleteProfile`, `duplicateProfile`, `setDefaultProfile`, `setFeatureProfile`). Unit-tested in `profiles.test.ts`. |
 | `context.ts` | Pure: `contextBody` (facts, earlier commands, blocks; redacted), `buildContext` (body + "Next command:", and the body for other requests), `formatBlock`, `redact`, `trimOutput(output, limits?)`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
@@ -512,7 +585,12 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `AiSection.tsx` | Settings → AI: suggestions switches, Models, Features. |
 | `settings/ProfileList.tsx`, `settings/ProfileEditor.tsx` | Settings → AI → Models: the profile rows and the inline draft editor (key and CLI status, model list, effort options). |
 | `src/components/ui/Combobox.tsx` | The model field: a text field with a fuzzy-filtered list (Radix `Popover` + `cmdk` + `fuzzysort`). `comboItems` is the pure row logic, tested in `Combobox.test.ts`. |
-| `commands.ts` | Commands, the terminal menu's per-pane switch and block items (`blockAiMenuItems`), registration. |
+| `commands.ts` | Commands, the terminal menu's per-pane switch and block items (`blockAiMenuItems`), registration (the Agent plugin and the `/agent` handler too). |
+| `agent/tools.ts` | Pure: `buildToolset(skills)` → `{ system, tools, resolve, loadSkill }`, wire names, `AGENT_SYSTEM_PROMPT`. Tested in `tools.test.ts`. |
+| `agent/loop.ts` | The loop, pure apart from injected `LoopDeps` (`turn`, `cancel`, `invoke`, `ask`, `contextLine`): `runTurn`, the transcript item types, limits, result clipping. Tested in `loop.test.ts` with fakes. |
+| `agent/conversation.ts` | The conversation store (`useAgent`, keyed by id), owners (card or pane), runtime (abort controller, pending confirmations), cards (`askAgent`, `dismissCard`), Agent pane slots (`holdPaneConversation`, `newPaneConversation`), the work pane, the context line. |
+| `agent/actions.ts` | What the commands, menus and `/agent` do: `askAgentAbout`, `promptForAgent`, `continueInPane`, `openAgent`, `agentNewConversation`. |
+| `agent/AgentCard.tsx`, `AgentPane.tsx`, `Transcript.tsx`, `plugin.tsx` | The card (rendered by `PaneHost`), the Agent pane, the shared transcript, the `agent` plugin. Styles in `src/styles/agent.css`. |
 | `src/components/panes/BlockNote.tsx`, `src/components/ui/Markdown.tsx` | The note panel under a block; a sanitized Markdown block (`renderMarkdown`) whose http(s) links open in the browser. |
 
 ### Settings
@@ -525,7 +603,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `contextBlocks` | Finished blocks sent as context (0–20, default 5). |
 | `profiles` | Model profiles, in display order (at most 50). |
 | `defaultProfile` | The profile id every feature without an override uses; `""` for none. |
-| `features` | Per-feature overrides, feature → profile id. Features: `AI_FEATURES` = `suggestions`, `cmd`, `explain` ("Explain and fix": Explain and Fix share it), `agent` (not listed in Settings yet). |
+| `features` | Per-feature overrides, feature → profile id. Features: `AI_FEATURES` = `suggestions`, `cmd`, `explain` ("Explain and fix": Explain and Fix share it), `agent` (API profiles only: `featureProblem` reports a CLI profile). |
 
 A profile (`AiProfile`):
 
@@ -726,6 +804,7 @@ of a command name, the ghost text shows its usage (`/cmd <what to do>`),
 | Command | What it does |
 |---|---|
 | `/cmd <task>` | Asks the model for a shell command that does the task. |
+| `/agent <task>` | Runs the task through the agent against this terminal, in the pane's agent card (see [Agent](#agent)). Without a task, "Say what the agent should do: /agent <task>" shows above the editor. |
 
 `/cmd`: on ⏎ the line moves above the editor ("writing a command… esc
 cancels"; Esc or ⌃C cancels and puts the line back) and the request goes
@@ -803,6 +882,106 @@ markdown-compact`; http(s) links open in the browser, others do nothing)
 with an error in `text-err` under any partial text. Styles: `.block-ai` in
 `styles/blocks.css` (`border-line-block`, `fg-bright` at 4%, tokens only).
 
+### Agent
+
+An agent over plugin skills ([plugins.md](plugins.md#skills)): the model
+acts through the enabled skills' tools (read recent blocks, run a command,
+list a directory, open, read or save a file…). **API providers only**: a
+CLI runs its own tool loop and cannot call the webview's skills, so with a
+CLI profile the card, the pane and the Features row say "The agent needs an
+API model. Choose another model for Agent in Settings → AI."
+
+**Two surfaces, one loop.** Conversations live in one store
+(`agent/conversation.ts`) keyed by id; two views show them:
+
+- **One-off requests**: `/agent <task>` in the blocks editor, `ai.askAgent`
+  ("AI: Ask the agent…", which prompts for the task in the palette, see
+  [palette.md](palette.md#pickers-and-prompts)) and the pane menu's Agent →
+  "Ask the agent about this pane…" run a conversation against that pane in
+  its **agent card**: an overlay docked at the bottom of the pane, any kind
+  of pane, rendered by the pane host (not by `BlockInput`), so it survives
+  the blocks editor unmounting while the agent runs commands. Header: model,
+  state ("working…", "waiting for you"), Stop, Copy (the transcript as
+  Markdown), "Continue in agent pane", collapse (to a header on the right,
+  so the prompt underneath is usable), Dismiss. One card per pane: a new
+  one-off replaces a finished card and asks first ("Replace the running
+  request?") if one is running. In an Agent pane, `ai.askAgent` sends the
+  task to its conversation instead. The card's conversation goes with its
+  pane, and with Dismiss.
+- **The Agent pane** (`agent` plugin, built in) for an extended exchange:
+  `ai.openAgent` (palette), the pane menu's Agent → "Open the agent pane",
+  the tab menu's "Open the agent" (each focuses the tab's Agent pane or
+  opens one beside), or the card's "Continue in agent pane" (moves the
+  conversation, history, transcript, allowed tools and all, into a new
+  Agent pane). Header (`text-meta`): "Working with: <kind> · <directory>"
+  (the tab's last active non-agent pane, fixed while a turn runs), the
+  model, New conversation. Then the transcript and a textarea (⏎ sends, ⇧⏎
+  adds a line, Esc stops; a Stop button while running). Plugin:
+  `closeBlockers` → `{ type: "running", name: "the agent" }` while a turn
+  runs, `tabTitle` "Agent", menu items New conversation and Stop. Without a
+  ready profile it shows the problem and a button to Settings → AI.
+
+**The transcript** (`Transcript.tsx`, shared): the user's messages,
+Markdown answers (`components/ui/Markdown`; "stopped" or "cut off at the
+token limit" under a partial one), one row per tool call (`skill › tool`,
+the input's gist, status running / waiting for you / done / failed /
+denied / cancelled / not run; expandable to the input and the result sent
+back), "Loaded skill: …", errors with Retry, notes ("Stopped after 12
+steps." with Continue). A write tool's row, while it waits, shows its input
+(a command in mono) and **Allow / Allow for this conversation / Deny**.
+"Allow for this conversation" is remembered per tool (wire name) in the
+conversation and forgotten by New conversation. It sticks to the bottom
+unless scrolled up. No confirmation hook is installed globally
+(`setWriteConfirmation`): the agent passes its own `confirm` to each
+`invokeSkillTool` call.
+
+**Frozen per conversation.** Current Claude models reject replayed thinking
+blocks (400) when `system`, `tools` or earlier turns changed, so:
+
+- all enabled skills' tools are declared up front (`buildToolset`), with
+  `load_skill` returning only instructions;
+- the system prompt (`AGENT_SYSTEM_PROMPT` plus one sorted `id — title:
+  description` line per skill) has nothing volatile in it;
+- history is append-only, and assistant turns are replayed **verbatim**
+  (`raw`, see [Requests with tools](#requests-with-tools-agent-turns));
+- a conversation keeps the target (profile) it started with, also when the
+  settings change; New conversation picks up changed settings and skills.
+
+**The loop** (`agent/loop.ts`, in the webview; one `ai_agent_turn` per model
+turn):
+
+1. The user's text is appended (redacted). The first message of a
+   conversation starts with a redacted context line: `[Context — OS: macOS;
+   working with: Block terminal pane <id>; directory: ~/x; git branch:
+   main]`.
+2. Each round: `ai_agent_turn` with the frozen system and tools and the
+   history, reply budget 4096 tokens (plus effort headroom); `text` events
+   stream into an answer item; the complete turn's `raw` is appended.
+3. Its tool calls run **in order, one at a time**: invalid JSON →
+   `{"INVALID_JSON": …, "arguments": …}`; unknown name → an error;
+   `load_skill` → `{ skill, title, instructions, tools }`; otherwise
+   `invokeSkillTool(skillId, tool, input, { paneId: targetPane, signal,
+   confirm })`. Each result is `JSON.stringify(result | { error })`, passed
+   through `redact`, clipped to 16 000 characters (head and tail), and all
+   of a round's results are appended as one `tool` message. Then the next
+   round.
+4. It ends when a turn calls no tool. After 12 rounds: "Stopped after 12
+   steps." with Continue (another 12 from the history).
+
+Every appended tool call always gets a result, so the history stays valid:
+a reply cut off at the token limit gets "Not run: the reply was cut off" for
+each call (and an error with Retry); Stop gets "Cancelled by the user" for
+calls not yet finished. **Stop** cancels the turn (`ai_cancel`), aborts the
+tools' `signal` and declines a pending confirmation; a turn cancelled before
+it finished is not appended (its partial text stays, marked stopped). A
+turn that fails (`network`, `http`, `auth`, …) leaves the history unchanged
+and shows its error with Retry. The transcript is in memory only (lost on
+restart).
+
+What is sent: the user's messages, the context line, and whatever the tools
+return (recent commands and output, directory listings, file contents),
+all redacted (`redact`); Settings → AI says so.
+
 ### Commands
 
 - `ai.toggleSuggestions`: AI: Toggle suggestions.
@@ -813,11 +992,16 @@ with an error in `text-err` under any partial text. Styles: `.block-ai` in
   block terminal's last finished block with a command (nothing in a
   classic terminal), and open the settings when "Explain and fix" has no
   ready profile.
+- `ai.askAgent`: AI: Ask the agent… (palette prompt; opens the settings
+  when the agent has no ready profile); `ai.openAgent`: AI: Open the agent;
+  `ai.agentNewConversation`: AI: New agent conversation (the active Agent
+  pane, else the tab's). See [Agent](#agent).
 - `ai.openSettings`: AI: Settings….
 
 ### Settings → AI
 
-- A note on what leaves the machine.
+- A note on what leaves the machine (including that the agent sends what
+  its tools read).
 - **Suggestions**: the toggle, the context size, and "Preview what is sent".
 - **Models**: one row per profile (name, `provider · model`, status:
   `text-ok` Ready or `text-warn` with the problem) with Edit, Duplicate and
@@ -865,7 +1049,10 @@ running (a stand-in OpenAI-compatible server), the self-test:
 6. runs a failing `ls`, explains it, and checks the note under the block
    holds the stub's explanation (which names the command in question);
 7. fixes it and checks the stub's command is in the editor and no block
-   was added; then puts the profiles back.
+   was added;
+8. types `/agent what did I run last?` and checks the pane's agent card
+   shows the `recent_blocks` tool row and the stub's answer naming the
+   failed command; then puts the profiles back.
 
 The stub also answers `stream: true` with SSE chunks (a longer reply, one
 word every 80 ms) and `[DONE]`, for trying `ai_stream` / `streamText` by
@@ -873,3 +1060,13 @@ hand in a dev build. A prompt ending in "Explain:" gets a Markdown
 explanation (streamed without the suffix) containing `midterm-explain-ok`,
 and one ending in "Corrected command:" gets `echo midterm-fix-ok` (after 3
 s when the prompt contains `midterm-slow`, to try cancelling).
+
+A request with `tools` is an agent turn, answered in the OpenAI tool-call
+format (streamed with the arguments split over chunks, or JSON), decided by
+the last user message and the tool messages after it: by default a
+`…__recent_blocks` call, then an answer with `midterm-agent-ok` and the last
+command it returned; with `midterm-agent-write`, two `…__run_command` calls
+(`echo midterm-agent-1`, `-2`, one per round, to try Allow, Allow for this
+conversation and Deny), then an answer saying which ran and which were
+denied; with `midterm-agent-slow`, a long answer one word every 80 ms, to
+try Stop.

@@ -2,7 +2,9 @@
 
 Every pane kind is a **plugin**. A plugin's `id` is the pane kind stored in
 layouts (`PaneData.kind`). The terminal, explorer, editor and viewer are
-built in (`src/plugins/builtin/`). Imported plugins use the same contract
+built in (`src/plugins/builtin/`), and so is the Agent pane (`agent`,
+`src/ai/agent/plugin.tsx`, registered by `installAi`; see
+[ai.md](ai.md#agent)). Imported plugins use the same contract
 and run in the main window with the app's full access.
 
 ## Source map
@@ -12,7 +14,7 @@ and run in the main window with the app's full access.
 | `src/plugins/types.ts` | The contract: `PanePlugin`, `PaneSpec`, `PaneProps`, `PaneContext`, `MenuItemSpec`, `CloseBlocker`, `Skill`, `SkillTool`. |
 | `src/plugins/registry.ts` | Register, unregister, enable/disable (from settings), subscribe, activation (commands plus `activate(api)`). |
 | `src/plugins/api.ts` | `MidtermApi` v1, one instance per plugin. |
-| `src/plugins/PaneHost.tsx` | Renders a pane: plugin lookup, an error boundary per pane, the right-click menu, the placeholder. |
+| `src/plugins/PaneHost.tsx` | Renders a pane: plugin lookup, an error boundary per pane, the right-click menu, the placeholder, and the agent card of a one-off agent request (any kind of pane). |
 | `src/plugins/PluginPlaceholder.tsx` | Shown for a pane whose plugin is disabled, missing or still loading. |
 | `src/plugins/MenuItems.tsx` | Renders declarative `MenuItemSpec`s. |
 | `src/plugins/paneState.ts` | `createPaneState`: per-pane state kept outside React (see below). |
@@ -160,8 +162,8 @@ Open plugins folder and Rescan.
 
 ## Skills
 
-Skills describe what a future AI agent can do with a plugin. Nothing calls
-them yet, but every plugin can declare them against this stable shape:
+Skills describe what the AI agent ([ai.md](ai.md#agent)) can do with a
+plugin. Every plugin can declare them against this stable shape:
 
 ```ts
 type Skill = { id; title; description; instructions?: string; tools?: SkillTool[] };
@@ -178,15 +180,29 @@ type SkillTool = {
 - Declarations are checked at registration: ids, tool names, duplicates,
   and whether the schema compiles. A skill that fails is left out, and the
   reason is shown in the plugin's settings.
-- `invokeSkillTool(skillId, toolName, input, { paneId?, signal? })` is the
-  single entry point. It never throws and returns
+- `invokeSkillTool(skillId, toolName, input, { paneId?, signal?, confirm? })`
+  is the single entry point. It never throws and returns
   `{ ok: true, result } | { ok: false, error }`. In order, it:
   1. checks the skill's switch;
   2. validates the input with `@cfworker/json-schema` (no `eval`, so it
      works under the CSP);
-  3. asks the hook set by `setWriteConfirmation` before a `write` tool (with
-     no hook installed, write tools are refused);
+  3. before a `write` tool, asks the caller's `confirm` (same signature as
+     the hook), else the hook set by `setWriteConfirmation`; with neither,
+     write tools are refused. No hook is installed by default: the agent
+     passes its own `confirm` per call (Allow / Allow for this
+     conversation / Deny in its transcript);
   4. requires the result to be plain JSON.
+- The agent declares every enabled skill's tools up front, under wire names
+  `<plugin>__<skill>__<tool>` (characters outside `[A-Za-z0-9_-]` become
+  `_`, at most 64, a numeric suffix on collision), plus a `load_skill` tool
+  that returns a skill's `instructions` (its description when it has none)
+  and its tools' names. Guidance-only skills are loadable too. A skill
+  switched off or a plugin disabled during a conversation is refused by
+  `invokeSkillTool`; the declared tools only change with a new
+  conversation.
+- `paneId` is the pane the agent works with (a card's pane, or the tab's
+  last active non-agent pane for the Agent pane); tools should act on it
+  when the model names no pane.
 - In dev builds it is also available as `window.__midterm.invokeSkillTool`.
 - Built-in skills:
   - `terminal.commands`: `recent_blocks`, `run_command` (write)
@@ -233,8 +249,9 @@ A plugin is a folder with a manifest and an ES module:
 
 - Paths are plain relative paths (no `./`, `..` or absolute paths) and must
   exist.
-- The id may not be a built-in one (`terminal`, `explorer`, `editor`,
-  `viewer`, `theme-editor`, `midterm`).
+- The id may not be a built-in one (`terminal`, `block-terminal`,
+  `explorer`, `editor`, `viewer`, `theme-editor`, `agent`, `midterm`;
+  `RESERVED_IDS` in `src-tauri/src/plugins/manifest.rs`).
 - `apiVersion` must be `1`.
 - The module's default export is the `PanePlugin`. Its `id` must match the
   manifest's.

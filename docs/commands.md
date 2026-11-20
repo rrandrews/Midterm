@@ -23,9 +23,16 @@ palette and the native menu bar are generated from it.
 - AI commands (`src/ai/commands.ts`, category AI, no default keys):
   `ai.toggleSuggestions`, `ai.suggestNow`, `ai.explainLastCommand` (AI:
   Explain the last command), `ai.fixLastCommand` (AI: Fix the last
-  command) and `ai.openSettings`. The explain/fix pair acts on the active
-  block terminal's last finished block; see
-  [ai.md](ai.md#explain-and-fix).
+  command), `ai.askAgent` (AI: Ask the agent…: prompts for a task in the
+  palette, then runs it against the active pane in its agent card),
+  `ai.openAgent` (AI: Open the agent: focuses the tab's Agent pane or
+  opens one), `ai.agentNewConversation` and `ai.openSettings`. The
+  explain/fix pair acts on the active block terminal's last finished
+  block; see [ai.md](ai.md#explain-and-fix) and [ai.md](ai.md#agent).
+  `/agent <task>` in the blocks editor is the slash command form of
+  `ai.askAgent` for that terminal. The pane menu has an Agent submenu (Ask
+  the agent about this pane…, Open the agent pane) and the tab menu "Open
+  the agent".
 - `category` is any string; `menu` names the native menu bar submenu a
   command is listed in after the app's own items (`src/commands/nativeMenu.ts`).
 - The functions commands run stay in `src/actions.ts` (and `closing.ts`).
