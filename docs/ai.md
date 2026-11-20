@@ -354,6 +354,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `PROVIDERS` (names, API or CLI, key needed); `toAiError`. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, cancellable. |
 | `context.ts` | Pure: `buildContext` (system prompt and prompt), `redact`, `trimOutput`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
 | `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `providerReady`, `providerConfig`, `localPrediction`. |
+| `slash.ts` | Slash commands for the blocks editor: the registry, `parseSlash`, `slashCompletion`, and `/cmd`'s request (`writeCommand`, `buildCmdRequest`). Unit-tested in `slash.test.ts`. |
 | `predict.ts` | Pure: local next-command prediction from the command log (`predictNext`, `tokenize`). Unit-tested in `predict.test.ts`. |
 | `AiSection.tsx` | Settings → AI. |
 | `commands.ts` | Commands, the terminal menu's per-pane switch, registration. |
@@ -510,6 +511,29 @@ The footer shows where the suggestion comes from ("AI suggestion",
 "predicted from history" for a local prediction, or "from history" for a
 prefix match), a pulsing "AI…" while a request runs, or "AI unavailable" with
 the error as a tooltip.
+
+### Slash commands
+
+A line in the blocks editor that starts with a **registered** `/name` is
+handled by Midterm and never reaches the shell. Anything else starting
+with `/` (`/usr/bin/ls`, `/cm`) runs as usual. While the line is a prefix
+of a command name, the ghost text shows its usage (`/cmd <what to do>`),
+⇥ completes the name, and the footer describes it.
+
+| Command | What it does |
+|---|---|
+| `/cmd <task>` | Asks the model for a shell command that does the task. |
+
+`/cmd`: on ⏎ the line moves above the editor ("writing a command… esc
+cancels"; Esc or ⌃C cancels and puts the line back) and the request goes
+out with the same context as a suggestion (`contextFor`), with
+`CMD_SYSTEM_PROMPT` and `Task: <task>` (redacted) in place of "Next
+command:". The reply budget is 400 tokens, and the reply goes through
+`parseSuggestion`. The command lands in the editor, **under the request
+line, never run**: edit it or press ⏎. On failure the error shows next to
+the line and the line goes back in the editor, so ⏎ tries again. `/cmd`
+needs a provider (`providerReady`) but not the suggestions switch. Slash
+lines are not added to the history or the command log.
 
 ### Commands
 
