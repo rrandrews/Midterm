@@ -1,10 +1,11 @@
 //! OpenAI-compatible chat completions: OpenAI, DeepSeek, OpenRouter,
 //! Gemini's OpenAI-compatible endpoint and any custom base URL.
 //!
-//! One non-streaming `POST {base}/chat/completions` with a system and a user
-//! message. No sampling parameters. The reasoning effort chosen in
-//! `effort.rs` is sent where there is one (see [`build_body`]); a model that
-//! rejects the field gets the request again without it.
+//! One `POST {base}/chat/completions` with a system and a user message,
+//! non-streaming ([`complete`]) or streaming ([`stream`]). No sampling
+//! parameters. The reasoning effort chosen in `effort.rs` is sent where
+//! there is one (see [`build_body`]); a model that rejects the field gets
+//! the request again without it.
 
 use serde_json::{Map, Value, json};
 
@@ -13,6 +14,8 @@ use super::error::{AiError, ErrorKind};
 use super::extra;
 use super::http;
 use super::provider::Flavor;
+use super::sse::SseEvent;
+use super::stream::{self, Flow, Stop, StreamState, Streamed, Text};
 use super::{Completion, Reply};
 
 /// Words in a 400/422 response that mean the effort field was the problem.
@@ -26,7 +29,7 @@ const EFFORT_WORDS: &[&str] = &["reasoning", "effort", "thinking"];
 ///   OpenAI, Gemini and custom servers; OpenRouter's normalized
 ///   `reasoning: { effort, exclude: true }`; DeepSeek takes
 ///   `reasoning_effort`, and `thinking: { type: "disabled" }` for off.
-pub fn build_body(flavor: Flavor, req: &Completion, with_effort: bool) -> Value {
+pub fn build_body(flavor: Flavor, req: &Completion, with_effort: bool, stream: bool) -> Value {
     let mut messages = Vec::new();
     if !req.system.trim().is_empty() {
         messages.push(json!({ "role": "system", "content": req.system }));
@@ -36,7 +39,7 @@ pub fn build_body(flavor: Flavor, req: &Completion, with_effort: bool) -> Value 
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
     body.insert("messages".into(), Value::Array(messages));
-    body.insert("stream".into(), json!(false));
+    body.insert("stream".into(), json!(stream));
     let tokens_field = match flavor {
         Flavor::OpenAi => "max_completion_tokens",
         _ => "max_tokens",
@@ -222,27 +225,239 @@ pub async fn complete(
 ) -> Result<Reply, AiError> {
     let url = format!("{base_url}/chat/completions");
     let send = |with_effort: bool| {
-        let body = build_body(flavor, req, with_effort);
+        let body = build_body(flavor, req, with_effort, false);
         http::send(
             authorize(client.post(&url), key).json(&body),
             key,
             req.timeout,
         )
     };
-    let with_effort = req.effort.is_some();
-    let mut effort_dropped = false;
-    let response = match send(with_effort).await {
-        Err(f) if with_effort && f.is_bad_request_about(EFFORT_WORDS) => {
-            effort_dropped = true;
-            send(false).await
-        }
-        other => other,
-    }
-    .map_err(|f| f.into_error(key))?;
+    let (response, effort_dropped) =
+        http::retry_without_effort(req.effort.is_some(), EFFORT_WORDS, send).await;
+    let response = response.map_err(|f| f.into_error(key))?;
     Ok(Reply {
         text: parse_reply(&response)?,
         effort_dropped,
     })
+}
+
+/// [`complete`], streamed: `emit` gets the reply text as it arrives (one
+/// call per network chunk). `req.timeout` limits the wait for the headers
+/// and for each chunk. A server that ignores `stream` and answers with JSON
+/// is read whole and emitted once.
+pub async fn stream(
+    client: &reqwest::Client,
+    flavor: Flavor,
+    base_url: &str,
+    key: Option<&str>,
+    req: &Completion<'_>,
+    emit: &(dyn Fn(&str) + Send + Sync),
+) -> Result<Streamed, AiError> {
+    let url = format!("{base_url}/chat/completions");
+    let send = |with_effort: bool| {
+        let body = build_body(flavor, req, with_effort, true);
+        http::open_stream(authorize(client.post(&url), key).json(&body), req.timeout)
+    };
+    let (response, effort_dropped) =
+        http::retry_without_effort(req.effort.is_some(), EFFORT_WORDS, send).await;
+    let mut response = response.map_err(|f| f.into_error(key))?;
+    if !http::is_event_stream(&response) {
+        let json = tokio::time::timeout(req.timeout, http::json(response, key, req.timeout))
+            .await
+            .map_err(|_| {
+                AiError::new(
+                    ErrorKind::Timeout,
+                    format!("no answer within {} s", req.timeout.as_secs()),
+                )
+            })?
+            .map_err(|f| f.into_error(key))?;
+        let text = parse_reply(&json)?;
+        emit(&text);
+        return Ok(Streamed {
+            text,
+            stop: Stop::End,
+            effort_dropped,
+        });
+    }
+    let mut state = ChatStream::new(key);
+    stream::read(&mut response, req.timeout, &mut state, emit).await?;
+    let (text, stop) = state.finish()?;
+    Ok(Streamed {
+        text,
+        stop,
+        effort_dropped,
+    })
+}
+
+/// Holds streamed text back while it could still be a leading
+/// `<think>…</think>` block (see [`strip_think`]), and swallows the block.
+#[derive(Default)]
+pub struct ThinkFilter {
+    state: Think,
+    held: String,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum Think {
+    /// No text other than whitespace yet.
+    #[default]
+    Start,
+    /// Inside a leading `<think>` block.
+    Inside,
+    /// Past it (or there was none): text passes through.
+    Passing,
+}
+
+const THINK_OPEN: &str = "<think>";
+const THINK_CLOSE: &str = "</think>";
+
+impl ThinkFilter {
+    /// The text to pass on after `text` arrived.
+    pub fn push(&mut self, text: &str) -> String {
+        match self.state {
+            Think::Passing => text.to_string(),
+            Think::Start => {
+                self.held.push_str(text);
+                let trimmed = self.held.trim_start();
+                if let Some(rest) = trimmed.strip_prefix(THINK_OPEN) {
+                    self.held = rest.to_string();
+                    self.state = Think::Inside;
+                    self.inside()
+                } else if trimmed.is_empty() || THINK_OPEN.starts_with(trimmed) {
+                    String::new()
+                } else {
+                    self.state = Think::Passing;
+                    std::mem::take(&mut self.held)
+                }
+            }
+            Think::Inside => {
+                self.held.push_str(text);
+                self.inside()
+            }
+        }
+    }
+
+    fn inside(&mut self) -> String {
+        if let Some(end) = self.held.find(THINK_CLOSE) {
+            self.state = Think::Passing;
+            let rest = self.held[end + THINK_CLOSE.len()..].to_string();
+            self.held.clear();
+            return rest;
+        }
+        // Keep only a tail that could hold the start of `</think>`.
+        let keep = THINK_CLOSE.len() - 1;
+        if self.held.len() > keep * 4 {
+            let mut cut = self.held.len() - keep;
+            while !self.held.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.held.drain(..cut);
+        }
+        String::new()
+    }
+
+    /// The end of the reply: text held as a possible `<think>` start is
+    /// passed on; an unclosed block means no answer was reached.
+    pub fn finish(&mut self) -> String {
+        match self.state {
+            Think::Start => std::mem::take(&mut self.held),
+            _ => String::new(),
+        }
+    }
+}
+
+/// The state of a streamed chat completion.
+pub struct ChatStream<'k> {
+    key: Option<&'k str>,
+    think: ThinkFilter,
+    text: Text,
+    refusal: String,
+    finish: Option<String>,
+}
+
+impl<'k> ChatStream<'k> {
+    /// `key` is redacted from errors the provider reports in the stream.
+    pub fn new(key: Option<&'k str>) -> Self {
+        Self {
+            key,
+            think: ThinkFilter::default(),
+            text: Text::default(),
+            refusal: String::new(),
+            finish: None,
+        }
+    }
+
+    /// The reply text and why it ended, or why there is none.
+    pub fn finish(mut self) -> Result<(String, Stop), AiError> {
+        let rest = self.think.finish();
+        self.text.push(&rest);
+        if !self.refusal.trim().is_empty() {
+            return Err(AiError::new(ErrorKind::Refused, self.refusal.trim()));
+        }
+        let finish = self.finish.as_deref().unwrap_or("");
+        if finish == "content_filter" {
+            return Err(AiError::new(
+                ErrorKind::Refused,
+                "the provider's content filter withheld the reply",
+            ));
+        }
+        if self.text.is_empty() {
+            let message = if finish == "length" {
+                "the token limit ran out before any reply text (reasoning may have used it up)"
+            } else {
+                "the model returned an empty reply"
+            };
+            return Err(AiError::new(ErrorKind::Empty, message));
+        }
+        let stop = if finish == "length" {
+            Stop::Length
+        } else {
+            Stop::End
+        };
+        Ok((self.text.finish(), stop))
+    }
+}
+
+impl StreamState for ChatStream<'_> {
+    fn event(&mut self, event: &SseEvent) -> Result<Flow, AiError> {
+        let data = event.data.trim();
+        if data == "[DONE]" {
+            return Ok(Flow::Done);
+        }
+        let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+            // Keep-alives and other non-JSON lines.
+            return Ok(Flow::Continue);
+        };
+        if let Some(error) = chunk.get("error").filter(|e| !e.is_null()) {
+            let message = error["message"]
+                .as_str()
+                .or_else(|| error.as_str())
+                .unwrap_or("");
+            return Err(stream::provider_error(message, self.key));
+        }
+        // Chunks with no choices (usage, keep-alives) carry nothing here.
+        let Some(choice) = chunk.pointer("/choices/0") else {
+            return Ok(Flow::Continue);
+        };
+        let delta = &choice["delta"];
+        if let Some(refusal) = delta["refusal"].as_str() {
+            self.refusal.push_str(refusal);
+        }
+        // `reasoning_content` and `reasoning` are not reply text.
+        let content = content_text(&delta["content"]);
+        if !content.is_empty() {
+            let passed = self.think.push(&content);
+            self.text.push(&passed);
+        }
+        if let Some(finish) = choice["finish_reason"].as_str() {
+            self.finish = Some(finish.to_string());
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn take_text(&mut self) -> String {
+        self.text.take()
+    }
 }
 
 pub async fn models(
@@ -280,7 +495,7 @@ mod tests {
 
     #[test]
     fn body_shapes_by_flavor() {
-        let b = build_body(Flavor::OpenAi, &req(), true);
+        let b = build_body(Flavor::OpenAi, &req(), true, false);
         assert_eq!(b["max_completion_tokens"], 100);
         assert!(b.get("max_tokens").is_none());
         assert_eq!(b["reasoning_effort"], "low");
@@ -296,20 +511,20 @@ mod tests {
             assert!(b.get(sampling).is_none());
         }
 
-        let b = build_body(Flavor::OpenRouter, &req(), true);
+        let b = build_body(Flavor::OpenRouter, &req(), true, false);
         assert_eq!(b["max_tokens"], 100);
         assert_eq!(b["reasoning"]["effort"], "low");
         assert!(b.get("reasoning_effort").is_none());
 
-        let b = build_body(Flavor::Gemini, &req(), true);
+        let b = build_body(Flavor::Gemini, &req(), true, false);
         assert_eq!(b["reasoning_effort"], "low");
-        let b = build_body(Flavor::DeepSeek, &req(), false);
+        let b = build_body(Flavor::DeepSeek, &req(), false, false);
         assert!(b.get("reasoning_effort").is_none());
-        let b = build_body(Flavor::Custom, &req(), true);
+        let b = build_body(Flavor::Custom, &req(), true, false);
         assert_eq!(b["reasoning_effort"], "low");
         let mut r = req();
         r.effort = None;
-        let b = build_body(Flavor::Custom, &r, true);
+        let b = build_body(Flavor::Custom, &r, true, false);
         assert!(b.get("reasoning_effort").is_none());
         assert!(b.get("reasoning").is_none());
 
@@ -317,25 +532,25 @@ mod tests {
         let mut r = req();
         r.effort = Some(Effort::Xhigh);
         assert_eq!(
-            build_body(Flavor::OpenAi, &r, true)["reasoning_effort"],
+            build_body(Flavor::OpenAi, &r, true, false)["reasoning_effort"],
             "xhigh"
         );
         assert_eq!(
-            build_body(Flavor::OpenRouter, &r, true)["reasoning"]["effort"],
+            build_body(Flavor::OpenRouter, &r, true, false)["reasoning"]["effort"],
             "xhigh"
         );
         r.effort = Some(Effort::None);
-        let b = build_body(Flavor::DeepSeek, &r, true);
+        let b = build_body(Flavor::DeepSeek, &r, true, false);
         assert_eq!(b["thinking"], json!({ "type": "disabled" }));
         assert!(b.get("reasoning_effort").is_none());
         assert_eq!(
-            build_body(Flavor::OpenAi, &r, true)["reasoning_effort"],
+            build_body(Flavor::OpenAi, &r, true, false)["reasoning_effort"],
             "none"
         );
 
         let mut r = req();
         r.system = "  ";
-        let b = build_body(Flavor::Custom, &r, false);
+        let b = build_body(Flavor::Custom, &r, false, false);
         assert_eq!(b["messages"].as_array().unwrap().len(), 1);
     }
 
@@ -350,7 +565,7 @@ mod tests {
         let extra = extra.as_object().unwrap();
         let mut r = req();
         r.extra = Some(extra);
-        let b = build_body(Flavor::OpenAi, &r, true);
+        let b = build_body(Flavor::OpenAi, &r, true, false);
         assert_eq!(b["max_completion_tokens"], 50);
         assert!(b.get("reasoning_effort").is_none());
         assert_eq!(b["provider"]["order"][0], "a");
@@ -359,7 +574,7 @@ mod tests {
 
         let extra = json!({ "reasoning": { "exclude": false, "max_tokens": 10 } });
         r.extra = Some(extra.as_object().unwrap());
-        let b = build_body(Flavor::OpenRouter, &r, true);
+        let b = build_body(Flavor::OpenRouter, &r, true, false);
         assert_eq!(
             b["reasoning"],
             json!({ "effort": "low", "exclude": false, "max_tokens": 10 })
@@ -640,5 +855,316 @@ mod tests {
         assert_eq!(ids, vec!["a", "z"]);
         assert_eq!(server.requests()[0].path, "/models");
         assert_eq!(server.requests()[0].method, "GET");
+    }
+
+    /* ---- Streaming ---- */
+
+    fn sse_data(v: Value) -> String {
+        format!("data: {v}\n\n")
+    }
+
+    fn delta(content: &str) -> String {
+        sse_data(
+            json!({ "choices": [{ "index": 0, "delta": { "content": content }, "finish_reason": null }] }),
+        )
+    }
+
+    fn finish(reason: &str) -> String {
+        sse_data(json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": reason }] }))
+    }
+
+    const DONE: &str = "data: [DONE]\n\n";
+
+    /// Feeds frames (each one network chunk) to a fresh state, returning
+    /// the per-chunk deltas and the outcome.
+    fn run(frames: &[String]) -> (Vec<String>, Result<(String, Stop), AiError>) {
+        let mut parser = crate::ai::sse::SseParser::new();
+        let mut state = ChatStream::new(Some("sk-secret"));
+        let mut deltas = Vec::new();
+        for frame in frames {
+            for event in parser.push(frame.as_bytes()) {
+                if let Err(e) = state.event(&event) {
+                    return (deltas, Err(e));
+                }
+            }
+            let text = state.take_text();
+            if !text.is_empty() {
+                deltas.push(text);
+            }
+        }
+        (deltas, state.finish())
+    }
+
+    #[test]
+    fn stream_concatenates_deltas() {
+        let (deltas, out) = run(&[
+            delta("\n  Hello"),
+            delta(", wor"),
+            delta("ld!\n"),
+            finish("stop"),
+            DONE.into(),
+        ]);
+        assert_eq!(deltas, vec!["Hello", ", wor", "ld!\n"]);
+        assert_eq!(out.unwrap(), ("Hello, world!".into(), Stop::End));
+        // Text parts, and an empty-choices chunk (usage), and reasoning.
+        let (deltas, out) = run(&[
+            sse_data(
+                json!({ "choices": [{ "delta": { "content": [{ "type": "text", "text": "a" }, { "type": "text", "text": "b" }] } }] }),
+            ),
+            sse_data(json!({ "choices": [], "usage": { "total_tokens": 3 } })),
+            sse_data(
+                json!({ "choices": [{ "delta": { "reasoning_content": "hmm", "reasoning": "hmm" } }] }),
+            ),
+            ": keep-alive\n\n".into(),
+            delta("c"),
+        ]);
+        assert_eq!(deltas, vec!["ab", "c"]);
+        assert_eq!(out.unwrap().0, "abc");
+    }
+
+    #[test]
+    fn stream_stops_at_done() {
+        let mut state = ChatStream::new(None);
+        let ev = |data: &str| SseEvent {
+            event: "message".into(),
+            data: data.into(),
+        };
+        assert_eq!(state.event(&ev("[DONE]")).unwrap(), Flow::Done);
+    }
+
+    #[test]
+    fn stream_swallows_a_think_block_split_across_deltas() {
+        let (deltas, out) = run(&[
+            delta("  <thi"),
+            delta("nk>let me see</th"),
+            delta("ink>\n\nls"),
+            delta(" -la"),
+            finish("stop"),
+        ]);
+        assert_eq!(deltas, vec!["ls", " -la"]);
+        assert_eq!(out.unwrap().0, "ls -la");
+        // A prefix of `<think>` that turns out not to be one is passed on.
+        let (deltas, out) = run(&[delta("<th"), delta("ings>")]);
+        assert_eq!(deltas, vec!["<things>"]);
+        assert_eq!(out.unwrap().0, "<things>");
+        // A held prefix at the end of the stream is not lost.
+        let (_, out) = run(&[delta("<"), finish("stop")]);
+        assert_eq!(out.unwrap().0, "<");
+        // An unclosed block: no answer.
+        let (deltas, out) = run(&[
+            delta("<think>"),
+            delta("x".repeat(200).as_str()),
+            finish("length"),
+        ]);
+        assert!(deltas.is_empty());
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Empty);
+        assert!(e.message.contains("token limit"));
+    }
+
+    #[test]
+    fn think_filter_keeps_multibyte_text_intact() {
+        let mut f = ThinkFilter::default();
+        assert_eq!(f.push("<think>"), "");
+        assert_eq!(f.push(&"é".repeat(40)), "");
+        assert_eq!(f.push("</thi"), "");
+        assert_eq!(f.push("nk>ünï"), "ünï");
+        assert_eq!(f.push("x"), "x");
+    }
+
+    #[test]
+    fn stream_refusal_and_content_filter() {
+        let refusal = |r: &str| sse_data(json!({ "choices": [{ "delta": { "refusal": r } }] }));
+        let (_, out) = run(&[
+            refusal("I can't "),
+            refusal("help with that."),
+            finish("stop"),
+        ]);
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Refused);
+        assert_eq!(e.message, "I can't help with that.");
+        let (_, out) = run(&[delta("partial"), finish("content_filter")]);
+        assert_eq!(out.unwrap_err().kind, ErrorKind::Refused);
+    }
+
+    #[test]
+    fn stream_length_with_and_without_text() {
+        let (_, out) = run(&[delta("cut sh"), finish("length")]);
+        assert_eq!(out.unwrap(), ("cut sh".into(), Stop::Length));
+        let (_, out) = run(&[delta("  "), finish("length")]);
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Empty);
+        assert!(e.message.contains("token limit"));
+        let (_, out) = run(&[DONE.into()]);
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Empty);
+        assert!(!e.message.contains("token limit"));
+    }
+
+    #[test]
+    fn stream_error_chunk() {
+        let (deltas, out) = run(&[
+            delta("a"),
+            sse_data(
+                json!({ "error": { "message": "upstream failed for sk-secret", "code": 502 } }),
+            ),
+            delta("b"),
+        ]);
+        assert_eq!(deltas, vec!["a"]);
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Http);
+        assert!(e.message.contains("upstream failed"), "{}", e.message);
+        assert!(!e.message.contains("sk-secret"), "{}", e.message);
+    }
+
+    fn collector() -> (
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        impl Fn(&str) + Send + Sync,
+    ) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        (seen, move |t: &str| {
+            sink.lock().unwrap().push(t.to_string())
+        })
+    }
+
+    #[tokio::test]
+    async fn streams_against_stub() {
+        let server = stub::serve(vec![Canned::sse(
+            vec![delta("Hel"), delta("lo"), finish("stop"), DONE.into()],
+            std::time::Duration::from_millis(20),
+        )])
+        .await;
+        let (seen, emit) = collector();
+        let out = stream(
+            &stub::client(),
+            Flavor::OpenAi,
+            &server.url,
+            Some("k"),
+            &req(),
+            &emit,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.text, "Hello");
+        assert_eq!(out.stop, Stop::End);
+        assert!(!out.effort_dropped);
+        assert_eq!(*seen.lock().unwrap(), vec!["Hel", "lo"]);
+        let sent = server.requests()[0].json();
+        assert_eq!(sent["stream"], true);
+    }
+
+    #[tokio::test]
+    async fn stream_falls_back_to_json() {
+        let server = stub::serve(vec![Canned::json(
+            200,
+            reply(json!(" whole reply "), "stop"),
+        )])
+        .await;
+        let (seen, emit) = collector();
+        let out = stream(
+            &stub::client(),
+            Flavor::Custom,
+            &server.url,
+            None,
+            &req(),
+            &emit,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.text, "whole reply");
+        assert_eq!(*seen.lock().unwrap(), vec!["whole reply"]);
+    }
+
+    #[tokio::test]
+    async fn stream_retries_without_effort_before_streaming() {
+        let server = stub::serve(vec![
+            Canned::json(400, json!({ "error": { "message": "Unrecognized request argument supplied: reasoning_effort" } })),
+            Canned::sse(vec![delta("ok"), DONE.into()], std::time::Duration::ZERO),
+        ])
+        .await;
+        let (seen, emit) = collector();
+        let out = stream(
+            &stub::client(),
+            Flavor::OpenAi,
+            &server.url,
+            Some("k"),
+            &req(),
+            &emit,
+        )
+        .await
+        .unwrap();
+        assert!(out.effort_dropped);
+        assert_eq!(*seen.lock().unwrap(), vec!["ok"]);
+        let sent = server.requests();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].json()["reasoning_effort"], "low");
+        assert!(sent[1].json().get("reasoning_effort").is_none());
+        assert_eq!(sent[1].json()["stream"], true);
+    }
+
+    #[tokio::test]
+    async fn stream_auth_error_before_the_stream() {
+        let server = stub::serve(vec![Canned::json(
+            401,
+            json!({ "error": { "message": "Incorrect API key" } }),
+        )])
+        .await;
+        let (seen, emit) = collector();
+        let e = stream(
+            &stub::client(),
+            Flavor::OpenAi,
+            &server.url,
+            Some("bad"),
+            &req(),
+            &emit,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Auth);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_times_out() {
+        let server = stub::serve(vec![Canned::sse(
+            vec![delta("first"), delta("never")],
+            std::time::Duration::from_secs(5),
+        )])
+        .await;
+        let (seen, emit) = collector();
+        let mut r = req();
+        r.timeout = std::time::Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let e = stream(
+            &stub::client(),
+            Flavor::Custom,
+            &server.url,
+            None,
+            &r,
+            &emit,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Timeout);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert_eq!(*seen.lock().unwrap(), vec!["first"]);
+        // Headers that never come time out too.
+        let server = stub::serve(vec![
+            Canned::sse(vec![DONE.into()], std::time::Duration::ZERO)
+                .delayed(std::time::Duration::from_secs(5)),
+        ])
+        .await;
+        let e = stream(
+            &stub::client(),
+            Flavor::Custom,
+            &server.url,
+            None,
+            &r,
+            &emit,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Timeout);
     }
 }

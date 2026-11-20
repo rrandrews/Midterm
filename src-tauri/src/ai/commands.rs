@@ -10,7 +10,7 @@ use super::cli::CliStatus;
 use super::error::{AiError, truncate};
 use super::keys;
 use super::provider::{ProviderConfig, Target};
-use super::{AiManager, EffortOptions};
+use super::{AiManager, EffortOptions, Stop};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +50,55 @@ pub async fn ai_suggest(
     Ok(Suggestion { text: reply.text })
 }
 
-/// Cancels a running `ai_suggest`. Unknown or finished ids are ignored.
+/// A message on `ai_stream`'s channel.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum StreamEvent {
+    /// More reply text: append it.
+    Delta { text: String },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamReply {
+    /// The whole reply. Authoritative: channel messages and the command's
+    /// response are not ordered against each other.
+    pub text: String,
+    pub stop: Stop,
+    pub effort_dropped: bool,
+}
+
+/// One completion from `target`, streamed: reply text goes to `onEvent` as
+/// it arrives (one delta per network chunk; CLIs send the whole reply once)
+/// and the full text is the result. Errors and `ai_cancel(requestId)` work
+/// as for `ai_suggest`.
+#[tauri::command]
+pub async fn ai_stream(
+    manager: State<'_, AiManager>,
+    request_id: String,
+    target: Target,
+    system: String,
+    prompt: String,
+    max_tokens: Option<u32>,
+    on_event: tauri::ipc::Channel<StreamEvent>,
+) -> Result<StreamReply, AiError> {
+    let emit = move |text: &str| {
+        // The webview may have gone away; the result still settles.
+        let _ = on_event.send(StreamEvent::Delta {
+            text: text.to_string(),
+        });
+    };
+    let work = manager.stream(&target, &system, &prompt, max_tokens, &emit);
+    let streamed = manager.cancellable(&request_id, work).await?;
+    Ok(StreamReply {
+        text: streamed.text,
+        stop: streamed.stop,
+        effort_dropped: streamed.effort_dropped,
+    })
+}
+
+/// Cancels a running `ai_suggest` or `ai_stream`. Unknown or finished ids
+/// are ignored.
 #[tauri::command]
 pub fn ai_cancel(manager: State<'_, AiManager>, request_id: String) {
     manager.cancel(&request_id);

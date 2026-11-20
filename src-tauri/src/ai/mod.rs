@@ -15,6 +15,7 @@ mod process;
 mod provider;
 mod shell_path;
 mod sse;
+mod stream;
 #[cfg(test)]
 mod stub;
 
@@ -29,6 +30,9 @@ use tokio::sync::oneshot;
 use effort::{AnthropicCaps, Effort, EffortSetting, Resolved};
 pub use error::{AiError, ErrorKind};
 pub use provider::{Backend, ProviderConfig, ProviderId, Target};
+pub use stream::{Stop, Streamed};
+
+use provider::Flavor;
 
 /// What one completion asks for, whichever adapter sends it.
 pub struct Completion<'a> {
@@ -167,6 +171,39 @@ fn resolve_key(
         ));
     }
     Ok(key)
+}
+
+/// A request ready to send: the key, base URL, capabilities and effort
+/// worked out for one target (see [`AiManager::prepare`]).
+enum Prepared<'a> {
+    OpenAi {
+        flavor: Flavor,
+        base: String,
+        key: Option<String>,
+        resolved: Resolved,
+        req: Completion<'a>,
+    },
+    Anthropic {
+        base: String,
+        key: String,
+        resolved: Resolved,
+        req: Completion<'a>,
+        shape: anthropic::Shape,
+    },
+    Cli {
+        kind: provider::CliKind,
+        resolved: Resolved,
+    },
+}
+
+impl Prepared<'_> {
+    fn resolved(&self) -> &Resolved {
+        match self {
+            Prepared::OpenAi { resolved, .. }
+            | Prepared::Anthropic { resolved, .. }
+            | Prepared::Cli { resolved, .. } => resolved,
+        }
+    }
 }
 
 /// Tauri state for the AI commands.
@@ -328,12 +365,13 @@ impl AiManager {
 
     /// Remembers a level the provider rejected. Not when the profile's extra
     /// JSON sets a reasoning field: the rejection may be about that field.
-    fn note_reply(&self, target: &Target, model: &str, resolved: &Resolved, reply: &Reply) {
+    fn note_reply(&self, target: &Target, resolved: &Resolved, effort_dropped: bool) {
         if extra::touches_reasoning(target.extra.as_ref()) {
             return;
         }
-        if let (true, Some(level)) = (reply.effort_dropped, resolved.level) {
-            self.rejections.insert(&target.provider, model, level);
+        if let (true, Some(level)) = (effort_dropped, resolved.level) {
+            self.rejections
+                .insert(&target.provider, target.model.trim(), level);
         }
     }
 
@@ -352,15 +390,16 @@ impl AiManager {
         Ok(extra)
     }
 
-    /// One completion from `target`, at its reasoning effort setting
-    /// (`None`: Midterm's pick, see [`effort::builtin`]).
-    pub async fn complete(
+    /// Works out what a request to `target` sends: the checked extra JSON,
+    /// the key, the base URL, the model's capabilities, the effort level and
+    /// the token budget.
+    async fn prepare<'a>(
         &self,
-        target: &Target,
-        system: &str,
-        prompt: &str,
+        target: &'a Target,
+        system: &'a str,
+        prompt: &'a str,
         reply_tokens: Option<u32>,
-    ) -> Result<Reply, AiError> {
+    ) -> Result<Prepared<'a>, AiError> {
         let provider = &target.provider;
         let setting = target.effort;
         let backend = provider.id.backend();
@@ -379,22 +418,19 @@ impl AiManager {
             timeout: effort::scaled(http::REQUEST_TIMEOUT, resolved),
             extra,
         };
-        match backend {
+        Ok(match backend {
             Backend::OpenAiCompatible(flavor) => {
                 let base = provider.base_url()?;
                 let key = self.key(provider).await?;
                 let resolved = self.resolve(provider, model, None, setting);
-                let reply = openai::complete(
-                    self.http()?,
+                let req = completion(&resolved);
+                Prepared::OpenAi {
                     flavor,
-                    &base,
-                    key.as_deref(),
-                    &completion(&resolved),
-                )
-                .await
-                .map_err(|e| redact(e, key.as_deref()))?;
-                self.note_reply(target, model, &resolved, &reply);
-                Ok(reply)
+                    base,
+                    key,
+                    resolved,
+                    req,
+                }
             }
             Backend::Anthropic => {
                 let base = provider.base_url()?;
@@ -410,22 +446,122 @@ impl AiManager {
                     req.max_tokens,
                 );
                 req.max_tokens = max_tokens;
-                let reply = anthropic::complete(self.http()?, &base, &key, &req, shape)
-                    .await
-                    .map_err(|e| redact(e, Some(&key)))?;
-                self.note_reply(target, model, &resolved, &reply);
-                Ok(reply)
+                Prepared::Anthropic {
+                    base,
+                    key,
+                    resolved,
+                    req,
+                    shape,
+                }
             }
-            Backend::Cli(kind) => {
-                let resolved = self.resolve(provider, model, None, setting);
+            Backend::Cli(kind) => Prepared::Cli {
+                kind,
+                resolved: self.resolve(provider, model, None, setting),
+            },
+        })
+    }
+
+    /// One completion from `target`, at its reasoning effort setting
+    /// (`None`: Midterm's pick, see [`effort::builtin`]).
+    pub async fn complete(
+        &self,
+        target: &Target,
+        system: &str,
+        prompt: &str,
+        reply_tokens: Option<u32>,
+    ) -> Result<Reply, AiError> {
+        let prepared = self.prepare(target, system, prompt, reply_tokens).await?;
+        let reply = match &prepared {
+            Prepared::OpenAi {
+                flavor,
+                base,
+                key,
+                req,
+                ..
+            } => openai::complete(self.http()?, *flavor, base, key.as_deref(), req)
+                .await
+                .map_err(|e| redact(e, key.as_deref()))?,
+            Prepared::Anthropic {
+                base,
+                key,
+                req,
+                shape,
+                ..
+            } => anthropic::complete(self.http()?, base, key, req, *shape)
+                .await
+                .map_err(|e| redact(e, Some(key)))?,
+            Prepared::Cli { kind, resolved } => {
+                let provider = &target.provider;
+                self.discovery
+                    .complete(
+                        *kind,
+                        provider.cli_path(),
+                        target.model.trim(),
+                        system,
+                        prompt,
+                        resolved,
+                    )
+                    .await?
+            }
+        };
+        self.note_reply(target, prepared.resolved(), reply.effort_dropped);
+        Ok(reply)
+    }
+
+    /// [`complete`](Self::complete), streamed: `emit` gets the reply text as
+    /// it arrives, one call per network chunk. CLI providers emit their
+    /// whole reply once, at the end. The returned text is authoritative.
+    pub async fn stream(
+        &self,
+        target: &Target,
+        system: &str,
+        prompt: &str,
+        reply_tokens: Option<u32>,
+        emit: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<Streamed, AiError> {
+        let prepared = self.prepare(target, system, prompt, reply_tokens).await?;
+        let streamed = match &prepared {
+            Prepared::OpenAi {
+                flavor,
+                base,
+                key,
+                req,
+                ..
+            } => openai::stream(self.http()?, *flavor, base, key.as_deref(), req, emit)
+                .await
+                .map_err(|e| redact(e, key.as_deref()))?,
+            Prepared::Anthropic {
+                base,
+                key,
+                req,
+                shape,
+                ..
+            } => anthropic::stream(self.http()?, base, key, req, *shape, emit)
+                .await
+                .map_err(|e| redact(e, Some(key)))?,
+            Prepared::Cli { kind, resolved } => {
+                let provider = &target.provider;
                 let reply = self
                     .discovery
-                    .complete(kind, provider.cli_path(), model, system, prompt, &resolved)
+                    .complete(
+                        *kind,
+                        provider.cli_path(),
+                        target.model.trim(),
+                        system,
+                        prompt,
+                        resolved,
+                    )
                     .await?;
-                self.note_reply(target, model, &resolved, &reply);
-                Ok(reply)
+                emit(&reply.text);
+                Streamed {
+                    text: reply.text,
+                    stop: Stop::End,
+                    effort_dropped: reply.effort_dropped,
+                }
             }
-        }
+        };
+        self.note_reply(target, prepared.resolved(), streamed.effort_dropped);
+        Ok(streamed)
     }
 
     /// The effort levels Settings → AI offers for `target`'s provider and
@@ -483,7 +619,7 @@ impl AiManager {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use serde_json::json;
@@ -807,5 +943,112 @@ mod tests {
         };
         let e = manager.complete(&target, "", "p", None).await.unwrap_err();
         assert_eq!(e.kind, ErrorKind::Other);
+    }
+
+    fn sse_delta(text: &str) -> String {
+        format!(
+            "data: {}\n\n",
+            json!({ "choices": [{ "delta": { "content": text } }] })
+        )
+    }
+
+    fn collector() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str) + Send + Sync) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        (seen, move |t: &str| {
+            sink.lock().unwrap().push(t.to_string())
+        })
+    }
+
+    fn custom_target(url: &str, effort: Option<&str>) -> Target {
+        serde_json::from_value(json!({
+            "provider": { "id": "custom", "baseUrl": url },
+            "model": "m",
+            "effort": effort,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stream_memoizes_a_rejected_level() {
+        let server = stub::serve(vec![
+            Canned::json(
+                400,
+                json!({ "error": { "message": "reasoning_effort is not supported" } }),
+            ),
+            Canned::sse(
+                vec![sse_delta("a"), sse_delta("b"), "data: [DONE]\n\n".into()],
+                Duration::from_millis(10),
+            ),
+        ])
+        .await;
+        let manager = AiManager::default();
+        let target = custom_target(&server.url, Some("high"));
+        let (seen, emit) = collector();
+        let out = manager.stream(&target, "", "p", None, &emit).await.unwrap();
+        assert_eq!(out.text, "ab");
+        assert!(out.effort_dropped);
+        // Nothing from the rejected attempt.
+        assert_eq!(*seen.lock().unwrap(), vec!["a", "b"]);
+        manager.stream(&target, "", "p", None, &emit).await.unwrap();
+        let sent = server.requests();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0].json()["reasoning_effort"], "high");
+        assert!(sent[1].json().get("reasoning_effort").is_none());
+        // Remembered: no failed attempt first.
+        assert!(sent[2].json().get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_stream() {
+        let server = stub::serve(vec![Canned::sse(
+            (0..10).map(|i| sse_delta(&format!("t{i} "))).collect(),
+            Duration::from_millis(150),
+        )])
+        .await;
+        let manager = Arc::new(AiManager::default());
+        let target = custom_target(&server.url, None);
+        let (seen, emit) = collector();
+        let canceller = manager.clone();
+        let watched = seen.clone();
+        tokio::spawn(async move {
+            // Cancel once some text has arrived.
+            while watched.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            canceller.cancel("s1");
+        });
+        let started = std::time::Instant::now();
+        let result = manager
+            .cancellable("s1", manager.stream(&target, "", "p", None, &emit))
+            .await;
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let at_cancel = seen.lock().unwrap().len();
+        assert!((1..10).contains(&at_cancel), "{at_cancel}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            at_cancel,
+            "a delta after cancel"
+        );
+        assert!(manager.requests.lock().unwrap().running.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extra_cannot_set_stream() {
+        let manager = AiManager::default();
+        let target: Target = serde_json::from_value(json!({
+            "provider": { "id": "custom", "baseUrl": "http://127.0.0.1:9" },
+            "model": "m",
+            "extra": { "stream": false }
+        }))
+        .unwrap();
+        let e = manager
+            .stream(&target, "", "p", None, &|_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Other);
+        assert!(e.message.contains("`stream`"), "{}", e.message);
     }
 }

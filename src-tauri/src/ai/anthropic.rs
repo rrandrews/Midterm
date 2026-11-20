@@ -1,6 +1,7 @@
 //! Anthropic Messages API over raw HTTP (there is no official Rust SDK).
 //!
-//! One non-streaming `POST {base}/messages`:
+//! One `POST {base}/messages`, non-streaming ([`complete`]) or streaming
+//! ([`stream`]):
 //!
 //! - headers `x-api-key` and `anthropic-version: 2026-10-21` (the current
 //!   API version; the request uses nothing it changed);
@@ -28,6 +29,8 @@ use super::effort::{AnthropicCaps, Effort};
 use super::error::{AiError, ErrorKind};
 use super::extra;
 use super::http;
+use super::sse::SseEvent;
+use super::stream::{self, Flow, Stop, StreamState, Streamed, Text};
 use super::{Completion, Reply};
 
 pub const API_VERSION: &str = "2026-10-21";
@@ -115,12 +118,15 @@ pub fn plan(
     }
 }
 
-pub fn build_body(req: &Completion, shape: Shape) -> Value {
+pub fn build_body(req: &Completion, shape: Shape, stream: bool) -> Value {
     let mut body = json!({
         "model": req.model,
         "max_tokens": req.max_tokens,
         "messages": [{ "role": "user", "content": req.prompt }],
     });
+    if stream {
+        body["stream"] = json!(true);
+    }
     if !req.system.trim().is_empty() {
         body["system"] = json!(req.system);
     }
@@ -192,15 +198,22 @@ pub async fn capabilities(
     Ok(parse_caps(&response))
 }
 
+/// The `refused` error for a `stop_reason` of `refusal`.
+fn refusal(stop_details: &Value) -> AiError {
+    let explanation = stop_details["explanation"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("the model declined to answer");
+    AiError::new(ErrorKind::Refused, explanation.trim())
+}
+
+const EMPTY_AT_LIMIT: &str =
+    "the token limit ran out before any reply text (thinking may have used it up)";
+
 pub fn parse_reply(response: &Value) -> Result<String, AiError> {
     let stop = response["stop_reason"].as_str().unwrap_or("");
     if stop == "refusal" {
-        let explanation = response
-            .pointer("/stop_details/explanation")
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or("the model declined to answer");
-        return Err(AiError::new(ErrorKind::Refused, explanation.trim()));
+        return Err(refusal(&response["stop_details"]));
     }
     let Some(blocks) = response["content"].as_array() else {
         return Err(AiError::other("the response has no content"));
@@ -214,7 +227,7 @@ pub fn parse_reply(response: &Value) -> Result<String, AiError> {
     let text = text.trim();
     if text.is_empty() {
         let message = if stop == "max_tokens" {
-            "the token limit ran out before any reply text (thinking may have used it up)"
+            EMPTY_AT_LIMIT
         } else {
             "the model returned an empty reply"
         };
@@ -237,27 +250,130 @@ pub async fn complete(
     shape: Shape,
 ) -> Result<Reply, AiError> {
     let url = format!("{base_url}/messages");
-    let send = |shape: Shape| {
-        let body = build_body(req, shape);
+    let send = |with_effort: bool| {
+        let body = build_body(req, if with_effort { shape } else { Shape::Plain }, false);
         http::send(
             request(client.post(&url), key).json(&body),
             Some(key),
             req.timeout,
         )
     };
-    let mut effort_dropped = false;
-    let response = match send(shape).await {
-        Err(f) if shape != Shape::Plain && f.is_bad_request_about(EFFORT_WORDS) => {
-            effort_dropped = true;
-            send(Shape::Plain).await
-        }
-        other => other,
-    }
-    .map_err(|f| f.into_error(Some(key)))?;
+    let (response, effort_dropped) =
+        http::retry_without_effort(shape != Shape::Plain, EFFORT_WORDS, send).await;
+    let response = response.map_err(|f| f.into_error(Some(key)))?;
     Ok(Reply {
         text: parse_reply(&response)?,
         effort_dropped,
     })
+}
+
+/// [`complete`], streamed: `emit` gets the reply text as it arrives (one
+/// call per network chunk). `req.timeout` limits the wait for the headers
+/// and for each chunk.
+pub async fn stream(
+    client: &reqwest::Client,
+    base_url: &str,
+    key: &str,
+    req: &Completion<'_>,
+    shape: Shape,
+    emit: &(dyn Fn(&str) + Send + Sync),
+) -> Result<Streamed, AiError> {
+    let url = format!("{base_url}/messages");
+    let send = |with_effort: bool| {
+        let body = build_body(req, if with_effort { shape } else { Shape::Plain }, true);
+        http::open_stream(request(client.post(&url), key).json(&body), req.timeout)
+    };
+    let (response, effort_dropped) =
+        http::retry_without_effort(shape != Shape::Plain, EFFORT_WORDS, send).await;
+    let mut response = response.map_err(|f| f.into_error(Some(key)))?;
+    let mut state = MessageStream::new(Some(key));
+    stream::read(&mut response, req.timeout, &mut state, emit).await?;
+    let (text, stop) = state.finish()?;
+    Ok(Streamed {
+        text,
+        stop,
+        effort_dropped,
+    })
+}
+
+/// The state of a streamed message.
+pub struct MessageStream<'k> {
+    key: Option<&'k str>,
+    text: Text,
+    stop_reason: Option<String>,
+    stop_details: Value,
+}
+
+impl<'k> MessageStream<'k> {
+    /// `key` is redacted from errors the provider reports in the stream.
+    pub fn new(key: Option<&'k str>) -> Self {
+        Self {
+            key,
+            text: Text::default(),
+            stop_reason: None,
+            stop_details: Value::Null,
+        }
+    }
+
+    /// The reply text and why it ended, or why there is none.
+    pub fn finish(self) -> Result<(String, Stop), AiError> {
+        let stop = self.stop_reason.as_deref().unwrap_or("");
+        if stop == "refusal" {
+            return Err(refusal(&self.stop_details));
+        }
+        if self.text.is_empty() {
+            let message = if stop == "max_tokens" {
+                EMPTY_AT_LIMIT
+            } else {
+                "the model returned an empty reply"
+            };
+            return Err(AiError::new(ErrorKind::Empty, message));
+        }
+        let stop = if stop == "max_tokens" {
+            Stop::Length
+        } else {
+            Stop::End
+        };
+        Ok((self.text.finish(), stop))
+    }
+}
+
+impl StreamState for MessageStream<'_> {
+    fn event(&mut self, event: &SseEvent) -> Result<Flow, AiError> {
+        let Ok(data) = serde_json::from_str::<Value>(&event.data) else {
+            return Ok(Flow::Continue);
+        };
+        let kind = data["type"].as_str().unwrap_or(&event.event);
+        match kind {
+            "content_block_delta" if data["delta"]["type"] == "text_delta" => {
+                if let Some(text) = data["delta"]["text"].as_str() {
+                    self.text.push(text);
+                }
+            }
+            "message_delta" => {
+                if let Some(stop) = data["delta"]["stop_reason"].as_str() {
+                    self.stop_reason = Some(stop.to_string());
+                }
+                let details = &data["delta"]["stop_details"];
+                if !details.is_null() {
+                    self.stop_details = details.clone();
+                }
+            }
+            "message_stop" => return Ok(Flow::Done),
+            "error" => {
+                let message = data["error"]["message"].as_str().unwrap_or("");
+                return Err(stream::provider_error(message, self.key));
+            }
+            // thinking_delta, signature_delta, ping, block starts and stops,
+            // and events added later.
+            _ => {}
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn take_text(&mut self) -> String {
+        self.text.take()
+    }
 }
 
 /// Model ids from `GET {base}/models`, following `has_more`/`last_id`.
@@ -490,7 +606,7 @@ mod tests {
 
     #[test]
     fn body_shape() {
-        let b = build_body(&req(), LOW);
+        let b = build_body(&req(), LOW, false);
         assert_eq!(b["model"], "claude-x");
         assert_eq!(b["max_tokens"], 4200);
         assert_eq!(b["system"], "sys");
@@ -504,7 +620,7 @@ mod tests {
         }
         let mut r = req();
         r.system = "";
-        let b = build_body(&r, Shape::Plain);
+        let b = build_body(&r, Shape::Plain, false);
         assert!(b.get("system").is_none());
         assert!(b.get("output_config").is_none());
         assert!(b.get("thinking").is_none());
@@ -514,10 +630,11 @@ mod tests {
                 level: Effort::Xhigh,
                 adaptive: true,
             },
+            false,
         );
         assert_eq!(b["output_config"]["effort"], "xhigh");
         assert_eq!(b["thinking"], json!({ "type": "adaptive" }));
-        let b = build_body(&req(), Shape::Budget { budget: 2048 });
+        let b = build_body(&req(), Shape::Budget { budget: 2048 }, false);
         assert_eq!(
             b["thinking"],
             json!({ "type": "enabled", "budget_tokens": 2048 })
@@ -535,7 +652,7 @@ mod tests {
         });
         let mut r = req();
         r.extra = Some(extra.as_object().unwrap());
-        let b = build_body(&r, LOW);
+        let b = build_body(&r, LOW, false);
         assert_eq!(b["metadata"]["user_id"], "u1");
         assert_eq!(b["output_config"]["effort"], "high");
         assert_eq!(b["max_tokens"], 9000);
@@ -545,7 +662,7 @@ mod tests {
         r.extra = Some(extra.as_object().unwrap());
         // `check` rejects protected keys before a request is built; merge
         // itself is mechanical.
-        assert!(build_body(&r, Shape::Plain).get("system").is_none());
+        assert!(build_body(&r, Shape::Plain, false).get("system").is_none());
     }
 
     #[test]
@@ -707,5 +824,183 @@ mod tests {
         let sent = server.requests();
         assert_eq!(sent[0].path, "/models?limit=1000");
         assert_eq!(sent[1].path, "/models?limit=1000&after_id=b");
+    }
+
+    /* ---- Streaming ---- */
+
+    fn frame(event: &str, data: Value) -> String {
+        format!("event: {event}\ndata: {data}\n\n")
+    }
+
+    fn text_delta(index: u32, text: &str) -> String {
+        frame(
+            "content_block_delta",
+            json!({ "type": "content_block_delta", "index": index, "delta": { "type": "text_delta", "text": text } }),
+        )
+    }
+
+    fn message_delta(stop: &str, details: Value) -> String {
+        frame(
+            "message_delta",
+            json!({ "type": "message_delta", "delta": { "stop_reason": stop, "stop_sequence": null, "stop_details": details }, "usage": { "output_tokens": 5 } }),
+        )
+    }
+
+    fn message_stop() -> String {
+        frame("message_stop", json!({ "type": "message_stop" }))
+    }
+
+    fn run(frames: &[String]) -> (Vec<String>, Result<(String, Stop), AiError>) {
+        let mut parser = crate::ai::sse::SseParser::new();
+        let mut state = MessageStream::new(Some("sk-ant-secret"));
+        let mut deltas = Vec::new();
+        for f in frames {
+            for event in parser.push(f.as_bytes()) {
+                match state.event(&event) {
+                    Err(e) => return (deltas, Err(e)),
+                    Ok(Flow::Done) => break,
+                    Ok(Flow::Continue) => {}
+                }
+            }
+            let text = state.take_text();
+            if !text.is_empty() {
+                deltas.push(text);
+            }
+        }
+        (deltas, state.finish())
+    }
+
+    fn start() -> Vec<String> {
+        vec![
+            frame(
+                "message_start",
+                json!({ "type": "message_start", "message": { "id": "msg_1", "content": [], "stop_reason": null } }),
+            ),
+            frame(
+                "content_block_start",
+                json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "thinking", "thinking": "" } }),
+            ),
+            frame(
+                "content_block_delta",
+                json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "thinking_delta", "thinking": "Let me think" } }),
+            ),
+            frame(
+                "content_block_delta",
+                json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "signature_delta", "signature": "sig" } }),
+            ),
+            frame(
+                "content_block_stop",
+                json!({ "type": "content_block_stop", "index": 0 }),
+            ),
+            frame("ping", json!({ "type": "ping" })),
+        ]
+    }
+
+    #[test]
+    fn stream_joins_text_blocks_and_ignores_thinking() {
+        let mut frames = start();
+        frames.extend([
+            text_delta(1, "\n First"),
+            frame(
+                "content_block_stop",
+                json!({ "type": "content_block_stop", "index": 1 }),
+            ),
+            text_delta(2, " second\n"),
+            frame("future_event", json!({ "type": "future_event" })),
+            message_delta("end_turn", Value::Null),
+            message_stop(),
+        ]);
+        let (deltas, out) = run(&frames);
+        assert_eq!(deltas, vec!["First", " second\n"]);
+        assert_eq!(out.unwrap(), ("First second".into(), Stop::End));
+    }
+
+    #[test]
+    fn stream_error_event() {
+        let (deltas, out) = run(&[
+            text_delta(0, "a"),
+            frame(
+                "error",
+                json!({ "type": "error", "error": { "type": "overloaded_error", "message": "Overloaded" } }),
+            ),
+        ]);
+        assert_eq!(deltas, vec!["a"]);
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Http);
+        assert!(e.message.contains("Overloaded"), "{}", e.message);
+    }
+
+    #[test]
+    fn stream_refusal_and_max_tokens() {
+        let (_, out) = run(&[
+            text_delta(0, "Sure"),
+            message_delta(
+                "refusal",
+                json!({ "type": "refusal", "explanation": "Not this one." }),
+            ),
+            message_stop(),
+        ]);
+        let e = out.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Refused);
+        assert_eq!(e.message, "Not this one.");
+        let (_, out) = run(&[message_delta("refusal", Value::Null)]);
+        assert_eq!(out.unwrap_err().kind, ErrorKind::Refused);
+
+        let (_, out) = run(&[
+            text_delta(0, "cut"),
+            message_delta("max_tokens", Value::Null),
+        ]);
+        assert_eq!(out.unwrap(), ("cut".into(), Stop::Length));
+        let mut frames = start();
+        frames.push(message_delta("max_tokens", Value::Null));
+        let e = run(&frames).1.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Empty);
+        assert!(e.message.contains("token limit"));
+        let e = run(&[message_stop()]).1.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Empty);
+    }
+
+    #[tokio::test]
+    async fn streams_against_stub() {
+        let mut frames = start();
+        frames.extend([
+            text_delta(1, "ls"),
+            text_delta(1, " -la"),
+            message_delta("end_turn", Value::Null),
+            message_stop(),
+        ]);
+        let server = stub::serve(vec![Canned::sse(
+            frames,
+            std::time::Duration::from_millis(5),
+        )])
+        .await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let emit = move |t: &str| sink.lock().unwrap().push(t.to_string());
+        let out = stream(&stub::client(), &server.url, "sk-ant", &req(), LOW, &emit)
+            .await
+            .unwrap();
+        assert_eq!(out.text, "ls -la");
+        assert_eq!(*seen.lock().unwrap(), vec!["ls", " -la"]);
+        let sent = &server.requests()[0];
+        assert_eq!(sent.json()["stream"], true);
+        assert_eq!(sent.header("x-api-key"), Some("sk-ant"));
+    }
+
+    #[tokio::test]
+    async fn stream_retries_without_effort_before_streaming() {
+        let server = stub::serve(vec![
+            Canned::json(400, json!({ "type": "error", "error": { "type": "invalid_request_error", "message": "output_config.effort: not supported by this model" } })),
+            Canned::sse(vec![text_delta(0, "ok"), message_stop()], std::time::Duration::ZERO),
+        ])
+        .await;
+        let out = stream(&stub::client(), &server.url, "k", &req(), LOW, &|_| {})
+            .await
+            .unwrap();
+        assert!(out.effort_dropped);
+        let sent = server.requests();
+        assert!(sent[0].json().get("output_config").is_some());
+        assert!(sent[1].json().get("output_config").is_none());
+        assert_eq!(sent[1].json()["stream"], true);
     }
 }

@@ -12,6 +12,10 @@ pub struct Canned {
     pub status: u16,
     pub body: String,
     pub delay: Duration,
+    /// An SSE answer instead of `body`: frames written one by one.
+    pub frames: Option<Vec<String>>,
+    /// The pause after each frame.
+    pub gap: Duration,
 }
 
 impl Canned {
@@ -20,6 +24,21 @@ impl Canned {
             status,
             body: body.to_string(),
             delay: Duration::ZERO,
+            frames: None,
+            gap: Duration::ZERO,
+        }
+    }
+
+    /// A 200 `text/event-stream` answer with no `Content-Length`: each frame
+    /// is written and flushed, then `gap` passes, then the connection
+    /// closes.
+    pub fn sse(frames: Vec<String>, gap: Duration) -> Self {
+        Self {
+            status: 200,
+            body: String::new(),
+            delay: Duration::ZERO,
+            frames: Some(frames),
+            gap,
         }
     }
 
@@ -83,6 +102,24 @@ pub async fn serve(responses: Vec<Canned>) -> Stub {
                 };
                 log.lock().unwrap().push(captured);
                 tokio::time::sleep(canned.delay).await;
+                if let Some(frames) = &canned.frames {
+                    let head = format!(
+                        "HTTP/1.1 {} Stub\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+                        canned.status
+                    );
+                    if socket.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    for frame in frames {
+                        if socket.write_all(frame.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        let _ = socket.flush().await;
+                        tokio::time::sleep(canned.gap).await;
+                    }
+                    let _ = socket.shutdown().await;
+                    return;
+                }
                 let head = format!(
                     "HTTP/1.1 {} Stub\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     canned.status,
