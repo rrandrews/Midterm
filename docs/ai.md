@@ -492,16 +492,20 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | File | What |
 |---|---|
 | `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`. `aiStream` creates the Channel and drops deltas that arrive after the promise settled. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, a canned Markdown stream in 12 chunks 40 ms apart (both cancellable), and a model list of ~40 ids for API providers (none for CLIs). |
-| `stream.ts` | `streamText(feature, { system, prompt, maxTokens }, onText)` → `{ result, cancel }`: resolves `targetFor(feature)`, makes the request id, accumulates deltas and calls `onText(soFar)` at most once per animation frame, then once with the authoritative text. Nothing calls it yet (explain/fix will). Tested in `stream.test.ts` against the mock. |
+| `stream.ts` | `streamText(feature, { system, prompt, maxTokens }, onText)` → `{ result, cancel }`: resolves `targetFor(feature)`, makes the request id, accumulates deltas and calls `onText(soFar)` at most once per animation frame, then once with the authoritative text. Explain uses it. Tested in `stream.test.ts` against the mock. |
 | `profiles.ts` | Pure apart from the settings store: which profile a feature uses (`profileFor`), `providerConfigOf`, `profileReady` / `profileProblem`, `featureReady` / `featureProblem`, `targetFor(feature)` (omits `extra` for CLIs), `FEATURES` (the rows under Features), `parseExtra`, and the mutations (`saveProfile`, `deleteProfile`, `duplicateProfile`, `setDefaultProfile`, `setFeatureProfile`). Unit-tested in `profiles.test.ts`. |
-| `context.ts` | Pure: `buildContext` (system prompt and prompt), `redact`, `trimOutput`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
-| `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId)`; `aiConfigured`, `localPrediction`. Requests go to `targetFor("suggestions")`. |
+| `context.ts` | Pure: `contextBody` (facts, earlier commands, blocks; redacted), `buildContext` (body + "Next command:", and the body for other requests), `formatBlock`, `redact`, `trimOutput(output, limits?)`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
+| `engine.ts` | The suggestion engine, per pane and outside React; `contextFor(paneId, { block? })` over the pure `contextInputOf`; `aiConfigured`, `localPrediction`. Requests go to `targetFor("suggestions")`. |
+| `editorRequests.ts` | Requests whose answer lands in a pane's blocks editor (`/cmd`, Fix), per pane outside React: `startEditorRequest`, `cancelEditorRequest`, `failEditorRequest`, the store `BlockInput` renders, and the bound editor's draft (`bindEditor`, `editorDraft`). Tested in `editorRequests.test.ts`. |
+| `blockAi.ts` | Explain and fix: the prompts, `buildExplainRequest` / `buildFixRequest`, `explainRequest`, `fixCommand`, `canFix`, `fixBlock`. Tested in `blockAi.test.ts`. |
+| `blockNotes.ts` | The notes under blocks (Explain): `useBlockNotes`, `explainBlock`, `stopNote`, `dismissNote`, `toggleNote`, `pruneNotes`, `dropPaneNotes`, and `runNote` (the stream seam). Tested in `blockNotes.test.ts` with a fake stream. |
 | `slash.ts` | Slash commands for the blocks editor: the registry, `parseSlash`, `slashCompletion`, and `/cmd`'s request (`writeCommand`, `buildCmdRequest`). Unit-tested in `slash.test.ts`. |
 | `predict.ts` | Pure: local next-command prediction from the command log (`predictNext`, `tokenize`). Unit-tested in `predict.test.ts`. |
 | `AiSection.tsx` | Settings → AI: suggestions switches, Models, Features. |
 | `settings/ProfileList.tsx`, `settings/ProfileEditor.tsx` | Settings → AI → Models: the profile rows and the inline draft editor (key and CLI status, model list, effort options). |
 | `src/components/ui/Combobox.tsx` | The model field: a text field with a fuzzy-filtered list (Radix `Popover` + `cmdk` + `fuzzysort`). `comboItems` is the pure row logic, tested in `Combobox.test.ts`. |
-| `commands.ts` | Commands, the terminal menu's per-pane switch, registration. |
+| `commands.ts` | Commands, the terminal menu's per-pane switch and block items (`blockAiMenuItems`), registration. |
+| `src/components/panes/BlockNote.tsx`, `src/components/ui/Markdown.tsx` | The note panel under a block; a sanitized Markdown block (`renderMarkdown`) whose http(s) links open in the browser. |
 
 ### Settings
 
@@ -513,7 +517,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `contextBlocks` | Finished blocks sent as context (0–20, default 5). |
 | `profiles` | Model profiles, in display order (at most 50). |
 | `defaultProfile` | The profile id every feature without an override uses; `""` for none. |
-| `features` | Per-feature overrides, feature → profile id. Features: `AI_FEATURES` = `suggestions`, `cmd`, `explain`, `agent` (only the first two are listed in Settings yet). |
+| `features` | Per-feature overrides, feature → profile id. Features: `AI_FEATURES` = `suggestions`, `cmd`, `explain` ("Explain and fix": Explain and Fix share it), `agent` (not listed in Settings yet). |
 
 A profile (`AiProfile`):
 
@@ -571,9 +575,24 @@ provider share one key.
 The branch is looked up at the current prompt, not taken from the last
 block (which has the branch from when it started).
 
-`buildContext` strips escape sequences from each output, redacts it, and
-only then trims it to its first 15 and last 25 lines (240 characters per
-line, 3000 per block). Redacting first means a secret that straddles a cut
+`contextFor(paneId, { block })` is the context a request **about a block**
+(Explain, Fix) starts with: the block's scope (`scopeOf(block.nested,
+block)`), directory and branch (from when it ran), the remote host when it
+ran over ssh, and only what came before it: the same shell's finished
+blocks before it, and the earlier commands without it and without the
+commands of the blocks after it (the pane's command list is de-duplicated,
+so they are left out by text). The block itself is not in the body; the
+headings say "Commands run before the one in question".
+
+The pure part is `contextInputOf(source, { limit, block?, branch? })`;
+`contextFor` feeds it the session, and `contextBody` turns it into text.
+`buildContext` returns `{ system, prompt, body }`; `/cmd`, Explain and Fix
+append their own question to `body`.
+
+`contextBody` strips escape sequences from each output, redacts it, and
+only then trims it (`trimOutput`) to its first 15 and last 25 lines (240
+characters per line, 3000 per block; the block a request is about gets
+`{ head: 40, tail: 80, chars: 12000 }`). Redacting first means a secret that straddles a cut
 is still recognised. The whole prompt is redacted again at the end. `redact` replaces:
 
 - PEM private keys;
@@ -700,9 +719,8 @@ of a command name, the ghost text shows its usage (`/cmd <what to do>`),
 
 `/cmd`: on ⏎ the line moves above the editor ("writing a command… esc
 cancels"; Esc or ⌃C cancels and puts the line back) and the request goes
-out with the same context as a suggestion (`contextFor`), with
-`CMD_SYSTEM_PROMPT` and `Task: <task>` (redacted) in place of "Next
-command:". The reply budget is 400 tokens, and the reply goes through
+out with the same context as a suggestion (`contextFor`): its body, then
+`Task: <task>` (redacted) and "Command:", with `CMD_SYSTEM_PROMPT`. The reply budget is 400 tokens, and the reply goes through
 `parseSuggestion`. The command lands in the editor, **under the request
 line, never run**: edit it or press ⏎ (a held, auto-repeating ⏎ does not
 run it). While the request runs, other keys are swallowed (⌃D does not
@@ -712,11 +730,74 @@ needs a ready profile (`targetFor("cmd")`; else "Choose a model for /cmd in
 Settings → AI.") but not the suggestions switch. Slash
 lines are not added to the history or the command log.
 
+The request state lives in `editorRequests.ts` (per pane, outside React),
+not in `BlockInput`, so a block's Fix goes the same way: `BlockInput`
+renders the line and status from the store, puts `result` in the editor
+when done and `restore` back on an error or a cancel (once per request,
+`applied`), and cancels the request when it unmounts. Starting a request
+cancels the pane's previous one.
+
+### Explain and fix
+
+Two actions on a finished block, both on the `explain` feature's profile
+("Explain and fix" under Features). They show only when that feature has a
+ready profile (`featureReady("explain")`).
+
+- **Explain** ("Explain this error" when the exit status is non-zero, else
+  "Explain this output"): any finished block with a command. The request is
+  the block's context body (`contextFor(paneId, { block })`), then "The
+  command in question:" with `$ command`, `(in cwd)` (`host:path` when
+  remote), the output trimmed to `{ head: 40, tail: 80, chars: 12000 }` and
+  `[exit N]`, then "Explain:". `EXPLAIN_SYSTEM_PROMPT` asks for short
+  Markdown: what went wrong, the likely cause, how to fix it with commands
+  in fenced blocks, without repeating the output. Reply budget 1200 tokens,
+  streamed (`streamText("explain", …)`).
+- **Fix** ("Fix this command"): only when the block failed and
+  `canReplay(session, block)` holds (same shell, at a prompt). The same
+  request ending in "Corrected command:", with `FIX_SYSTEM_PROMPT` (only
+  the corrected command on one line, nothing if there is none), budget 400,
+  not streamed (`aiSuggest`, then `parseSuggestion`). It goes through
+  `startEditorRequest`: the line `fix: <command>` shows above the editor
+  with "fixing the command… esc cancels", and the command **lands in the
+  editor, never run**. Esc or ⌃C cancels and puts the editor's previous
+  draft back, as does an error ("The model has no fix for this command."
+  when the reply is empty).
+
+Redaction as elsewhere: each output before it is trimmed, then the whole
+prompt again.
+
+**Notes** (`blockNotes.ts`) are kept per pane and block outside React, in
+memory only: `{ status: loading | streaming | done | error, text, error?,
+cut?, stopped?, collapsed }`. One request per block (Explain again or Retry
+restarts it); several blocks may stream at once. Stop cancels the request
+and keeps the text so far. `pruneNotes` runs from `BlocksView` whenever
+the snapshot changes (blocks cleared or out of the scrollback), and
+`dropPaneNotes` when the pane's session ends (`onSessionDisposed`, hooked
+up by `installAi`); both cancel requests in flight. Without a ready
+profile, Explain puts "Choose a model for Explain and fix in Settings → AI."
+in the note.
+
+The **panel** (`BlockNote.tsx`) sits inside the block under its output and
+subscribes to its own note, so the memoized block does not re-render while
+text streams. Header (`blocks-meta`): a chevron and "AI · explanation"
+(collapses the body), then "thinking…" (pulsing) until the first text,
+"cut off at the token limit", or "stopped"; on the right Stop (while
+running), Copy (the Markdown source), Retry and Dismiss. The body is the
+Markdown (`components/ui/Markdown.tsx`: `renderMarkdown`, `markdown-body
+markdown-compact`; http(s) links open in the browser, others do nothing)
+with an error in `text-err` under any partial text. Styles: `.block-ai` in
+`styles/blocks.css` (`border-line-block`, `fg-bright` at 4%, tokens only).
+
 ### Commands
 
 - `ai.toggleSuggestions`: AI: Toggle suggestions.
 - `ai.suggestNow`: AI: Suggest a command now. Opens the settings if AI is
   not set up.
+- `ai.explainLastCommand`: AI: Explain the last command; and
+  `ai.fixLastCommand`: AI: Fix the last command. They act on the active
+  block terminal's last finished block with a command (nothing in a
+  classic terminal), and open the settings when "Explain and fix" has no
+  ready profile.
 - `ai.openSettings`: AI: Settings….
 
 ### Settings → AI
@@ -765,8 +846,15 @@ running (a stand-in OpenAI-compatible server), the self-test:
 3. sets a `custom` profile pointed at the stub as the default and asks;
 4. checks that the ghost text shows the stub's answer. The stub only gives
    that answer when the prompt contains the command and not the secret.
-5. checks that ⇥ accepts it, then puts the profiles back.
+5. checks that ⇥ accepts it;
+6. runs a failing `ls`, explains it, and checks the note under the block
+   holds the stub's explanation (which names the command in question);
+7. fixes it and checks the stub's command is in the editor and no block
+   was added; then puts the profiles back.
 
 The stub also answers `stream: true` with SSE chunks (a longer reply, one
 word every 80 ms) and `[DONE]`, for trying `ai_stream` / `streamText` by
-hand in a dev build.
+hand in a dev build. A prompt ending in "Explain:" gets a Markdown
+explanation (streamed without the suffix) containing `midterm-explain-ok`,
+and one ending in "Corrected command:" gets `echo midterm-fix-ok` (after 3
+s when the prompt contains `midterm-slow`, to try cancelling).

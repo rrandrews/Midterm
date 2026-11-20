@@ -20,6 +20,12 @@ palette and the native menu bar are generated from it.
   for every enabled plugin (`src/plugins/paneCommands.ts`), the palette's
   (`src/palette/state.ts`) and the settings dialog's. See
   [plugins.md](plugins.md#commands-and-menus).
+- AI commands (`src/ai/commands.ts`, category AI, no default keys):
+  `ai.toggleSuggestions`, `ai.suggestNow`, `ai.explainLastCommand` (AI:
+  Explain the last command), `ai.fixLastCommand` (AI: Fix the last
+  command) and `ai.openSettings`. The explain/fix pair acts on the active
+  block terminal's last finished block; see
+  [ai.md](ai.md#explain-and-fix).
 - `category` is any string; `menu` names the native menu bar submenu a
   command is listed in after the app's own items (`src/commands/nativeMenu.ts`).
 - The functions commands run stay in `src/actions.ts` (and `closing.ts`).

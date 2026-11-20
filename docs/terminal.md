@@ -609,8 +609,16 @@ so).
   user scrolls up; running a command scrolls back down.
 - Header: cwd (`~`-relative), branch, and `exit N · duration` (err color
   when non-zero), with copy command / copy output / run again buttons on
-  hover. The same actions are at the top of the right-click menu on a
-  block.
+  hover, and, when the "Explain and fix" AI feature has a model, Explain
+  (lucide `Sparkles`; "Explain this error" for a non-zero exit, else
+  "Explain this output") and Fix (`Wrench`; only for a failed block whose
+  shell is at a prompt). The same actions are at the top of the
+  right-click menu on a block ("Explain this error/output" and "Fix this
+  command" after "Run again").
+- Explain opens an **AI note** inside the block, under its output
+  (`BlockNote.tsx`): streamed Markdown with Stop, Copy, Retry, a collapse
+  chevron and Dismiss. Fix puts the corrected command in the input editor,
+  never runs it. See [ai.md](ai.md#explain-and-fix).
 - Text in blocks is selectable; the menu's Copy uses the page selection.
 
 ### Keyboard
