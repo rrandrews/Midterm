@@ -64,6 +64,13 @@ function StatusLine({ status, needsKey }: { status: Status | null; needsKey: boo
     ) : (
       <span className={needsKey ? "text-warn" : "text-fg-dim"}>{needsKey ? "No key yet" : "No key (optional)"}</span>
     );
+  if (status.status.found && status.status.outdated)
+    return (
+      <span className="text-warn">
+        Found {status.status.path}
+        {status.status.version ? ` · ${status.status.version}` : ""} · {status.status.outdated}
+      </span>
+    );
   return status.status.found ? (
     <span className="text-ok">
       Found {status.status.path}

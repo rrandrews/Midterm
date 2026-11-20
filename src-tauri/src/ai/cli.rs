@@ -36,6 +36,40 @@ pub struct CliStatus {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Set when the version is older than the flags we pass need.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outdated: Option<String>,
+}
+
+/// The oldest version whose flags we rely on: Claude Code's `--safe-mode`
+/// came in 2.1.169.
+fn min_version(kind: CliKind) -> Option<(&'static str, [u32; 3])> {
+    match kind {
+        CliKind::ClaudeCode => Some(("2.1.169", [2, 1, 169])),
+        _ => None,
+    }
+}
+
+/// The first `x.y.z` in a `--version` line.
+fn parse_version(line: &str) -> Option<[u32; 3]> {
+    line.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .find_map(|word| {
+            let mut parts = word.split('.').map(|p| p.parse::<u32>().ok());
+            let v = [parts.next()??, parts.next()??, parts.next()??];
+            Some(v)
+        })
+}
+
+/// A message when `version` is known to be too old for `kind`.
+pub fn outdated_note(kind: CliKind, version: Option<&str>) -> Option<String> {
+    let (min, min_parts) = min_version(kind)?;
+    let found = parse_version(version?)?;
+    (found < min_parts).then(|| {
+        format!(
+            "Version {min} or later is needed; update `{}`",
+            kind.binary()
+        )
+    })
 }
 
 /// Finds CLI executables. The login shell's PATH is resolved once, on first
@@ -107,6 +141,7 @@ impl Discovery {
                 found: false,
                 path: None,
                 version: None,
+                outdated: None,
             };
         };
         let run = self
@@ -117,10 +152,12 @@ impl Discovery {
             .ok()
             .filter(|o| o.success)
             .and_then(|o| first_line(&o.stdout).or_else(|| first_line(&o.stderr)));
+        let outdated = outdated_note(kind, version.as_deref());
         CliStatus {
             found: true,
             path: Some(program.to_string_lossy().into_owned()),
             version,
+            outdated,
         }
     }
 
@@ -535,6 +572,16 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--model", "gemini-x-low"]));
         assert!(!args.contains(&"--effort".to_string()));
         assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn outdated_versions() {
+        assert_eq!(parse_version("2.1.329 (Claude Code)"), Some([2, 1, 329]));
+        assert_eq!(parse_version("codex-cli 0.170.0"), Some([0, 170, 0]));
+        assert!(outdated_note(CliKind::ClaudeCode, Some("2.1.168 (Claude Code)")).is_some());
+        assert!(outdated_note(CliKind::ClaudeCode, Some("2.1.169 (Claude Code)")).is_none());
+        assert!(outdated_note(CliKind::ClaudeCode, Some("garbled")).is_none());
+        assert!(outdated_note(CliKind::Codex, Some("codex-cli 0.1.0")).is_none());
     }
 
     #[test]

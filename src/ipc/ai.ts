@@ -78,7 +78,7 @@ export type SuggestRequest = {
   maxTokens?: number;
 };
 
-export type CliStatus = { found: boolean; path?: string; version?: string };
+export type CliStatus = { found: boolean; path?: string; version?: string; outdated?: string };
 
 /* ---- Browser mock: a key store in memory and a canned suggestion. ---- */
 
