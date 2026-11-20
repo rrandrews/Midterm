@@ -178,6 +178,7 @@ pub fn run() {
             plugins::commands::plugins_remove,
             ai::commands::ai_suggest,
             ai::commands::ai_stream,
+            ai::commands::ai_agent_turn,
             ai::commands::ai_cancel,
             ai::commands::ai_models,
             ai::commands::ai_effort_options,

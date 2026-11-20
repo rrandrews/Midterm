@@ -2,6 +2,7 @@
 //! provider and never sees a key: it calls the commands in `commands.rs`,
 //! and this module makes the HTTP request or runs the CLI. See `docs/ai.md`.
 
+pub mod agent;
 mod anthropic;
 mod cli;
 pub mod commands;
@@ -38,6 +39,8 @@ use provider::Flavor;
 pub struct Completion<'a> {
     pub model: &'a str,
     pub system: &'a str,
+    /// The user message. Empty for agent turns, whose messages are passed
+    /// separately.
     pub prompt: &'a str,
     /// The whole output budget, thinking included.
     pub max_tokens: u32,
@@ -619,6 +622,58 @@ impl AiManager {
         };
         self.note_reply(target, prepared.resolved(), streamed.effort_dropped);
         Ok(streamed)
+    }
+
+    /// One agent turn (see `agent.rs`): `messages` is the conversation so
+    /// far, `tools` what the model may call. Text and tool-call
+    /// announcements go to `emit` as they stream. API providers only: a CLI
+    /// target is refused.
+    pub async fn agent_turn(
+        &self,
+        target: &Target,
+        system: &str,
+        tools: &[agent::ToolDef],
+        messages: &[agent::AgentMessage],
+        reply_tokens: Option<u32>,
+        emit: &(dyn Fn(agent::AgentEvent) + Send + Sync),
+    ) -> Result<agent::AgentTurn, AiError> {
+        let unsupported = || AiError::other(agent::CLI_UNSUPPORTED);
+        if matches!(target.provider.id.backend(), Backend::Cli(_)) {
+            return Err(unsupported());
+        }
+        let prepared = self.prepare(target, system, "", reply_tokens).await?;
+        let turn = match &prepared {
+            Prepared::OpenAi {
+                flavor,
+                base,
+                key,
+                req,
+                ..
+            } => openai::agent_turn(
+                self.http()?,
+                *flavor,
+                base,
+                key.as_deref(),
+                req,
+                tools,
+                messages,
+                emit,
+            )
+            .await
+            .map_err(|e| redact(e, key.as_deref()))?,
+            Prepared::Anthropic {
+                base,
+                key,
+                req,
+                shape,
+                ..
+            } => anthropic::agent_turn(self.http()?, base, key, req, *shape, tools, messages, emit)
+                .await
+                .map_err(|e| redact(e, Some(key)))?,
+            Prepared::Cli { .. } => return Err(unsupported()),
+        };
+        self.note_reply(target, prepared.resolved(), turn.effort_dropped);
+        Ok(turn)
     }
 
     /// The effort levels Settings → AI offers for `target`'s provider and

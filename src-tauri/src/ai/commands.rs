@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
+use super::agent::{AgentEvent, AgentMessage, AgentTurn, ToolDef};
 use super::cli::CliStatus;
 use super::error::{AiError, truncate};
 use super::keys;
@@ -106,8 +107,40 @@ pub async fn ai_stream(
     })
 }
 
-/// Cancels a running `ai_suggest` or `ai_stream`. Unknown or finished ids
-/// are ignored.
+/// One agent model turn (see `agent.rs`): `messages` is the conversation
+/// so far (assistant turns as the `raw` a previous turn returned), `tools`
+/// what the model may call. Reply text and tool-call announcements go to
+/// `onEvent` as they stream; the result is authoritative. API providers
+/// only. Errors and `ai_cancel(requestId)` work as for `ai_stream`.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn ai_agent_turn(
+    manager: State<'_, AiManager>,
+    request_id: String,
+    target: Target,
+    system: String,
+    tools: Vec<ToolDef>,
+    messages: Vec<AgentMessage>,
+    max_tokens: Option<u32>,
+    on_event: tauri::ipc::Channel<AgentEvent>,
+) -> Result<AgentTurn, AiError> {
+    // Closed by `ai_cancel` under the gate's lock: no event after it.
+    let gate = Arc::new(Gate::default());
+    let open = gate.clone();
+    let emit = move |event: AgentEvent| {
+        open.pass(|| {
+            // The webview may have gone away; the result still settles.
+            let _ = on_event.send(event);
+        });
+    };
+    let work = manager.agent_turn(&target, &system, &tools, &messages, max_tokens, &emit);
+    manager
+        .cancellable_gated(&request_id, Some(gate), work)
+        .await
+}
+
+/// Cancels a running `ai_suggest`, `ai_stream` or `ai_agent_turn`. Unknown
+/// or finished ids are ignored.
 #[tauri::command]
 pub fn ai_cancel(manager: State<'_, AiManager>, request_id: String) {
     manager.cancel(&request_id);

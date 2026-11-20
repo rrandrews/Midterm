@@ -23,8 +23,11 @@
 //! A `stop_reason` of `refusal` is a `refused` error, carrying
 //! `stop_details.explanation` when present.
 
-use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
+use serde_json::{Map, Value, json};
+
+use super::agent::{self, AgentEvent, AgentMessage, AgentTurn, ToolCall, ToolDef, TurnState};
 use super::effort::{AnthropicCaps, Effort};
 use super::error::{AiError, ErrorKind};
 use super::extra;
@@ -296,7 +299,46 @@ pub async fn stream(
     })
 }
 
-/// The state of a streamed message.
+/// One agent turn, streamed: text and tool-call announcements go to `emit`.
+/// See `agent.rs`.
+#[allow(clippy::too_many_arguments)]
+pub async fn agent_turn(
+    client: &reqwest::Client,
+    base_url: &str,
+    key: &str,
+    req: &Completion<'_>,
+    shape: Shape,
+    tools: &[ToolDef],
+    messages: &[AgentMessage],
+    emit: &(dyn Fn(AgentEvent) + Send + Sync),
+) -> Result<AgentTurn, AiError> {
+    let url = format!("{base_url}/messages");
+    let with = agent::anthropic_body(req, shape, tools, messages)?;
+    let without = match shape {
+        Shape::Plain => with.clone(),
+        _ => agent::anthropic_body(req, Shape::Plain, tools, messages)?,
+    };
+    let send = |with_effort: bool| {
+        let body = if with_effort { &with } else { &without };
+        http::open_stream(
+            request(client.post(&url), key)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.clone()),
+            req.timeout,
+        )
+    };
+    let (response, effort_dropped) =
+        http::retry_without_effort(shape != Shape::Plain, EFFORT_WORDS, send).await;
+    let mut response = response.map_err(|f| f.into_error(Some(key)))?;
+    let mut state = MessageStream::new(Some(key));
+    agent::read(&mut response, req.timeout, &mut state, emit).await?;
+    let mut turn = state.finish_turn()?;
+    turn.effort_dropped = effort_dropped;
+    Ok(turn)
+}
+
+/// The state of a streamed message. For agent turns it also rebuilds the
+/// message's `content` blocks (see [`MessageStream::finish_turn`]).
 pub struct MessageStream<'k> {
     key: Option<&'k str>,
     text: Text,
@@ -304,6 +346,45 @@ pub struct MessageStream<'k> {
     stop_details: Value,
     /// `message_stop` arrived.
     stopped: bool,
+    /// Content blocks by index.
+    blocks: BTreeMap<u64, Block>,
+    /// Tool uses started and not announced yet: (id, name).
+    started_calls: Vec<(String, String)>,
+}
+
+/// A content block as it streams: the block from `content_block_start`
+/// and what its deltas added.
+struct Block {
+    start: Value,
+    text: String,
+    thinking: String,
+    signature: String,
+    json: String,
+    citations: Vec<Value>,
+}
+
+impl Block {
+    fn new(start: Value) -> Self {
+        Self {
+            start,
+            text: String::new(),
+            thinking: String::new(),
+            signature: String::new(),
+            json: String::new(),
+            citations: Vec::new(),
+        }
+    }
+}
+
+/// Appends `more` to the string field `key` of `block`.
+fn extend_field(block: &mut Map<String, Value>, key: &str, more: String) {
+    let mut value = block
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    value.push_str(&more);
+    block.insert(key.to_string(), Value::String(value));
 }
 
 impl<'k> MessageStream<'k> {
@@ -315,11 +396,14 @@ impl<'k> MessageStream<'k> {
             stop_reason: None,
             stop_details: Value::Null,
             stopped: false,
+            blocks: BTreeMap::new(),
+            started_calls: Vec::new(),
         }
     }
 
-    /// The reply text and why it ended, or why there is none.
-    pub fn finish(self) -> Result<(String, Stop), AiError> {
+    /// Checks how the stream ended: refusal, cut short. Returns whether the
+    /// token limit ended it.
+    fn settle(&self) -> Result<bool, AiError> {
         let stop = self.stop_reason.as_deref().unwrap_or("");
         if stop == "refusal" {
             return Err(refusal(&self.stop_details));
@@ -327,21 +411,161 @@ impl<'k> MessageStream<'k> {
         if self.stop_reason.is_none() && !self.stopped {
             return Err(stream::cut_short());
         }
+        Ok(stop == "max_tokens")
+    }
+
+    /// The reply text and why it ended, or why there is none.
+    pub fn finish(self) -> Result<(String, Stop), AiError> {
+        let length = self.settle()?;
         if self.text.is_empty() {
-            let message = if stop == "max_tokens" {
-                EMPTY_AT_LIMIT
-            } else {
-                "the model returned an empty reply"
-            };
-            return Err(AiError::new(ErrorKind::Empty, message));
+            return Err(empty_reply(length));
         }
-        let stop = if stop == "max_tokens" {
+        let stop = if length { Stop::Length } else { Stop::End };
+        Ok((self.text.finish(), stop))
+    }
+
+    /// The agent turn (`effort_dropped` unset): text, tool uses, `raw` (the
+    /// content blocks in order) and why it ended: `length` at the token
+    /// limit, else `tools` when there are tool uses.
+    pub fn finish_turn(self) -> Result<AgentTurn, AiError> {
+        let length = self.settle()?;
+        let mut content = Vec::new();
+        let mut tool_calls = Vec::new();
+        for block in self.blocks.into_values() {
+            let Value::Object(mut out) = block.start else {
+                continue;
+            };
+            let kind = out
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            match kind.as_str() {
+                "text" => {
+                    extend_field(&mut out, "text", block.text);
+                    // The API rejects empty text blocks.
+                    if out["text"].as_str().is_some_and(|t| t.trim().is_empty()) {
+                        continue;
+                    }
+                    if !block.citations.is_empty() {
+                        let mut citations = match out.remove("citations") {
+                            Some(Value::Array(c)) => c,
+                            _ => Vec::new(),
+                        };
+                        citations.extend(block.citations);
+                        out.insert("citations".into(), Value::Array(citations));
+                    }
+                }
+                "thinking" => {
+                    extend_field(&mut out, "thinking", block.thinking);
+                    extend_field(&mut out, "signature", block.signature);
+                }
+                "tool_use" => {
+                    let (input, invalid) = if block.json.trim().is_empty() {
+                        match out.get("input") {
+                            Some(input @ Value::Object(_)) => (input.clone(), None),
+                            _ => (json!({}), None),
+                        }
+                    } else {
+                        agent::parse_input(&block.json)
+                    };
+                    // Invalid input is replayed as `{}`, so the history
+                    // stays valid.
+                    out.insert(
+                        "input".into(),
+                        if invalid.is_some() {
+                            json!({})
+                        } else {
+                            input.clone()
+                        },
+                    );
+                    tool_calls.push(ToolCall {
+                        id: out
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        name: out
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        input,
+                        invalid,
+                    });
+                }
+                // `redacted_thinking` and others as received; a server tool
+                // use gets its streamed input.
+                _ => {
+                    if let Ok(input @ Value::Object(_)) = serde_json::from_str(&block.json) {
+                        out.insert("input".into(), input);
+                    }
+                }
+            }
+            content.push(Value::Object(out));
+        }
+        if tool_calls.is_empty() && self.text.is_empty() {
+            return Err(empty_reply(length));
+        }
+        let stop = if length {
             Stop::Length
+        } else if !tool_calls.is_empty() {
+            Stop::Tools
         } else {
             Stop::End
         };
-        Ok((self.text.finish(), stop))
+        Ok(AgentTurn {
+            text: self.text.finish(),
+            tool_calls,
+            raw: json!({ "role": "assistant", "content": content }).to_string(),
+            stop,
+            effort_dropped: false,
+        })
     }
+
+    fn block_delta(&mut self, data: &Value) {
+        let delta = &data["delta"];
+        let kind = delta["type"].as_str().unwrap_or("");
+        if kind == "text_delta"
+            && let Some(text) = delta["text"].as_str()
+        {
+            self.text.push(text);
+        }
+        let Some(index) = data["index"].as_u64() else {
+            return;
+        };
+        // A delta for a block that never started: infer the block.
+        let block = match self.blocks.entry(index) {
+            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(e) => match kind {
+                "text_delta" => e.insert(Block::new(json!({ "type": "text", "text": "" }))),
+                "thinking_delta" | "signature_delta" => e.insert(Block::new(
+                    json!({ "type": "thinking", "thinking": "", "signature": "" }),
+                )),
+                _ => return,
+            },
+        };
+        let field = |name: &str| delta[name].as_str().unwrap_or("");
+        match kind {
+            "text_delta" => block.text.push_str(field("text")),
+            "thinking_delta" => block.thinking.push_str(field("thinking")),
+            "signature_delta" => block.signature.push_str(field("signature")),
+            "input_json_delta" => block.json.push_str(field("partial_json")),
+            "citations_delta" if !delta["citation"].is_null() => {
+                block.citations.push(delta["citation"].clone());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn empty_reply(length: bool) -> AiError {
+    let message = if length {
+        EMPTY_AT_LIMIT
+    } else {
+        "the model returned an empty reply"
+    };
+    AiError::new(ErrorKind::Empty, message)
 }
 
 impl StreamState for MessageStream<'_> {
@@ -351,11 +575,17 @@ impl StreamState for MessageStream<'_> {
         };
         let kind = data["type"].as_str().unwrap_or(&event.event);
         match kind {
-            "content_block_delta" if data["delta"]["type"] == "text_delta" => {
-                if let Some(text) = data["delta"]["text"].as_str() {
-                    self.text.push(text);
+            "content_block_start" => {
+                let block = &data["content_block"];
+                if let Some(index) = data["index"].as_u64() {
+                    if block["type"] == "tool_use" {
+                        let field = |name: &str| block[name].as_str().unwrap_or("").to_string();
+                        self.started_calls.push((field("id"), field("name")));
+                    }
+                    self.blocks.insert(index, Block::new(block.clone()));
                 }
             }
+            "content_block_delta" => self.block_delta(&data),
             "message_delta" => {
                 if let Some(stop) = data["delta"]["stop_reason"].as_str() {
                     self.stop_reason = Some(stop.to_string());
@@ -373,8 +603,7 @@ impl StreamState for MessageStream<'_> {
                 let message = data["error"]["message"].as_str().unwrap_or("");
                 return Err(stream::provider_error(message, self.key));
             }
-            // thinking_delta, signature_delta, ping, block starts and stops,
-            // and events added later.
+            // ping, block stops, and events added later.
             _ => {}
         }
         Ok(Flow::Continue)
@@ -382,6 +611,12 @@ impl StreamState for MessageStream<'_> {
 
     fn take_text(&mut self) -> String {
         self.text.take()
+    }
+}
+
+impl TurnState for MessageStream<'_> {
+    fn take_calls(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.started_calls)
     }
 }
 

@@ -24,6 +24,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "viewer",
     "theme-editor",
     "midterm",
+    "agent",
 ];
 /// A manifest larger than this is refused (bytes).
 const MANIFEST_LIMIT: u64 = 1024 * 1024;

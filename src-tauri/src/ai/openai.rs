@@ -9,6 +9,7 @@
 
 use serde_json::{Map, Value, json};
 
+use super::agent::{self, AgentEvent, AgentMessage, AgentTurn, ToolCall, ToolDef, TurnState};
 use super::effort::Effort;
 use super::error::{AiError, ErrorKind};
 use super::extra;
@@ -367,7 +368,8 @@ impl ThinkFilter {
     }
 }
 
-/// The state of a streamed chat completion.
+/// The state of a streamed chat completion. For agent turns it also
+/// gathers tool calls and what `raw` needs (see [`ChatStream::finish_turn`]).
 pub struct ChatStream<'k> {
     key: Option<&'k str>,
     think: ThinkFilter,
@@ -376,6 +378,53 @@ pub struct ChatStream<'k> {
     finish: Option<String>,
     /// `[DONE]` arrived.
     done: bool,
+    /// The message's content as received (a `<think>` block included).
+    content: String,
+    /// Fields of the message delta this module does not know (DeepSeek's
+    /// `reasoning_content`, …), gathered for `raw`.
+    unknown: Map<String, Value>,
+    calls: Vec<CallDelta>,
+}
+
+/// A tool call as it streams.
+#[derive(Default)]
+struct CallDelta {
+    /// Its `index`; `None` for servers that send none.
+    index: Option<u64>,
+    id: String,
+    name: String,
+    arguments: String,
+    /// Unknown fields of the call (Gemini's `extra_content`, …) and of its
+    /// `function`.
+    unknown: Map<String, Value>,
+    function_unknown: Map<String, Value>,
+    announced: bool,
+}
+
+/// Fields of a message delta that are not passed through as unknown.
+const KNOWN_MESSAGE_FIELDS: &[&str] = &["role", "content", "tool_calls", "refusal"];
+
+/// Adds a streamed value to `into[key]`: strings are concatenated, arrays
+/// extended and objects merged; anything else replaces. Nulls are skipped.
+fn gather(into: &mut Map<String, Value>, key: &str, value: &Value) {
+    match (into.get_mut(key), value) {
+        (_, Value::Null) => {}
+        (Some(Value::String(old)), Value::String(new)) => old.push_str(new),
+        (Some(Value::Array(old)), Value::Array(new)) => old.extend(new.iter().cloned()),
+        (Some(Value::Object(old)), Value::Object(new)) => extra::merge(old, new),
+        _ => {
+            into.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+fn empty_reply(length: bool) -> AiError {
+    let message = if length {
+        "the token limit ran out before any reply text (reasoning may have used it up)"
+    } else {
+        "the model returned an empty reply"
+    };
+    AiError::new(ErrorKind::Empty, message)
 }
 
 impl<'k> ChatStream<'k> {
@@ -388,11 +437,15 @@ impl<'k> ChatStream<'k> {
             refusal: String::new(),
             finish: None,
             done: false,
+            content: String::new(),
+            unknown: Map::new(),
+            calls: Vec::new(),
         }
     }
 
-    /// The reply text and why it ended, or why there is none.
-    pub fn finish(mut self) -> Result<(String, Stop), AiError> {
+    /// Flushes held text and checks how the stream ended: refusal, content
+    /// filter, cut short. Returns whether the token limit ended it.
+    fn settle(&mut self) -> Result<bool, AiError> {
         let rest = self.think.finish();
         self.text.push(&rest);
         if !self.refusal.trim().is_empty() {
@@ -410,20 +463,147 @@ impl<'k> ChatStream<'k> {
         if self.finish.is_none() && !self.done {
             return Err(stream::cut_short());
         }
+        Ok(finish == "length")
+    }
+
+    /// The reply text and why it ended, or why there is none.
+    pub fn finish(mut self) -> Result<(String, Stop), AiError> {
+        let length = self.settle()?;
         if self.text.is_empty() {
-            let message = if finish == "length" {
-                "the token limit ran out before any reply text (reasoning may have used it up)"
-            } else {
-                "the model returned an empty reply"
-            };
-            return Err(AiError::new(ErrorKind::Empty, message));
+            return Err(empty_reply(length));
         }
-        let stop = if finish == "length" {
+        let stop = if length { Stop::Length } else { Stop::End };
+        Ok((self.text.finish(), stop))
+    }
+
+    fn tool_calls(&mut self, calls: &[Value]) {
+        for call in calls {
+            let index = call["index"].as_u64();
+            let id = call["id"].as_str().unwrap_or("");
+            let slot = match index {
+                Some(index) => self.calls.iter().position(|c| c.index == Some(index)),
+                // No index: the call with this id, else a new call when an id
+                // is given, else the latest one.
+                None if !id.is_empty() => self.calls.iter().position(|c| c.id == id),
+                None => self.calls.len().checked_sub(1),
+            };
+            let slot = match slot {
+                Some(slot) => slot,
+                None => {
+                    self.calls.push(CallDelta {
+                        index,
+                        ..Default::default()
+                    });
+                    self.calls.len() - 1
+                }
+            };
+            let acc = &mut self.calls[slot];
+            if acc.id.is_empty() {
+                acc.id = id.to_string();
+            }
+            let function = &call["function"];
+            if acc.name.is_empty() {
+                acc.name = function["name"].as_str().unwrap_or("").to_string();
+            }
+            match &function["arguments"] {
+                Value::String(part) => acc.arguments.push_str(part),
+                Value::Null => {}
+                // Some servers send the arguments as an object.
+                other => acc.arguments.push_str(&other.to_string()),
+            }
+            if let Some(fields) = function.as_object() {
+                for (key, value) in fields {
+                    if key != "name" && key != "arguments" {
+                        gather(&mut acc.function_unknown, key, value);
+                    }
+                }
+            }
+            if let Some(fields) = call.as_object() {
+                for (key, value) in fields {
+                    if !matches!(key.as_str(), "index" | "id" | "type" | "function") {
+                        gather(&mut acc.unknown, key, value);
+                    }
+                }
+            }
+        }
+    }
+
+    /// At the end of the stream: gives calls without an id one, and returns
+    /// the calls not announced yet.
+    pub fn flush_calls(&mut self) -> Vec<(String, String)> {
+        for (n, call) in self.calls.iter_mut().enumerate() {
+            if call.id.is_empty() {
+                call.id = format!("call_{n}");
+            }
+        }
+        self.calls
+            .iter_mut()
+            .filter(|c| !c.announced)
+            .map(|c| {
+                c.announced = true;
+                (c.id.clone(), c.name.clone())
+            })
+            .collect()
+    }
+
+    /// The agent turn (`effort_dropped` unset): text, tool calls in index
+    /// order, `raw`, and why it ended. Any call makes the stop `tools`.
+    pub fn finish_turn(mut self) -> Result<AgentTurn, AiError> {
+        let length = self.settle()?;
+        self.flush_calls();
+        if self.calls.is_empty() && self.text.is_empty() {
+            return Err(empty_reply(length));
+        }
+        self.calls.sort_by_key(|c| c.index.unwrap_or(u64::MAX));
+        let mut tool_calls = Vec::new();
+        let mut raw_calls = Vec::new();
+        for call in self.calls {
+            let (input, invalid) = agent::parse_input(&call.arguments);
+            let arguments = if call.arguments.trim().is_empty() {
+                "{}".to_string()
+            } else {
+                call.arguments
+            };
+            let mut function = call.function_unknown;
+            function.insert("name".into(), json!(call.name));
+            function.insert("arguments".into(), json!(arguments));
+            let mut raw_call = call.unknown;
+            raw_call.insert("id".into(), json!(call.id));
+            raw_call.insert("type".into(), json!("function"));
+            raw_call.insert("function".into(), Value::Object(function));
+            raw_calls.push(Value::Object(raw_call));
+            tool_calls.push(ToolCall {
+                id: call.id,
+                name: call.name,
+                input,
+                invalid,
+            });
+        }
+        let mut raw = self.unknown;
+        raw.insert("role".into(), json!("assistant"));
+        raw.insert(
+            "content".into(),
+            if self.content.is_empty() {
+                Value::Null
+            } else {
+                json!(self.content)
+            },
+        );
+        let stop = if !raw_calls.is_empty() {
+            raw.insert("tool_calls".into(), Value::Array(raw_calls));
+            Stop::Tools
+        } else if length {
             Stop::Length
         } else {
             Stop::End
         };
-        Ok((self.text.finish(), stop))
+        Ok(AgentTurn {
+            text: self.text.finish(),
+            tool_calls,
+            raw: Value::Object(raw).to_string(),
+            stop,
+            effort_dropped: false,
+        })
     }
 }
 
@@ -456,8 +636,19 @@ impl StreamState for ChatStream<'_> {
         // `reasoning_content` and `reasoning` are not reply text.
         let content = content_text(&delta["content"]);
         if !content.is_empty() {
+            self.content.push_str(&content);
             let passed = self.think.push(&content);
             self.text.push(&passed);
+        }
+        if let Some(calls) = delta["tool_calls"].as_array() {
+            self.tool_calls(calls);
+        }
+        if let Some(fields) = delta.as_object() {
+            for (key, value) in fields {
+                if !KNOWN_MESSAGE_FIELDS.contains(&key.as_str()) {
+                    gather(&mut self.unknown, key, value);
+                }
+            }
         }
         if let Some(finish) = choice["finish_reason"].as_str() {
             self.finish = Some(finish.to_string());
@@ -468,6 +659,138 @@ impl StreamState for ChatStream<'_> {
     fn take_text(&mut self) -> String {
         self.text.take()
     }
+}
+
+impl TurnState for ChatStream<'_> {
+    fn take_calls(&mut self) -> Vec<(String, String)> {
+        self.calls
+            .iter_mut()
+            .filter(|c| !c.announced && !c.id.is_empty() && !c.name.is_empty())
+            .map(|c| {
+                c.announced = true;
+                (c.id.clone(), c.name.clone())
+            })
+            .collect()
+    }
+}
+
+/// An agent turn from a whole (non-streamed) chat completion: `raw` is the
+/// message as received (an id is added to a call that has none).
+pub fn parse_turn(response: &Value) -> Result<AgentTurn, AiError> {
+    let Some(choice) = response.pointer("/choices/0") else {
+        return Err(AiError::other("the response has no choices"));
+    };
+    let mut message = choice["message"].clone();
+    if let Some(refusal) = message["refusal"].as_str().filter(|r| !r.trim().is_empty()) {
+        return Err(AiError::new(ErrorKind::Refused, refusal.trim()));
+    }
+    let finish = choice["finish_reason"].as_str().unwrap_or("");
+    if finish == "content_filter" {
+        return Err(AiError::new(
+            ErrorKind::Refused,
+            "the provider's content filter withheld the reply",
+        ));
+    }
+    let text = strip_think(&content_text(&message["content"]))
+        .trim()
+        .to_string();
+    let mut tool_calls = Vec::new();
+    if let Some(calls) = message["tool_calls"].as_array_mut() {
+        for (n, call) in calls.iter_mut().enumerate() {
+            if call["id"].as_str().is_none_or(str::is_empty) {
+                call["id"] = json!(format!("call_{n}"));
+            }
+            let arguments = match &call["function"]["arguments"] {
+                Value::String(s) => s.clone(),
+                Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            let (input, invalid) = agent::parse_input(&arguments);
+            tool_calls.push(ToolCall {
+                id: call["id"].as_str().unwrap_or("").to_string(),
+                name: call["function"]["name"].as_str().unwrap_or("").to_string(),
+                input,
+                invalid,
+            });
+        }
+    }
+    if text.is_empty() && tool_calls.is_empty() {
+        return Err(empty_reply(finish == "length"));
+    }
+    let stop = if !tool_calls.is_empty() {
+        Stop::Tools
+    } else if finish == "length" {
+        Stop::Length
+    } else {
+        Stop::End
+    };
+    Ok(AgentTurn {
+        text,
+        tool_calls,
+        raw: message.to_string(),
+        stop,
+        effort_dropped: false,
+    })
+}
+
+/// One agent turn, streamed: text and tool-call announcements go to `emit`.
+/// A server that answers with JSON is read whole. See `agent.rs`.
+#[allow(clippy::too_many_arguments)]
+pub async fn agent_turn(
+    client: &reqwest::Client,
+    flavor: Flavor,
+    base_url: &str,
+    key: Option<&str>,
+    req: &Completion<'_>,
+    tools: &[ToolDef],
+    messages: &[AgentMessage],
+    emit: &(dyn Fn(AgentEvent) + Send + Sync),
+) -> Result<AgentTurn, AiError> {
+    let url = format!("{base_url}/chat/completions");
+    let with = agent::openai_body(flavor, req, true, tools, messages)?;
+    let without = match req.effort {
+        Some(_) => agent::openai_body(flavor, req, false, tools, messages)?,
+        None => with.clone(),
+    };
+    let send = |with_effort: bool| {
+        let body = if with_effort { &with } else { &without };
+        http::open_stream(
+            authorize(client.post(&url), key)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.clone()),
+            req.timeout,
+        )
+    };
+    let (response, effort_dropped) =
+        http::retry_without_effort(req.effort.is_some(), EFFORT_WORDS, send).await;
+    let mut response = response.map_err(|f| f.into_error(key))?;
+    let mut turn = if http::is_event_stream(&response) {
+        let mut state = ChatStream::new(key);
+        agent::read(&mut response, req.timeout, &mut state, emit).await?;
+        for (id, name) in state.flush_calls() {
+            emit(AgentEvent::ToolCall { id, name });
+        }
+        state.finish_turn()?
+    } else {
+        let body = http::read_body(&mut response, req.timeout).await?;
+        let body = String::from_utf8_lossy(&body);
+        let json: Value = serde_json::from_str(&body).map_err(|_| http::not_json(&body, key))?;
+        let turn = parse_turn(&json)?;
+        if !turn.text.is_empty() {
+            emit(AgentEvent::Text {
+                text: turn.text.clone(),
+            });
+        }
+        for call in &turn.tool_calls {
+            emit(AgentEvent::ToolCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+            });
+        }
+        turn
+    };
+    turn.effort_dropped = effort_dropped;
+    Ok(turn)
 }
 
 pub async fn models(

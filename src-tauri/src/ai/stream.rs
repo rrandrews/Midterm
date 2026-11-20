@@ -5,8 +5,12 @@
 //! Each adapter's state is an accumulator: [`StreamState::event`] takes one
 //! SSE event, [`StreamState::take_text`] drains the text gathered since the
 //! last call, and the adapter's own `finish` turns what was gathered into
-//! the reply or an error. Tool calls (MID-13) extend the states, not the
-//! loop.
+//! the reply or an error.
+//!
+//! The agent (MID-13, `agent.rs`) reads the same states: they also gather
+//! tool calls and rebuild the provider-native assistant message, which
+//! their `finish_turn` returns, and [`read_with`] lets it drain announced
+//! tool calls alongside the text after each chunk.
 
 use std::time::Duration;
 
@@ -24,6 +28,8 @@ pub enum Stop {
     End,
     /// The token limit cut the reply short.
     Length,
+    /// The model asked for tools (agent turns only).
+    Tools,
 }
 
 /// A streamed reply: the full text (authoritative over the deltas), why it
@@ -114,6 +120,23 @@ pub async fn read(
     state: &mut impl StreamState,
     emit: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<(), AiError> {
+    read_with(response, idle, state, |state| {
+        let text = state.take_text();
+        if !text.is_empty() {
+            emit(&text);
+        }
+    })
+    .await
+}
+
+/// [`read`], calling `drain` with the state after each network chunk
+/// (including the last one) instead of emitting its text.
+pub async fn read_with<S: StreamState>(
+    response: &mut reqwest::Response,
+    idle: Duration,
+    state: &mut S,
+    mut drain: impl FnMut(&mut S),
+) -> Result<(), AiError> {
     let mut parser = SseParser::new();
     loop {
         let chunk = http::next_chunk(response, idle).await?;
@@ -128,10 +151,7 @@ pub async fn read(
                 break;
             }
         }
-        let text = state.take_text();
-        if !text.is_empty() {
-            emit(&text);
-        }
+        drain(state);
         if done || end {
             return Ok(());
         }
