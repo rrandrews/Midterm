@@ -2,13 +2,14 @@ import { aiMenuItems } from "../ai/commands";
 import { copyText, pasteText } from "../ipc/clipboard";
 import type { MenuItemSpec } from "../plugins/types";
 import {
-  canRun,
   contextBlockOf,
   copyBlockCommand,
   copyBlockOutput,
   hasIntegration,
+  otherTerminalKind,
   requestedMode,
-  runFromBlocks,
+  canReplay,
+  replayBlock,
   toggleBlocks,
 } from "./blockMode";
 import { peekSession } from "./sessions";
@@ -39,7 +40,7 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
     items.push(
       { label: "Copy command", disabled: !block.command, run: () => copyBlockCommand(block) },
       { label: "Copy output", disabled: !block.end, run: () => copyBlockOutput(session, block) },
-      { label: "Run again", disabled: !block.command || !canRun(session), run: () => runFromBlocks(session, block.command) },
+      { label: "Run again", disabled: !canReplay(session, block), run: () => replayBlock(session, block) },
       { type: "separator" },
     );
   }
@@ -48,13 +49,15 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
     { label: "Paste", shortcut: "⌘V", disabled: !session, run: () => pasteText().then((text) => paste(paneId, text)) },
     { label: "Select all", disabled: !session, run: () => session?.selectAll() },
     { label: "Clear", disabled: !session, run: () => session?.clear() },
-    { type: "separator" },
-    {
-      label: integration === false ? "Blocks mode (no shell integration)" : "Blocks mode",
-      checked: blocks && integration !== false,
-      run: () => toggleBlocks(paneId),
-    },
   );
+  if (otherTerminalKind(paneId)) {
+    const label = blocks
+      ? "Switch to classic terminal"
+      : integration === false
+        ? "Switch to block terminal (no shell integration)"
+        : "Switch to block terminal";
+    items.push({ type: "separator" }, { label, commandId: "terminal.toggleBlocks", run: () => toggleBlocks(paneId) });
+  }
   if (blocks && integration !== false) items.push(...aiMenuItems(paneId));
   return items;
 }

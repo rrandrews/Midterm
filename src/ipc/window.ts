@@ -32,12 +32,24 @@ export function watchFullscreen(onChange: (fullscreen: boolean) => void): () => 
   };
 }
 
+/** Brings the app forward if it was hidden (or its window minimized). */
+export function revealApp(): void {
+  if (!isTauri()) return;
+  invoke("app_show").catch((error) => console.error("app_show failed:", error));
+}
+
 /**
  * Asks `mayClose` before the window closes (its close button) or the app
  * quits (⌘Q, which the backend turns into a `quit-requested` event instead
  * of quitting). Returns a function that stops.
+ *
+ * On macOS the close button hides the app instead (`app_hide_on_close`):
+ * nothing is lost, so nothing is asked. Saved state is flushed all the same.
  */
-export function installCloseGuards(mayClose: (what: "window" | "app") => Promise<boolean>): () => void {
+export function installCloseGuards(
+  mayClose: (what: "window" | "app") => Promise<boolean>,
+  onHide?: () => void,
+): () => void {
   if (!isTauri()) return () => {};
   const window = getCurrentWindow();
   let busy = false;
@@ -56,7 +68,17 @@ export function installCloseGuards(mayClose: (what: "window" | "app") => Promise
   };
 
   const unlistenClose = window.onCloseRequested(async (event) => {
-    if (!(await ask("window"))) event.preventDefault();
+    // Always prevented; the window is destroyed below once closing is agreed.
+    event.preventDefault();
+    const hidden = await invoke<boolean>("app_hide_on_close").catch((error) => {
+      console.error("app_hide_on_close failed:", error);
+      return false;
+    });
+    if (hidden) {
+      onHide?.();
+      return;
+    }
+    if (await ask("window")) await window.destroy();
   });
   const unlistenQuit = listen("quit-requested", async () => {
     if (await ask("app")) await invoke("app_quit");

@@ -81,8 +81,11 @@ as a terminal's `cwd`) are saved to `state.json` in the app data directory
 through tauri-plugin-store, and restored before the first render.
 
 - `src/state/persist.ts`: pure `snapshotState` / `restoreState`. The saved
-  shape has a `version` (`SCHEMA_VERSION`); bump it and migrate in
-  `restoreState` when the shape changes. Restoring validates everything:
+  shape has a `version` (`SCHEMA_VERSION`, now 2); bump it and migrate in
+  `restoreState` when the shape changes. Version 1 files are still read:
+  their terminal panes become `terminal` or `block-terminal` by their saved
+  mode. The settings are loaded before the state is restored, since that
+  migration reads them (`src/main.tsx`). Restoring validates everything:
   layouts go through `normalizeWorkspaceModel`, panes whose kind is not a
   plugin id are dropped, a tab with no valid panes becomes a fresh tab, duplicate ids are
   replaced, and an unusable file means a fresh start.
@@ -132,7 +135,7 @@ Right-click menus:
 | Area | Items | Where |
 |---|---|---|
 | Any pane | the plugin's items (`pane.menu`, declarative), then split, change type, maximize, move to tab, close | `src/plugins/PaneHost.tsx`, `PaneMenuItems.tsx` (shared with the pane toolbar's ⋯ menu) |
-| Terminal (on top of the above) | copy/re-run a block (blocks mode), copy, paste, select all, clear, blocks mode | `src/terminal/menu.ts` |
+| Terminal (on top of the above) | copy/re-run a block (block terminal), copy, paste, select all, clear, switch to block/classic terminal | `src/terminal/menu.ts` |
 | Editor / viewer | save, revert, find, go to line, reveal, copy path | `src/editor/menu.ts` |
 | Tab | rename, new tab, close, close others, close to the right | `TabStrip.tsx` |
 | Workspace switcher | new, rename, delete | `WorkspaceSwitcher.tsx` |
@@ -185,6 +188,7 @@ exercises the viewer).
 | Command | What it does |
 |---|---|
 | `bun run tauri dev` | The real app. |
+| `bun run dev:mcp` | The real app with the local Tauri MCP bridge enabled. |
 | `bun run dev` | Frontend only, in a browser at `localhost:1420`, with a mock PTY that echoes input. Good for layout work. |
 | `bun run dev` + `?mockup` | Same, seeded with the arrangement from the design mockup (the editor and viewer show files from the mock file tree). |
 | `bun run test` | Frontend unit tests (vitest). |
@@ -195,3 +199,19 @@ exercises the viewer).
 In dev builds `window.__midterm` exposes `actions`, `dock`, `store`,
 `sessions`, `settings`, `commands`, `plugins` (the registry), `skills`,
 `loader` and `invokeSkillTool` for poking at the app from the console or a test driver.
+
+### Tauri MCP
+
+Open this repo in Claude Code, Codex, or Antigravity. Each client reads its
+project configuration (`.mcp.json`, `.codex/config.toml`, or
+`.agents/mcp_config.json`) and launches the pinned `tauri` server through
+`npx`. Use Node.js 20 or newer. Claude Code prompts for project server approval
+on first use. Codex and Antigravity load MCP servers for trusted workspaces.
+In Antigravity, open `/mcp` in a workspace session to check the server status.
+
+Run `bun run dev:mcp` from the repo root and wait for the bridge to log its
+address. Start `driver_session` with `action: "start"`, using host `127.0.0.1`
+and the logged port (typically `9223`), then call `webview_dom_snapshot` or
+`webview_screenshot`. The optional Cargo feature and Tauri config overlay
+enable the bridge and its webview permissions for this debug run. While it is
+running, local processes can connect and control the app through the bridge.

@@ -1,6 +1,7 @@
 import { AlertDialog } from "radix-ui";
 import { useEffect, useState } from "react";
 import { refocusPane } from "../../layout/dock";
+import { revealApp } from "../../ipc/window";
 
 /*
  * A promise-based confirmation dialog: `confirm({...})` resolves to whether
@@ -23,6 +24,8 @@ let show: ((request: Pending | null) => void) | null = null;
 
 export function confirm(request: ConfirmRequest): Promise<boolean> {
   if (pending || !show) return Promise.resolve(false);
+  // The app may be hidden (macOS close button) when a quit needs asking.
+  revealApp();
   return new Promise((resolve) => {
     pending = { ...request, resolve };
     show?.(pending);

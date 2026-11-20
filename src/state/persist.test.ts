@@ -64,17 +64,48 @@ describe("snapshot and restore", () => {
     ]);
   });
 
-  it("keeps a valid terminal mode and drops an unknown one", () => {
-    const blocks = createPane("terminal", { terminalMode: "blocks" });
-    const bogus = createPane("terminal", { terminalMode: "fancy" as unknown as "blocks" });
-    const layout = createLayout({
-      type: "split",
-      orientation: "horizontal",
-      children: [paneNode(blocks), paneNode(bogus)],
-    });
+  it("turns version 1 terminal modes into terminal kinds", () => {
+    const v1 = (legacyBlocksDefault: boolean) => {
+      const panes = [
+        createPane("terminal", { terminalMode: "blocks", cwd: "/a", aiSuggestions: false }),
+        createPane("terminal", { terminalMode: "classic", cwd: "/b" }),
+        createPane("terminal", { cwd: "/c" }),
+        createPane("terminal", { terminalMode: "fancy" }),
+        createPane("editor", { path: "/x", terminalMode: "blocks" }),
+        // Another plugin's data that happens to nest a `{ kind: "terminal" }` object.
+        createPane("acme-notes", { data: { kind: "terminal", terminalMode: "blocks" }, nested: [{ data: { kind: "terminal" } }] }),
+      ];
+      const layout = createLayout({ type: "split", orientation: "horizontal", children: panes.map((pane) => paneNode(pane)) });
+      const saved = roundTrip(snapshotState({ workspaces: [createWorkspace("w", [createTab({ layout })])], activeWorkspaceId: "" }));
+      saved.version = 1;
+      const restored = restoreState(saved, { legacyBlocksDefault });
+      return restored && listPanes(restored.workspaces[0].tabs[0].layout).map((pane) => pane.data);
+    };
+    expect(v1(false)).toEqual([
+      { kind: "block-terminal", cwd: "/a", aiSuggestions: false },
+      { kind: "terminal", cwd: "/b" },
+      { kind: "terminal", cwd: "/c" },
+      { kind: "terminal" },
+      { kind: "editor", path: "/x" },
+      { kind: "acme-notes", data: { kind: "terminal", terminalMode: "blocks" }, nested: [{ data: { kind: "terminal" } }] },
+    ]);
+    expect(v1(true)?.map((data) => data.kind)).toEqual([
+      "block-terminal",
+      "terminal",
+      "block-terminal",
+      "block-terminal",
+      "editor",
+      "acme-notes",
+    ]);
+  });
+
+  it("keeps a version 2 block terminal, and a terminal stays classic", () => {
+    const block = createPane("block-terminal", { cwd: "/a" });
+    const stray = createPane("terminal", { terminalMode: "blocks" });
+    const layout = createLayout({ type: "split", orientation: "horizontal", children: [paneNode(block), paneNode(stray)] });
     const restored = restoreLayout(roundTrip(layout));
     expect(restored && listPanes(restored).map((pane) => pane.data)).toEqual([
-      { kind: "terminal", terminalMode: "blocks" },
+      { kind: "block-terminal", cwd: "/a" },
       { kind: "terminal" },
     ]);
   });
@@ -92,6 +123,7 @@ describe("snapshot and restore", () => {
     expect(restoreState(undefined)).toBeNull();
     expect(restoreState("nope")).toBeNull();
     expect(restoreState({ version: SCHEMA_VERSION + 1, workspaces: [] })).toBeNull();
+    expect(restoreState({ version: 0, workspaces: [] })).toBeNull();
     expect(restoreState({ version: SCHEMA_VERSION, workspaces: [] })).toBeNull();
     expect(restoreState({ version: SCHEMA_VERSION, workspaces: [null, 3] })).toBeNull();
   });

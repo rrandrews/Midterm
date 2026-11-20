@@ -68,6 +68,10 @@
 .block-header {
   margin-bottom: 4px;
 }
+/* The host of a directory on another machine (a shell over ssh). */
+.block-host {
+  color: var(--color-accent);
+}
 
 .block-actions {
   display: flex;
@@ -131,6 +135,25 @@
   flex: none;
   border-top: 1px solid var(--color-line-input);
   padding: 10px 16px 12px 18px;
+}
+
+/* A slash command line (`/cmd …`) above the editor, with its status; its result goes in the editor. */
+.blocks-slash {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+  margin-bottom: 4px;
+  font-family: var(--terminal-font, var(--font-mono));
+  font-size: var(--text-meta);
+  color: var(--color-fg-dim);
+}
+.blocks-slash-line {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The ghost text sits behind a transparent textarea with identical metrics. */

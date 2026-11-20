@@ -1,7 +1,8 @@
 # Midterm shell integration for bash.
 #
 # Midterm starts bash as `bash --rcfile <this file>`, an interactive
-# non-login shell, so this file is read instead of ~/.bashrc. Midterm wants a
+# non-login shell, so this file is read instead of ~/.bashrc. (Over ssh it
+# is loaded differently, into a real login shell: see MIDTERM_BASH_LOAD.) Midterm wants a
 # login shell, so the first thing it does is read the startup files a login
 # shell reads: /etc/profile, then the first readable one of ~/.bash_profile,
 # ~/.bash_login and ~/.profile. (Whether those go on to read ~/.bashrc is up
@@ -34,16 +35,52 @@
 if [ -z "${_midterm_si_loaded-}" ]; then
 _midterm_si_loaded=1
 
-if [ -r /etc/profile ]; then
-  builtin source /etc/profile
-fi
-for _midterm_si_file in ~/.bash_profile ~/.bash_login ~/.profile; do
-  if [ -r "$_midterm_si_file" ]; then
-    builtin source "$_midterm_si_file"
-    break
+# Returns $1: ends a run of commands with a status of our choosing.
+_midterm_return() { builtin return "$1"; }
+# Returns the status it was called with, so later PROMPT_COMMAND hooks still
+# see the command's.
+_midterm_keep_status() { builtin return $?; }
+
+if [ -n "${MIDTERM_BASH_LOAD-}" ]; then
+  # Over ssh (ssh/bootstrap.sh) bash is a real login shell (`bash -l`): it
+  # has read its startup files and runs this from MIDTERM_BASH_SCRIPT via
+  # the PROMPT_COMMAND entry MIDTERM_BASH_LOAD, at the first prompt. That
+  # entry becomes a no-op that keeps `$?`, and nothing stays exported.
+  _midterm_si_status=$?
+  _midterm_si_late=1
+  [[ $PROMPT_COMMAND == *"$MIDTERM_BASH_LOAD" ]] && _midterm_si_late=last
+  PROMPT_COMMAND=${PROMPT_COMMAND//"$MIDTERM_BASH_LOAD"/_midterm_keep_status}
+  builtin export -n PROMPT_COMMAND MIDTERM_BASH_SCRIPT
+  builtin unset MIDTERM_BASH_LOAD MIDTERM_BASH_SCRIPT
+else
+  if [ -r /etc/profile ]; then
+    builtin source /etc/profile
   fi
-done
-builtin unset _midterm_si_file
+  for _midterm_si_file in ~/.bash_profile ~/.bash_login ~/.profile; do
+    if [ -r "$_midterm_si_file" ]; then
+      builtin source "$_midterm_si_file"
+      break
+    fi
+  done
+  builtin unset _midterm_si_file
+fi
+
+# `ssh host` loads this integration on the remote too (see the zsh script):
+# an `ssh` function adds the remote command for plain interactive logins,
+# unless the user's startup files defined their own.
+if [ -n "${MIDTERM_SSH_DIR-}" ]; then
+  _midterm_ssh_dir=$MIDTERM_SSH_DIR
+  builtin unset MIDTERM_SSH_DIR
+  if ! builtin declare -F ssh >/dev/null; then
+    ssh() {
+      if command sh "$_midterm_ssh_dir/should-wrap.sh" "$@"; then
+        command ssh -t "$@" "$(<"$_midterm_ssh_dir/remote-command")"
+      else
+        command ssh "$@"
+      fi
+    }
+  fi
+fi
 
 # Percent-encodes $1 byte by byte for a file:// URL into _midterm_encoded.
 _midterm_urlencode() {
@@ -80,18 +117,21 @@ _midterm_report_cwd() {
 # end of PROMPT_COMMAND until the first command of the next command line.
 _midterm_ran=
 _midterm_armed=
+# This shell's id in its marks (`aid=`), so the terminal can tell them from
+# the marks of a shell nested inside it (over ssh).
+_midterm_aid=$$.$RANDOM
 # OSC 133;B, wrapped in \[ \] so that bash does not count it as visible.
-_midterm_mark_b='\[\e]133;B\a\]'
+_midterm_mark_b='\[\e]133;B;aid='"$_midterm_aid"'\a\]'
 
 _midterm_prompt_command() {
   local ret=$?  # exit status of the last command, for OSC 133;D
   _midterm_armed=
   if [[ -n $_midterm_ran ]]; then
     _midterm_ran=
-    builtin printf '\033]133;D;%s\007' "$ret"
+    builtin printf '\033]133;D;%s;aid=%s\007' "$ret" "$_midterm_aid"
   fi
   _midterm_report_cwd
-  builtin printf '\033]133;A\007'
+  builtin printf '\033]133;A;aid=%s\007' "$_midterm_aid"
   # Pass the status on to the user's hooks, except under errexit, where a
   # failing hook would end the shell.
   [[ $- == *e* ]] && builtin return 0
@@ -128,7 +168,7 @@ _midterm_debug_trap() {
       # (Under functrace the trap also fires inside functions, ours too.)
       _midterm_armed=
       _midterm_ran=1
-      builtin printf '\033]133;C\007'
+      builtin printf '\033]133;C;aid=%s\007' "$_midterm_aid"
     fi
   fi
   [[ ${1-} == chain ]] && builtin return $ret
@@ -166,5 +206,23 @@ else
 fi
 builtin unset _midterm_si_trap _midterm_user_trap
 builtin unset -f _midterm_capture_trap
+
+# Loaded at the first prompt (over ssh): mark this prompt now. It is armed
+# for the command typed at it only when nothing else of PROMPT_COMMAND runs
+# after this, or the DEBUG trap would take that for the command.
+# _midterm_prompt_end, which arms the trap, must be the very last command.
+if [ -n "${_midterm_si_late-}" ]; then
+  _midterm_return "$_midterm_si_status"
+  _midterm_prompt_command
+  if [ "$_midterm_si_late" = last ]; then
+    builtin unset _midterm_si_late
+    _midterm_return "$_midterm_si_status"
+    _midterm_prompt_end
+  else
+    builtin unset _midterm_si_late
+    PS1=${PS1//"$_midterm_mark_b"/}$_midterm_mark_b
+    _midterm_return "$_midterm_si_status"
+  fi
+fi
 
 fi

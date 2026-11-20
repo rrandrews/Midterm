@@ -32,12 +32,15 @@ pub enum Failure {
 }
 
 impl Failure {
-    /// Whether this is an HTTP 400 whose body mentions any of `words`
-    /// (case-insensitive). Used to retry without a parameter the model does
-    /// not support.
+    /// Whether this is an HTTP 400 or 422 whose body mentions any of
+    /// `words` (case-insensitive). Used to retry without a parameter the
+    /// model does not support.
     pub fn is_bad_request_about(&self, words: &[&str]) -> bool {
         match self {
-            Failure::Status { status: 400, body } => {
+            Failure::Status {
+                status: 400 | 422,
+                body,
+            } => {
                 let body = body.to_ascii_lowercase();
                 words.iter().any(|w| body.contains(w))
             }
@@ -55,17 +58,23 @@ impl Failure {
 }
 
 /// Sends `request` and returns the JSON body of a 2xx answer. `key` is the
-/// request's key, redacted from any error text.
-pub async fn send(request: reqwest::RequestBuilder, key: Option<&str>) -> Result<Value, Failure> {
+/// request's key, redacted from any error text. `timeout` replaces the
+/// client's [`REQUEST_TIMEOUT`] (higher reasoning effort takes longer).
+pub async fn send(
+    request: reqwest::RequestBuilder,
+    key: Option<&str>,
+    timeout: Duration,
+) -> Result<Value, Failure> {
     let response = request
+        .timeout(timeout)
         .send()
         .await
-        .map_err(|e| Failure::Other(transport_error(&e)))?;
+        .map_err(|e| Failure::Other(transport_error(&e, timeout)))?;
     let status = response.status();
     let body = response
         .text()
         .await
-        .map_err(|e| Failure::Other(transport_error(&e)))?;
+        .map_err(|e| Failure::Other(transport_error(&e, timeout)))?;
     if !status.is_success() {
         return Err(Failure::Status {
             status: status.as_u16(),
@@ -80,11 +89,11 @@ pub async fn send(request: reqwest::RequestBuilder, key: Option<&str>) -> Result
     })
 }
 
-pub fn transport_error(e: &reqwest::Error) -> AiError {
+pub fn transport_error(e: &reqwest::Error, timeout: Duration) -> AiError {
     if e.is_timeout() {
         AiError::new(
             ErrorKind::Timeout,
-            format!("no answer within {} s", REQUEST_TIMEOUT.as_secs()),
+            format!("no answer within {} s", timeout.as_secs()),
         )
     } else if e.is_connect() || e.is_request() {
         AiError::new(
@@ -188,6 +197,11 @@ mod tests {
         };
         assert!(f.is_bad_request_about(&["reasoning"]));
         assert!(!f.is_bad_request_about(&["effort_x"]));
+        let f = Failure::Status {
+            status: 422,
+            body: "unknown field `reasoning_effort`".into(),
+        };
+        assert!(f.is_bad_request_about(&["reasoning"]));
         let f = Failure::Status {
             status: 500,
             body: "reasoning".into(),

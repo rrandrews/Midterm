@@ -46,6 +46,13 @@ describe("trimOutput", () => {
 });
 
 describe("buildContext", () => {
+  it("names the remote host instead of this machine's OS", () => {
+    const { prompt } = buildContext({ os: "macOS", host: "box", cwd: "/srv", recentCommands: [], blocks: [] });
+    expect(prompt).toContain("Remote host (over ssh): box");
+    expect(prompt).not.toContain("OS: macOS");
+    expect(prompt).toContain("Working directory: /srv");
+  });
+
   it("lists facts, earlier commands and blocks, redacted", () => {
     const { prompt, system } = buildContext({
       os: "macOS",
@@ -58,6 +65,7 @@ describe("buildContext", () => {
     expect(system).toContain("next command");
     expect(prompt).toContain("Shell: zsh");
     expect(prompt).toContain("Git branch: main");
+    expect(prompt).toContain("OS: macOS");
     expect(prompt).toContain("Earlier commands (oldest first):\nls\ncd proj\nexport API_KEY=[redacted]");
     expect(prompt).toContain("$ git status\nOn branch main\nChanges not staged\n[exit 0]");
     expect(prompt).not.toContain("abc123");

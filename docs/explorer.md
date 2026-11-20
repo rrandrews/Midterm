@@ -134,7 +134,7 @@ Status never writes the index (no `update_index`): a write would wake the
 | `src/explorer/model.ts` | `ExplorerModel`: one pane's root, expanded directories, listings, selection, inline edit, git status and watcher. |
 | `src/explorer/explorers.ts` | Models keyed by pane id (a shared pane state), and root following: unpinned explorers follow the `directory` of the last focused pane whose plugin sets `explorerFollows` (terminals). |
 | `src/plugins/builtin/explorer.tsx` | The explorer plugin: data validation, menu, settings (follow the terminal, hidden files by default). |
-| `ExplorerPane.tsx` | Header, virtualized tree (`@tanstack/react-virtual`), keyboard, inline rename/create. |
+| `ExplorerPane.tsx` | Header, virtualized tree (`@tanstack/react-virtual`), keyboard, inline rename/create. A row is: indent, chevron, 16px file icon (`FileIcon`, see [icons.md](icons.md)), name, git badge. |
 | `ExplorerMenus.tsx` | Right-click items for entries and for the explorer as a whole; trash confirmation. |
 
 ### State outside React
@@ -189,8 +189,8 @@ panes showing it (`renameOpenFiles`), keeping their buffers. See
 | ↑ ↓, Page Up/Down, Home/End | Move the selection |
 | → | Expand; on an expanded directory, go to its first child |
 | ← | Collapse; otherwise go to the parent |
-| ↩ | Open a file, toggle a directory |
-| F2 | Rename |
+| ⌘O, ⌘↓ | Open a file, toggle a directory (with ⇧: open in a new pane) |
+| ↩, F2 | Rename (as in Finder) |
 | ⌘⌫ | Move to Trash (asks) |
 | letters | Type-ahead; repeating one letter cycles through names starting with it |
 

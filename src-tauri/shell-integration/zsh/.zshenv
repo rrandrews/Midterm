@@ -8,6 +8,9 @@
 #
 # Nothing in here may assume any option is set: it runs before the user's
 # configuration, under whatever options zsh starts with.
+#
+# Started over ssh (MIDTERM_SI_EPHEMERAL, see ssh/bootstrap.sh), this
+# directory is a temporary one: both files are deleted once loaded.
 
 _midterm_si_dir=$ZDOTDIR
 
@@ -25,6 +28,11 @@ fi
 } always {
   if [[ -o interactive && -r $_midterm_si_dir/midterm-integration.zsh ]]; then
     builtin source -- "$_midterm_si_dir/midterm-integration.zsh"
+  fi
+  if [[ -n ${MIDTERM_SI_EPHEMERAL-} ]]; then
+    command rm -f -- "$_midterm_si_dir/.zshenv" "$_midterm_si_dir/midterm-integration.zsh"
+    command rmdir -- "$_midterm_si_dir" "$MIDTERM_SI_EPHEMERAL" 2>/dev/null
+    builtin unset MIDTERM_SI_EPHEMERAL
   fi
   builtin unset _midterm_si_dir _midterm_si_file
 }

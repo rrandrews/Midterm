@@ -6,17 +6,10 @@ import { DotsIcon, GripIcon } from "../ui/icons";
 import { Menu, MenuContent, MenuTrigger } from "../ui/Menu";
 import { PaneMenuItems } from "./PaneMenuItems";
 
-/** A pane's hover controls: the drag handle and the options menu. */
+/** A pane's hover controls: the options menu, then the drag handle in the corner. */
 export function PaneToolbar({ pane }: { pane: PaneNode }) {
   return (
     <div className="flex gap-0.5">
-      <TabsetDragHandle
-        aria-label="Move pane"
-        title="Drag to move pane"
-        className="flex cursor-grab rounded-[4px] p-[3px] text-fg-mid hover:text-fg-bright data-[disabled]:hidden"
-      >
-        <GripIcon />
-      </TabsetDragHandle>
       <Menu
         onOpenChange={(open) => {
           // Opening a pane's menu makes it the active pane.
@@ -35,6 +28,13 @@ export function PaneToolbar({ pane }: { pane: PaneNode }) {
           <PaneMenuItems paneId={pane.id} />
         </MenuContent>
       </Menu>
+      <TabsetDragHandle
+        aria-label="Move pane"
+        title="Drag to move pane"
+        className="flex cursor-grab rounded-[4px] p-[3px] text-fg-mid hover:text-fg-bright data-[disabled]:hidden"
+      >
+        <GripIcon />
+      </TabsetDragHandle>
     </div>
   );
 }

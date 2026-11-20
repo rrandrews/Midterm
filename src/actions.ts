@@ -1,7 +1,7 @@
 import { renameOpenModels } from "./editor/registry";
 import { noteRecentFile } from "./palette/recent";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
-import { convertedData, fileHandlers, newPane } from "./plugins/panes";
+import { convertedData, defaultTerminalKind, fileHandlers, newPane, newPaneData } from "./plugins/panes";
 import { paneSpec } from "./plugins/registry";
 import { countPanes, createPane, findPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
 import {
@@ -357,9 +357,10 @@ export function addPaneBeside(fromPaneId: string, pane: PaneNode): void {
   if (dock.addTab(pane, { target: { tabsetId: frameId, region } })) focusPane(pane.id);
 }
 
-/** Opens a terminal in `cwd`, in a new pane of `fromPaneId`'s tab. */
+/** Opens the default terminal in `cwd`, in a new pane of `fromPaneId`'s tab. */
 export function openTerminalAt(cwd: string, fromPaneId: string): void {
-  addPaneBeside(fromPaneId, createPane("terminal", { cwd }));
+  const kind = defaultTerminalKind();
+  addPaneBeside(fromPaneId, createPane(kind, { ...newPaneData(kind), cwd }));
 }
 
 /** Points editor and viewer panes showing `from` (or a file inside it) at `to` after a rename. */

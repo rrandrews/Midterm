@@ -21,6 +21,16 @@
 //!
 //! Other shells start without integration. Every integrated shell gets
 //! `MIDTERM_SHELL_INTEGRATION=1`.
+//!
+//! **ssh.** With `MIDTERM_SSH_DIR` set (the `sshIntegration` setting), the
+//! scripts define an `ssh` function that, for a plain interactive login
+//! (`ssh/should-wrap.sh` decides), runs `ssh -t <args> <remote command>`.
+//! The remote command ([`remote_command`]) is one line, `sh -c '…'` (stage
+//! 0), that base64-decodes and evals `ssh/bootstrap.sh` (stage 1) with the
+//! scripts above filled in. Stage 1 writes the remote shell's scripts to a
+//! private temporary directory, starts the shell with them exactly as
+//! [`inject`] does here, and the scripts delete the directory once loaded
+//! (`MIDTERM_SI_EPHEMERAL`). The payload holds nothing but the scripts.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -49,6 +59,59 @@ const SCRIPTS: &[(&str, &str)] = &[
         include_str!("../../shell-integration/fish/vendor_conf.d/midterm.fish"),
     ),
 ];
+
+/// `should-wrap.sh`, written next to the generated `remote-command`.
+const SHOULD_WRAP: &str = include_str!("../../shell-integration/ssh/should-wrap.sh");
+const BOOTSTRAP: &str = include_str!("../../shell-integration/ssh/bootstrap.sh");
+
+/// The script with its comment lines, blank lines and indentation left out
+/// (all of it travels on the ssh command line). A `#!` line would go too.
+/// Safe because the scripts have no heredoc, nor a multi-line string with a
+/// line that starts with `#` or with spaces that matter (bootstrap.sh's
+/// heredocs hold only the placeholders).
+fn strip_comments(script: &str) -> String {
+    let mut out = String::with_capacity(script.len() / 2);
+    for line in script.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        out.push_str(trimmed);
+        out.push('\n');
+    }
+    out
+}
+
+/// Stage 1: `bootstrap.sh` with the four scripts filled in.
+fn bootstrap_script() -> String {
+    let script = |name: &str| {
+        let (_, contents) = SCRIPTS
+            .iter()
+            .find(|(path, _)| *path == name)
+            .expect("embedded script");
+        strip_comments(contents).trim_end().to_string()
+    };
+    strip_comments(BOOTSTRAP)
+        .replace("@ZSHENV@", &script("zsh/.zshenv"))
+        .replace("@ZSH@", &script("zsh/midterm-integration.zsh"))
+        .replace("@BASH@", &script("bash/midterm.bash"))
+        .replace("@FISH@", &script("fish/vendor_conf.d/midterm.fish"))
+}
+
+/// The command `ssh host` gets appended: `sh -c '<stage 0>'`, one line with
+/// no other single quote, no backslash and no `!`, so that every login
+/// shell (sh, bash, zsh, fish, csh) passes the inner text to `sh` intact.
+/// Stage 0 decodes stage 1 (`base64 -d`, BSD `base64 -D`, or `openssl`) and
+/// evals it; if that fails it starts a plain login shell.
+pub fn remote_command() -> String {
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD.encode(bootstrap_script());
+    format!(
+        "sh -c 'p={payload}; s=$( (printf %s \"$p\" | base64 -d || printf %s \"$p\" | base64 -D || \
+         printf %s \"$p\" | openssl base64 -d -A) 2>/dev/null ); \
+         if [ -n \"$s\" ]; then eval \"$s\"; fi; exec \"${{SHELL:-/bin/sh}}\" -l'"
+    )
+}
 
 /// A shell we know how to integrate with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +158,12 @@ pub fn default_dir() -> Option<PathBuf> {
 /// alone. Each file is replaced atomically, so concurrent calls (and shells
 /// starting meanwhile) only ever see complete scripts.
 pub fn install(dir: &Path) -> io::Result<()> {
-    for (name, contents) in SCRIPTS {
+    let remote = remote_command();
+    let ssh_files = [
+        ("ssh/should-wrap.sh", SHOULD_WRAP),
+        ("ssh/remote-command", remote.as_str()),
+    ];
+    for (name, contents) in SCRIPTS.iter().copied().chain(ssh_files) {
         let path = dir.join(name);
         if fs::read(&path).is_ok_and(|existing| existing == contents.as_bytes()) {
             continue;
@@ -132,15 +200,19 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// or `None` (leaving `cmd` untouched) for shells it does not support.
 ///
 /// The original values of the variables it changes are taken from `cmd`, so
-/// set any overrides before calling this.
-pub fn inject(cmd: &mut CommandBuilder, dir: &Path) -> Option<Shell> {
+/// set any overrides before calling this. With `ssh`, the shell also wraps
+/// `ssh` (see the module docs).
+pub fn inject(cmd: &mut CommandBuilder, dir: &Path, ssh: bool) -> Option<Shell> {
     let program = cmd.get_shell();
-    inject_as(cmd, dir, program)
+    inject_as(cmd, dir, program, ssh)
 }
 
 /// [`inject`] for the shell `program`, which `cmd` runs.
-fn inject_as(cmd: &mut CommandBuilder, dir: &Path, program: String) -> Option<Shell> {
+fn inject_as(cmd: &mut CommandBuilder, dir: &Path, program: String, ssh: bool) -> Option<Shell> {
     debug_assert!(cmd.is_default_prog());
+    // Possibly inherited, e.g. when Midterm was started from Midterm.
+    cmd.env_remove("MIDTERM_SSH_DIR");
+    cmd.env_remove("MIDTERM_SI_EPHEMERAL");
     let Some(shell) = Shell::from_path(&program) else {
         cmd.env_remove("MIDTERM_SHELL_INTEGRATION");
         return None;
@@ -191,13 +263,16 @@ fn inject_as(cmd: &mut CommandBuilder, dir: &Path, program: String) -> Option<Sh
         }
     }
     cmd.env("MIDTERM_SHELL_INTEGRATION", "1");
+    if ssh {
+        cmd.env("MIDTERM_SSH_DIR", dir.join("ssh"));
+    }
     Some(shell)
 }
 
 /// [`install`]s the scripts in [`default_dir`] and [`inject`]s them into
 /// `cmd`. Failing to install is not fatal: the shell then simply starts
 /// without integration.
-pub fn setup(cmd: &mut CommandBuilder) -> Option<Shell> {
+pub fn setup(cmd: &mut CommandBuilder, ssh: bool) -> Option<Shell> {
     // Only worth touching the disk for shells we can integrate with.
     let dir = Shell::from_path(&cmd.get_shell())
         .and_then(|_| default_dir())
@@ -212,10 +287,11 @@ pub fn setup(cmd: &mut CommandBuilder) -> Option<Shell> {
             }
         });
     match dir {
-        Some(dir) => inject(cmd, &dir),
+        Some(dir) => inject(cmd, &dir, ssh),
         None => {
             // Possibly inherited, e.g. when Midterm was started from Midterm.
             cmd.env_remove("MIDTERM_SHELL_INTEGRATION");
+            cmd.env_remove("MIDTERM_SSH_DIR");
             None
         }
     }
@@ -251,6 +327,14 @@ mod tests {
         for (name, contents) in SCRIPTS {
             assert_eq!(fs::read_to_string(dir.join(name)).unwrap(), *contents);
         }
+        assert_eq!(
+            fs::read_to_string(dir.join("ssh/remote-command")).unwrap(),
+            remote_command()
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("ssh/should-wrap.sh")).unwrap(),
+            SHOULD_WRAP
+        );
         let zshenv = dir.join("zsh/.zshenv");
         fs::write(&zshenv, "stale").unwrap();
         install(&dir).expect("second install failed");
@@ -280,7 +364,61 @@ mod tests {
     /// even if it is not installed.
     fn inject(cmd: &mut CommandBuilder, dir: &str) -> Option<Shell> {
         let program = cmd.get_env("SHELL").unwrap().to_str().unwrap().to_owned();
-        inject_as(cmd, Path::new(dir), program)
+        inject_as(cmd, Path::new(dir), program, false)
+    }
+
+    #[test]
+    fn ssh_dir_only_when_asked() {
+        let mut cmd = default_prog("/bin/zsh");
+        cmd.env("MIDTERM_SSH_DIR", "/stale");
+        inject(&mut cmd, "/midterm");
+        assert_eq!(env_of(&cmd, "MIDTERM_SSH_DIR"), None);
+        let mut cmd = default_prog("/bin/zsh");
+        inject_as(&mut cmd, Path::new("/midterm"), "/bin/zsh".into(), true);
+        assert_eq!(env_of(&cmd, "MIDTERM_SSH_DIR"), Some("/midterm/ssh".into()));
+        let mut cmd = default_prog("/bin/sh");
+        inject_as(&mut cmd, Path::new("/midterm"), "/bin/sh".into(), true);
+        assert_eq!(env_of(&cmd, "MIDTERM_SSH_DIR"), None);
+    }
+
+    #[test]
+    fn remote_command_is_one_portable_line() {
+        let command = remote_command();
+        assert!(command.starts_with("sh -c '") && command.ends_with('\''));
+        assert_eq!(command.matches('\'').count(), 2, "{command}");
+        for bad in ['\\', '\n', '!'] {
+            assert!(!command.contains(bad), "{bad:?} in the remote command");
+        }
+        // Far below what sshd and a remote `sh -c` take (Linux: 128 KiB per argument).
+        assert!(command.len() < 32 * 1024, "{} bytes", command.len());
+        // The same for every host and user: nothing from this machine.
+        assert_eq!(command, remote_command());
+        if let Some(home) = std::env::home_dir() {
+            assert!(!command.contains(home.to_str().unwrap()));
+        }
+    }
+
+    #[test]
+    fn remote_command_carries_every_script() {
+        use base64::Engine;
+        let command = remote_command();
+        let payload = command
+            .strip_prefix("sh -c 'p=")
+            .and_then(|rest| rest.split(';').next())
+            .unwrap();
+        let script = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap();
+        for (_, contents) in SCRIPTS {
+            assert!(script.contains(strip_comments(contents).trim_end()));
+        }
+        for placeholder in ["@ZSHENV@", "@ZSH@", "@BASH@", "@FISH@"] {
+            assert!(!script.contains(placeholder), "{placeholder} left");
+        }
+        assert!(script.contains("MIDTERM_SI_EPHEMERAL"));
     }
 
     #[test]

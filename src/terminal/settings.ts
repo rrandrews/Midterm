@@ -6,19 +6,19 @@ import { getSettings } from "../settings/settings";
 import { appliedTheme } from "../theme/apply";
 
 /*
- * The terminal plugin's settings and pane data. Settings are saved under
- * `settings.plugins.terminal.settings` and declared here as fields, which
- * the settings dialog renders.
+ * The terminals' settings and pane data. Settings are shared by the classic
+ * and block terminals (they belong to the shell session, not the view),
+ * saved under `settings.plugins.terminal.settings` and declared here as
+ * fields, which the settings dialog renders.
  */
 
 export type CursorStyle = "block" | "bar" | "underline";
+/** How a terminal pane renders: the classic terminal or the block terminal. */
 export type TerminalMode = "classic" | "blocks";
 export type BellMode = "off" | "visual" | "sound";
 export type TerminalBackground = "transparent" | "solid";
 
 export type TerminalSettings = {
-  /** How new terminal panes render. */
-  terminalMode: TerminalMode;
   cursorStyle: CursorStyle;
   cursorBlink: boolean;
   /** Lines of scrollback per terminal. */
@@ -31,26 +31,21 @@ export type TerminalSettings = {
    * some rendering speed); `solid` paints a flat background.
    */
   terminalBackground: TerminalBackground;
+  /** With a transparent background: solid while the alternate screen is active (vim, htop, less). */
+  solidForFullscreen: boolean;
+  /** With a transparent background: programs that get a solid one while in the foreground. */
+  solidBackgroundCommands: string[];
   /** Program to run in new terminals; the login shell when empty. */
   shell: string;
   /** Arguments for `shell` (ignored when `shell` is empty). */
   shellArgs: string[];
+  /** `ssh host` loads the shell integration on the remote (blocks over ssh). */
+  sshIntegration: boolean;
 };
 
 export const SCROLLBACK_RANGE = { min: 0, max: 1_000_000 } as const;
 
 export const TERMINAL_FIELDS: SettingField[] = [
-  {
-    key: "terminalMode",
-    type: "select",
-    label: "New terminals open in",
-    hint: "Each pane can be switched from its menu",
-    options: [
-      { value: "classic", label: "Classic" },
-      { value: "blocks", label: "Blocks" },
-    ],
-    default: "classic",
-  },
   { key: "cursorStyle", type: "select", label: "Cursor style", options: ["block", "bar", "underline"], default: "block" },
   { key: "cursorBlink", type: "toggle", label: "Cursor blinks", default: true },
   {
@@ -84,6 +79,21 @@ export const TERMINAL_FIELDS: SettingField[] = [
     default: "transparent",
   },
   {
+    key: "solidForFullscreen",
+    type: "toggle",
+    label: "Solid for fullscreen apps",
+    hint: "With a transparent background: solid while a fullscreen app (vim, htop, less) is running",
+    default: true,
+  },
+  {
+    key: "solidBackgroundCommands",
+    type: "list",
+    label: "Solid for programs",
+    hint: "With a transparent background: programs that get a solid one while running, because they paint their own background colors. Matched by program name.",
+    placeholder: "codex",
+    default: ["codex"],
+  },
+  {
     key: "shell",
     type: "text",
     label: "Shell",
@@ -98,6 +108,13 @@ export const TERMINAL_FIELDS: SettingField[] = [
     hint: "Used with a custom shell; quote arguments containing spaces",
     placeholder: "-l",
     default: [],
+  },
+  {
+    key: "sshIntegration",
+    type: "toggle",
+    label: "Shell integration over ssh",
+    hint: "`ssh host` loads it on the remote for blocks there (nothing is left behind). New terminals; `command ssh` skips it once.",
+    default: true,
   },
 ];
 
@@ -145,6 +162,4 @@ export function terminalConfig(): TerminalConfig {
 export type TerminalData = PaneData & {
   /** Last working directory the shell reported (OSC 7). New shells for this pane start there. */
   cwd?: string;
-  /** Blocks or classic rendering; the `terminalMode` setting when unset. */
-  terminalMode?: TerminalMode;
 };

@@ -6,7 +6,11 @@ Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with eac
 - Planned work (roadmap, backlog, bugs) is tracked in Linear (team `MID`), not in repo files. See @docs/planning.md for how it is organized and what is on hold. Short-lived implementation plans for work in progress may still go in docs/ with checklist boxes; remove them once completed.
 
 ## General coding guidelines
+- When given tasks directly (rather than pointed to an issue) that require modification of the codebase, first create a proper issue and/or project on Linear for the task.
 - Prefer trusted, actively maintained open-source libraries over rolling your own when a library solves the problem well. Before adding a dependency, check recent releases and adoption. Don't add a dependency for something a few lines of code handle, and don't reimplement what an existing dependency already does.
+
+## Testing
+- For active testing use `bun run dev:mcp` to start an app version that can be monitored via the tauri mcp server.
 
 ## Repo
 - For long prompts involving multiple tasks, split the tasks logically into smaller commits.

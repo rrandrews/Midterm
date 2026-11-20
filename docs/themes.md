@@ -42,6 +42,7 @@ interface Theme {
           brightBlack, …, brightWhite };
   overrides?: Partial<Record<TokenName, string>>;
   panes?: Record<string, Partial<{ from: string; to: string; angle: number }>>;
+  icons?: { set: string }; // file icon set id (docs/icons.md); the settings' choice when unset
   author?: string; source?: string; license?: string;
 }
 ```
@@ -142,7 +143,9 @@ app's CSS uses them: `default`, `terminal`, `terminal-active` (focused
 terminal), `explorer`, `editor`, `viewer`. A theme may add keys for other
 plugins (`panes: { "acme.notes": { from: "#…" } }`); missing fields come from
 `default`. `paneBackground(resolved, pluginId)` falls back to `default` for a
-plugin the theme does not mention.
+plugin the theme does not mention. The block terminal uses
+`--pane-block-terminal` / `--pane-block-terminal-active` when a theme sets
+them, else the terminal's.
 
 Derived pane colors are "lifted": lighter than the background in both kinds
 (content sits above the chrome; in a light theme that means toward white).
@@ -271,7 +274,8 @@ all of `base10` … `base17` are present.
 The `Theme` object as is, with `"midtermTheme": 1` first so the file says
 what it is. Import accepts files with or without the marker, rejects a newer
 format number, and validates with `parseTheme`. Export → import round-trips
-exactly.
+exactly. A theme naming a custom icon set is exported with the set embedded
+as `"iconSet"`; import adds it as a custom set (see [icons.md](icons.md)).
 
 ## Bundled themes
 
@@ -335,6 +339,7 @@ accent-derived token (soft, fg, cursor, selection, find) follows it.
 |---|---|
 | `theme` | The theme's id (bundled or custom). An unknown id shows Midterm Dark. |
 | `themeFollowSystem`, `themeLight`, `themeDark` | Follow macOS's appearance (`prefers-color-scheme`) with a light and a dark pick. |
+| `iconSet` | The file icon set (`material` by default); a theme's own `icons.set` wins. See [icons.md](icons.md). |
 | `accent` | An override of the theme's accent; empty for the theme's own. Settings version 3 turned the old default (`#8B9CFF`, Midterm Dark's accent) into "the theme's own" and kept any other choice. |
 
 Custom themes (imported, duplicated or saved from the editor) are kept in
@@ -345,6 +350,8 @@ Settings → Appearance has the following:
 
 - Follow the system, with the light and dark picks.
 - The accent: "Theme's", the presets, or a custom color.
+- File icons: the icon set, and importing, exporting and deleting custom
+  sets ([icons.md](icons.md)).
 - The gallery: swatches drawn from each resolved theme. Click one to apply
   it; while following the system, that sets the light or dark pick for its
   kind.
@@ -387,7 +394,8 @@ preview on the real terminals and files beside it. Its pane data is
     discard/save and a filter.
   - A sample strip: the ANSI colors, a code sample in the syntax colors,
     and the UI states.
-  - The groups: base palette, the token groups, terminal ANSI colors, and
+  - The groups: base palette, the token groups, terminal ANSI colors, file
+    icons (the theme's icon set or "From settings", with sample icons), and
     pane backgrounds for every built-in key and enabled plugin.
 - **Each token row**:
   - It shows "derived" or "set", with a reset to derived.

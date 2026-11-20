@@ -2,27 +2,29 @@
 //! Gemini's OpenAI-compatible endpoint and any custom base URL.
 //!
 //! One non-streaming `POST {base}/chat/completions` with a system and a user
-//! message. No sampling parameters. Reasoning effort is asked to be low
-//! where the provider takes it (see [`build_body`]); a model that rejects
-//! the parameter gets the request again without it.
+//! message. No sampling parameters. The reasoning effort chosen in
+//! `effort.rs` is sent where there is one (see [`build_body`]); a model that
+//! rejects the field gets the request again without it.
 
 use serde_json::{Map, Value, json};
 
-use super::Completion;
+use super::effort::Effort;
 use super::error::{AiError, ErrorKind};
 use super::http;
 use super::provider::Flavor;
+use super::{Completion, Reply};
 
-/// Words in a 400 response that mean the effort parameter was the problem.
-const EFFORT_WORDS: &[&str] = &["reasoning", "effort"];
+/// Words in a 400/422 response that mean the effort field was the problem.
+const EFFORT_WORDS: &[&str] = &["reasoning", "effort", "thinking"];
 
 /// The request body. Differences by provider:
 ///
 /// - token limit: OpenAI wants `max_completion_tokens` (its reasoning models
 ///   reject `max_tokens`); the others take `max_tokens`.
-/// - effort: `reasoning_effort: "low"` for OpenAI, DeepSeek and Gemini;
-///   OpenRouter's normalized `reasoning: { effort: "low", exclude: true }`;
-///   nothing for a custom server, whose support is unknown.
+/// - effort (`req.effort`, only when `with_effort`): `reasoning_effort` for
+///   OpenAI, Gemini and custom servers; OpenRouter's normalized
+///   `reasoning: { effort, exclude: true }`; DeepSeek takes
+///   `reasoning_effort`, and `thinking: { type: "disabled" }` for off.
 pub fn build_body(flavor: Flavor, req: &Completion, with_effort: bool) -> Value {
     let mut messages = Vec::new();
     if !req.system.trim().is_empty() {
@@ -39,25 +41,23 @@ pub fn build_body(flavor: Flavor, req: &Completion, with_effort: bool) -> Value 
         _ => "max_tokens",
     };
     body.insert(tokens_field.into(), json!(req.max_tokens));
-    if with_effort {
+    if let Some(level) = req.effort.filter(|_| with_effort) {
         match flavor {
-            Flavor::OpenAi | Flavor::DeepSeek | Flavor::Gemini => {
-                body.insert("reasoning_effort".into(), json!("low"));
+            Flavor::DeepSeek if level == Effort::None => {
+                body.insert("thinking".into(), json!({ "type": "disabled" }));
             }
             Flavor::OpenRouter => {
                 body.insert(
                     "reasoning".into(),
-                    json!({ "effort": "low", "exclude": true }),
+                    json!({ "effort": level.as_str(), "exclude": true }),
                 );
             }
-            Flavor::Custom => {}
+            _ => {
+                body.insert("reasoning_effort".into(), json!(level.as_str()));
+            }
         }
     }
     Value::Object(body)
-}
-
-fn sends_effort(flavor: Flavor) -> bool {
-    flavor != Flavor::Custom
 }
 
 /// The reply text of a chat completion, or why there is none.
@@ -149,19 +149,30 @@ pub async fn complete(
     base_url: &str,
     key: Option<&str>,
     req: &Completion<'_>,
-) -> Result<String, AiError> {
+) -> Result<Reply, AiError> {
     let url = format!("{base_url}/chat/completions");
     let send = |with_effort: bool| {
         let body = build_body(flavor, req, with_effort);
-        http::send(authorize(client.post(&url), key).json(&body), key)
+        http::send(
+            authorize(client.post(&url), key).json(&body),
+            key,
+            req.timeout,
+        )
     };
-    let with_effort = sends_effort(flavor);
+    let with_effort = req.effort.is_some();
+    let mut effort_dropped = false;
     let response = match send(with_effort).await {
-        Err(f) if with_effort && f.is_bad_request_about(EFFORT_WORDS) => send(false).await,
+        Err(f) if with_effort && f.is_bad_request_about(EFFORT_WORDS) => {
+            effort_dropped = true;
+            send(false).await
+        }
         other => other,
     }
     .map_err(|f| f.into_error(key))?;
-    parse_reply(&response)
+    Ok(Reply {
+        text: parse_reply(&response)?,
+        effort_dropped,
+    })
 }
 
 pub async fn models(
@@ -170,7 +181,7 @@ pub async fn models(
     key: Option<&str>,
 ) -> Result<Vec<String>, AiError> {
     let url = format!("{base_url}/models");
-    let response = http::send(authorize(client.get(&url), key), key)
+    let response = http::send(authorize(client.get(&url), key), key, http::REQUEST_TIMEOUT)
         .await
         .map_err(|f| f.into_error(key))?;
     Ok(parse_models(&response))
@@ -187,6 +198,8 @@ mod tests {
             system: "sys",
             prompt: "hello",
             max_tokens: 100,
+            effort: Some(Effort::Low),
+            timeout: http::REQUEST_TIMEOUT,
         }
     }
 
@@ -222,8 +235,32 @@ mod tests {
         let b = build_body(Flavor::DeepSeek, &req(), false);
         assert!(b.get("reasoning_effort").is_none());
         let b = build_body(Flavor::Custom, &req(), true);
+        assert_eq!(b["reasoning_effort"], "low");
+        let mut r = req();
+        r.effort = None;
+        let b = build_body(Flavor::Custom, &r, true);
         assert!(b.get("reasoning_effort").is_none());
         assert!(b.get("reasoning").is_none());
+
+        // Other levels, and off.
+        let mut r = req();
+        r.effort = Some(Effort::Xhigh);
+        assert_eq!(
+            build_body(Flavor::OpenAi, &r, true)["reasoning_effort"],
+            "xhigh"
+        );
+        assert_eq!(
+            build_body(Flavor::OpenRouter, &r, true)["reasoning"]["effort"],
+            "xhigh"
+        );
+        r.effort = Some(Effort::None);
+        let b = build_body(Flavor::DeepSeek, &r, true);
+        assert_eq!(b["thinking"], json!({ "type": "disabled" }));
+        assert!(b.get("reasoning_effort").is_none());
+        assert_eq!(
+            build_body(Flavor::OpenAi, &r, true)["reasoning_effort"],
+            "none"
+        );
 
         let mut r = req();
         r.system = "  ";
@@ -280,7 +317,8 @@ mod tests {
             &req(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .text;
         assert_eq!(text, "echo hi");
         let sent = &server.requests()[0];
         assert_eq!(sent.method, "POST");
@@ -313,7 +351,8 @@ mod tests {
             &req(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .text;
         assert_eq!(text, "ok");
         let sent = server.requests();
         assert_eq!(sent.len(), 2);

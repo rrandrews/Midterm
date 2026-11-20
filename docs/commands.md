@@ -42,10 +42,12 @@ palette and the native menu bar are generated from it.
 
 `schema.ts` defines `Settings`, the defaults, `migrateSettings` and
 `validateSettings` (untrusted input; every field falls back to its default
-on its own). The file has a `version` (`SETTINGS_VERSION`, now 2):
+on its own). The file has a `version` (`SETTINGS_VERSION`, now 4):
 version 1 kept the terminal's settings at the top level, and the migration
-moves them into `plugins.terminal.settings`. Global fields: fonts, accent,
-key bindings, `defaultPaneKind`. Everything a plugin owns is in
+moves them into `plugins.terminal.settings`; version 3 made the accent an
+override; version 4 turned the terminal's `terminalMode` into
+`defaultTerminal`. Global fields: fonts, accent, theme, key bindings,
+`defaultPaneKind`, `defaultTerminal`, `ai`. Everything a plugin owns is in
 `plugins[id] = { enabled, settings, skills }`, validated against the
 plugin's declared fields when read (`src/plugins/settings.ts`; the
 terminal's are in `src/terminal/settings.ts`, the editor's and viewer's in
@@ -69,7 +71,7 @@ installed plugins, enable/disable, import, remove) and Keyboard (click a
 shortcut and press the new keys; ✕ unbinds, ↺ restores the default;
 conflicts are flagged). Below them, one section per pane plugin: Terminal
 (default mode, cursor, scrollback, copy-on-select, bell, background, shell
-and arguments), Explorer (follow the terminal, hidden files), Editor (word
+and arguments, shell integration over ssh), Explorer (follow the terminal, hidden files), Editor (word
 wrap, tab size, line numbers), Viewer (Markdown rendered or as source),
 each with its skills. Controls are shared from `src/settings/controls.tsx`,
 which also renders plugins' declarative fields. Changes apply and save at once; text

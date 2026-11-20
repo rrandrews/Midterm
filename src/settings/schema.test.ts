@@ -33,6 +33,13 @@ describe("validateSettings", () => {
     expect(validateSettings({ accent: "red" }).accent).toBe("");
     expect(validateSettings({ accent: "#fff" }).accent).toBe("");
   });
+
+  it("keeps known reasoning effort levels per provider and drops the rest", () => {
+    expect(validateSettings({}).ai.effort).toEqual({});
+    const ai = validateSettings({ ai: { effort: { openai: "xhigh", anthropic: "default", gemini: "ultra", deepseek: 3 } } }).ai;
+    expect(ai.effort).toEqual({ openai: "xhigh", anthropic: "default" });
+    expect(validateSettings({ ai: { effort: "high" } }).ai.effort).toEqual({});
+  });
 });
 
 describe("migrateSettings", () => {
@@ -49,13 +56,15 @@ describe("migrateSettings", () => {
     const migrated = migrateSettings(v1);
     expect(migrated.version).toBe(SETTINGS_VERSION);
     expect(migrated.cursorStyle).toBeUndefined();
+    // Version 4 then turns the blocks mode setting into the default terminal.
     expect(migrated.plugins).toEqual({
-      terminal: { settings: { cursorStyle: "bar", scrollback: 500, shellArgs: ["-l"], terminalMode: "blocks", bell: "sound" } },
+      terminal: { settings: { cursorStyle: "bar", scrollback: 500, shellArgs: ["-l"], bell: "sound" } },
     });
+    expect(migrated.defaultTerminal).toBe("block-terminal");
     const settings = validateSettings(v1);
     expect(settings.fontSize).toBe(14);
     expect(settings.keybindings).toEqual({ "tab.new": ["Cmd+N"] });
-    expect(settings.plugins.terminal.settings?.terminalMode).toBe("blocks");
+    expect(settings.defaultTerminal).toBe("block-terminal");
   });
 
   it("makes the old default accent the theme's own, and keeps a custom one (version 2)", () => {
@@ -63,8 +72,28 @@ describe("migrateSettings", () => {
     expect(validateSettings({ version: 2, accent: "#F472B6" }).accent).toBe("#F472B6");
   });
 
+  it("turns the terminal mode setting into the default terminal (version 3)", () => {
+    const v3 = (terminalMode?: string, extra: Record<string, unknown> = {}) =>
+      validateSettings({
+        version: 3,
+        ...extra,
+        plugins: { terminal: { settings: { bell: "off", ...(terminalMode ? { terminalMode } : {}) } } },
+      });
+    expect(v3("blocks").defaultTerminal).toBe("block-terminal");
+    expect(v3("blocks").plugins.terminal.settings).toEqual({ bell: "off" });
+    expect(v3("classic").defaultTerminal).toBe("terminal");
+    expect(v3("classic").plugins.terminal.settings).toEqual({ bell: "off" });
+    expect(v3().defaultTerminal).toBe("terminal");
+    expect(v3("blocks", { defaultTerminal: "my-term" }).defaultTerminal).toBe("my-term");
+  });
+
+  it("falls back to the classic terminal for an invalid default terminal", () => {
+    expect(validateSettings({ defaultTerminal: "" }).defaultTerminal).toBe("terminal");
+    expect(validateSettings({ defaultTerminal: 3 }).defaultTerminal).toBe("terminal");
+  });
+
   it("leaves current settings alone", () => {
-    const current = { version: 3, accent: "#8B9CFF", plugins: { terminal: { settings: { bell: "off" } } } };
+    const current = { version: 4, accent: "#8B9CFF", plugins: { terminal: { settings: { bell: "off" } } } };
     expect(migrateSettings(current)).toEqual(current);
   });
 });

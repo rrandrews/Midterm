@@ -11,6 +11,8 @@ import { contrastRatio, resolveTheme } from "../resolve";
 import { allThemes, findTheme, isBundled, useThemeState } from "../state";
 import { ANSI_NAMES, type AnsiName, BUILTIN_PANES, TOKEN_GROUPS, type Theme, type TokenName, ansiToken } from "../types";
 import { revealPane } from "../../actions";
+import { FileIcon } from "../../icons/FileIcon";
+import { activeIconSetId, allIconSets, knownIconSet, loadIconSet, useIconState } from "../../icons/state";
 import {
   type BaseField,
   claimEditor,
@@ -24,6 +26,7 @@ import {
   setAnsi,
   setBase,
   setKind,
+  setIconSet,
   setPane,
   setToken,
   startEditing,
@@ -154,6 +157,55 @@ function Row({
       >
         <RotateCcw size={11} />
       </button>
+    </div>
+  );
+}
+
+const ICON_SAMPLES: { name: string; kind: "file" | "dir"; expanded?: boolean }[] = [
+  { name: "src", kind: "dir", expanded: true },
+  { name: "docs", kind: "dir" },
+  { name: "package.json", kind: "file" },
+  { name: "main.ts", kind: "file" },
+  { name: "lib.rs", kind: "file" },
+  { name: "README.md", kind: "file" },
+  { name: "logo.png", kind: "file" },
+  { name: "notes", kind: "file" },
+];
+
+/** The theme's file icon set ("From settings" when it has none), with a few sample icons. */
+function IconSetPicker({ theme }: { theme: Theme }) {
+  useIconState((state) => state.custom);
+  const loaded = useIconState((state) => state.loaded);
+  const sets = allIconSets();
+  const value = theme.icons?.set ?? "";
+  const shownId = knownIconSet(value) ? value : activeIconSetId();
+  const shown = loaded.get(shownId) ?? null;
+  useEffect(() => {
+    if (!shown) void loadIconSet(shownId);
+  }, [shown, shownId]);
+  return (
+    <div className="flex flex-col gap-1.5 px-3 py-1.5">
+      <select
+        aria-label="Theme icon set"
+        className={`${FIELD} w-full`}
+        value={value}
+        onChange={(event) => setIconSet(event.target.value || undefined)}
+      >
+        <option value="">From settings</option>
+        {sets.map((set) => (
+          <option key={set.id} value={set.id}>
+            {set.name}
+          </option>
+        ))}
+        {value && !knownIconSet(value) && <option value={value}>{value} (missing)</option>}
+      </select>
+      <div className="flex flex-wrap items-center gap-2 text-micro text-fg-mid">
+        {ICON_SAMPLES.map((sample) => (
+          <span key={sample.name} className="flex items-center gap-1" title={sample.name}>
+            <FileIcon set={shown} light={theme.kind === "light"} name={sample.name} kind={sample.kind} expanded={sample.expanded} />
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -395,6 +447,9 @@ export function ThemeEditorPane({
           {ANSI_NAMES.filter((name) => matches(name) || matches(ansiToken(name))).map((name: AnsiName) => (
             <Row key={name} name={name} value={draft.ansi[name]} overridden onChange={(color) => setAnsi(name, color)} />
           ))}
+        </Group>
+        <Group title="File icons" open={false}>
+          <IconSetPicker theme={draft} />
         </Group>
         <Group title="Pane backgrounds" open={false}>
           {paneKeys

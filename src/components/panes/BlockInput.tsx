@@ -1,5 +1,6 @@
-import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { atPrompt, dismiss, leftPrompt, shownSuggestion, typed, useAiSuggestions } from "../../ai/engine";
+import { type CmdRequest, parseSlash, slashCompletion, writeCommand } from "../../ai/slash";
 import { runFromBlocks } from "../../terminal/blockMode";
 import { globalHistory, historyEntries, loadGlobalHistory, suggestion } from "../../terminal/history";
 import type { TerminalSession } from "../../terminal/session";
@@ -10,18 +11,24 @@ const MAX_ROWS = 12;
 /**
  * The blocks mode command line: a textarea with history (↑/↓) and an
  * autosuggestion drawn as ghost text (⇥ or → accepts, ⏎ runs, ⇧⏎ adds a
- * line). At an empty prompt the suggestion comes from the AI provider, if
- * one is set up (src/ai/engine.ts); once the user types, the history's
+ * line). At an empty prompt the suggestion is predicted from the command
+ * log, or else comes from the AI provider if one is set up (src/ai/engine.ts); once the user types, the history's
  * suggestion wins unless the AI's continues what was typed. Esc dismisses
- * the AI suggestion. Shown only while the shell waits at a prompt (so it
- * remounts at every prompt).
+ * the AI suggestion. A line starting with a registered slash command
+ * (src/ai/slash.ts) is handled here instead of going to the shell: `/cmd
+ * <task>` asks the model for a command and puts it in the editor, below the
+ * request, ready to edit or run. Shown only while the shell waits at a
+ * prompt (so it remounts at every prompt).
  */
 export function BlockInput({
   session,
+  scope,
   inputRef,
   footer,
 }: {
   session: TerminalSession;
+  /** Whose prompt this editor is for (see `scopeOf`): nothing is sent to another shell's. */
+  scope: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   /** The line below the editor; `status` says where the suggestion comes from, or that one is loading or failed. */
   footer: (status: ReactNode) => ReactNode;
@@ -36,6 +43,12 @@ export function BlockInput({
     entries: [],
   });
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  /** The last slash command line and how it went; shown above the editor. */
+  const [slash, setSlash] = useState<{ line: string; status: "loading" | "done" | "error"; message?: string } | null>(
+    null,
+  );
+  const slashRequest = useRef<CmdRequest | null>(null);
+  useEffect(() => () => slashRequest.current?.cancel(), []);
 
   useEffect(() => {
     let live = true;
@@ -45,10 +58,13 @@ export function BlockInput({
     };
   }, []);
 
+  // At a nested shell's prompt (over ssh) only its own commands apply: the
+  // saved history is this machine's.
+  const scopeCommands = session.blocks.commandsFor(scope);
   const entries = useMemo(
-    () => historyEntries(session.blocks.commands, globalHistory()),
+    () => historyEntries(session.blocks.commandsFor(scope), scope === "" ? globalHistory() : []),
     // The lists only change between commands (and when the saved history loads).
-    [session, historyLoaded, session.blocks.commands.length],
+    [session, historyLoaded, scope, scopeCommands.length],
   );
   // The AI's suggestion: asked for at an empty prompt, dropped when the prompt goes.
   useEffect(() => {
@@ -60,10 +76,29 @@ export function BlockInput({
   const aiContinues = aiText !== undefined && aiText.length > value.length && aiText.startsWith(value);
 
   const fromHistory = walk.index === -1 && caretAtEnd ? suggestion(entries, value) : undefined;
-  const source: "ai" | "history" | undefined =
-    walk.index !== -1 || !caretAtEnd ? undefined : aiContinues ? "ai" : fromHistory ? "history" : undefined;
-  const suggested = source === "ai" ? aiText : source === "history" ? fromHistory : undefined;
-  const ghost = suggested?.slice(value.length) ?? "";
+  const slashHint = walk.index === -1 && caretAtEnd ? slashCompletion(value) : undefined;
+  const source: "slash" | "ai" | "local" | "history" | undefined =
+    walk.index !== -1 || !caretAtEnd || slash?.status === "loading"
+      ? undefined
+      : slashHint
+        ? "slash"
+        : aiContinues
+        ? ai?.source === "local"
+          ? "local"
+          : "ai"
+        : fromHistory
+          ? "history"
+          : undefined;
+  const suggested =
+    source === "slash"
+      ? `/${slashHint?.name} `
+      : source === "ai" || source === "local"
+        ? aiText
+        : source === "history"
+          ? fromHistory
+          : undefined;
+  // A slash command's ghost also shows what it takes (`/cmd <what to do>`); ⇥ accepts only the name.
+  const ghost = source === "slash" && slashHint ? slashHint.usage.slice(value.length) : (suggested?.slice(value.length) ?? "");
 
   const set = (next: string) => {
     setValue(next);
@@ -79,9 +114,51 @@ export function BlockInput({
     if (suggested) set(suggested);
   };
 
+  /** Runs a slash command line; the line stays shown above the editor with its result. */
+  const runSlash = (line: string, args: string) => {
+    slashRequest.current?.cancel();
+    if (!args) {
+      setSlash({ line, status: "error", message: "Say what the command should do: /cmd <what to do>" });
+      return;
+    }
+    const request = writeCommand(paneId, args);
+    slashRequest.current = request;
+    setSlash({ line, status: "loading" });
+    setValue("");
+    request.result.then(
+      (command) => {
+        if (slashRequest.current !== request) return;
+        slashRequest.current = null;
+        setSlash({ line, status: "done" });
+        set(command);
+      },
+      (error: { kind: string; message: string }) => {
+        if (slashRequest.current !== request) return;
+        slashRequest.current = null;
+        setSlash({ line, status: "error", message: error.message });
+        // Back in the editor, so ⏎ tries again.
+        set(line);
+      },
+    );
+  };
+
+  const cancelSlash = () => {
+    const line = slash?.line ?? "";
+    slashRequest.current?.cancel();
+    slashRequest.current = null;
+    setSlash(null);
+    set(line);
+  };
+
   const run = () => {
     if (!value.trim()) return;
-    runFromBlocks(session, value);
+    const parsed = parseSlash(value);
+    if (parsed) {
+      runSlash(value.trim(), parsed.args);
+      setWalk({ index: -1, draft: "", entries: [] });
+      return;
+    }
+    runFromBlocks(session, value, scope);
     setValue("");
     setWalk({ index: -1, draft: "", entries: [] });
   };
@@ -103,9 +180,20 @@ export function BlockInput({
     const { selectionStart, selectionEnd } = input;
     const collapsed = selectionStart === selectionEnd;
 
+    if (slash?.status === "loading") {
+      // Nothing reaches the editor or the shell (⌃D would send EOF) until the request settles.
+      if (event.key === "Escape" || (event.ctrlKey && event.key.toLowerCase() === "c")) {
+        event.preventDefault();
+        cancelSlash();
+      } else if (event.key === "Enter" || event.key === "Tab" || event.ctrlKey || event.metaKey) {
+        if (!event.metaKey) event.preventDefault();
+      }
+      return;
+    }
     if (event.key === "Enter" && plain && !event.shiftKey) {
       event.preventDefault();
-      run();
+      // A held ⏎ must not run what /cmd just put in the editor.
+      if (!event.repeat) run();
     } else if (event.key === "Tab" && plain && !event.shiftKey) {
       // There is no completion here; Tab never leaves the editor.
       event.preventDefault();
@@ -121,7 +209,7 @@ export function BlockInput({
       event.preventDefault();
       set(walk.draft);
       setWalk({ index: -1, draft: "", entries: [] });
-    } else if (event.key === "Escape" && ai && (source === "ai" || ai.status === "loading" || ai.status === "error")) {
+    } else if (event.key === "Escape" && ai && (source === "ai" || source === "local" || ai.status === "loading" || ai.status === "error")) {
       event.preventDefault();
       dismiss(paneId);
     } else if (event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -145,6 +233,13 @@ export function BlockInput({
 
   return (
     <div className="blocks-input">
+      {slash && (
+        <div className="blocks-slash">
+          <span className="blocks-slash-line">{slash.line}</span>
+          {slash.status === "loading" && <span className="animate-pulse text-fg-faint">writing a command… esc cancels</span>}
+          {slash.status === "error" && <span className="truncate text-err/80">{slash.message}</span>}
+        </div>
+      )}
       <div className="blocks-input-field">
         <div className="blocks-input-ghost" aria-hidden="true">
           <span className="invisible">{value}</span>
@@ -161,10 +256,12 @@ export function BlockInput({
           autoComplete="off"
           aria-label="Command"
           onFocus={() => {
-            if (!value) atPrompt(paneId);
+            if (!value && slash?.status !== "loading") atPrompt(paneId);
           }}
           onChange={(event) => {
+            if (slash?.status === "loading") return;
             setValue(event.target.value);
+            if (!event.target.value && slash) setSlash(null);
             if (event.target.value) typed(paneId);
             else atPrompt(paneId);
             setCaretAtEnd(event.target.selectionEnd === event.target.value.length);
@@ -177,12 +274,30 @@ export function BlockInput({
           onKeyDown={onKeyDown}
         />
       </div>
-      {footer(<SuggestionStatus source={source} loading={ai?.status === "loading"} error={ai?.status === "error" ? ai.error : undefined} />)}
+      {footer(
+        <SuggestionStatus
+          source={source}
+          slashDescription={slashHint?.description}
+          loading={ai?.status === "loading" || slash?.status === "loading"}
+          error={ai?.status === "error" ? ai.error : undefined}
+        />,
+      )}
     </div>
   );
 }
 
-function SuggestionStatus({ source, loading, error }: { source?: "ai" | "history"; loading: boolean; error?: string }) {
+function SuggestionStatus({
+  source,
+  slashDescription,
+  loading,
+  error,
+}: {
+  source?: "slash" | "ai" | "local" | "history";
+  slashDescription?: string;
+  loading: boolean;
+  error?: string;
+}) {
+  if (source === "slash") return <span className="blocks-ai-status">{slashDescription}</span>;
   if (loading) return <span className="blocks-ai-status animate-pulse">AI…</span>;
   if (error)
     return (
@@ -191,6 +306,7 @@ function SuggestionStatus({ source, loading, error }: { source?: "ai" | "history
       </span>
     );
   if (source === "ai") return <span className="blocks-ai-status">AI suggestion · esc dismisses</span>;
+  if (source === "local") return <span className="blocks-ai-status">predicted from history · esc dismisses</span>;
   if (source === "history") return <span className="blocks-ai-status">from history</span>;
   return null;
 }

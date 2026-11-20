@@ -7,7 +7,7 @@
 export const ACCENT_PRESETS = ["#8B9CFF", "#5EEAD4", "#F5A524", "#F472B6"] as const;
 
 /** Bump when the saved shape changes, and migrate in `migrateSettings`. */
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 /**
  * A plugin's entry in the settings: whether it is enabled, its own settings
@@ -36,7 +36,21 @@ export type AiSettings = {
   cliPaths: Record<string, string>;
   /** Finished blocks sent as context. */
   contextBlocks: number;
+  /**
+   * Reasoning effort by provider id. Missing: Midterm's pick (low, or
+   * nothing for a custom server); `default`: nothing is sent and the
+   * provider decides. The backend clamps a level to what the model offers.
+   */
+  effort: Record<string, EffortLevel>;
 };
+
+/** Reasoning effort levels, lowest first, plus `default` (send nothing). */
+export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = "default" | (typeof EFFORT_LEVELS)[number];
+
+function isEffortLevel(value: unknown): value is EffortLevel {
+  return value === "default" || (EFFORT_LEVELS as readonly unknown[]).includes(value);
+}
 
 export const AI_CONTEXT_RANGE = { min: 0, max: 20 } as const;
 
@@ -54,13 +68,25 @@ export type Settings = {
   themeFollowSystem: boolean;
   themeLight: string;
   themeDark: string;
+  /** Id of the file icon set (bundled or custom); a theme with its own set wins. */
+  iconSet: string;
   /**
    * Keyboard shortcut overrides by command id. Each value replaces that
    * command's default bindings; an empty list unbinds it.
    */
   keybindings: Record<string, string[]>;
-  /** Kind of the pane a new tab or a split opens (a plugin id); the terminal if that plugin is unavailable. */
+  /**
+   * Kind of the pane a new tab or a split opens (a plugin id). A terminal
+   * kind (`terminal` by default) means "the default terminal"
+   * (`defaultTerminal`); so does a plugin that is unavailable.
+   */
   defaultPaneKind: string;
+  /**
+   * The plugin new terminals open in (one flagged `terminal`): `terminal`
+   * (classic) or `block-terminal`; the classic terminal if that plugin is
+   * unavailable.
+   */
+  defaultTerminal: string;
   /** Per-plugin entries, by plugin id. */
   plugins: Record<string, PluginEntry>;
   ai: AiSettings;
@@ -75,10 +101,12 @@ export const DEFAULT_SETTINGS: Settings = {
   themeFollowSystem: false,
   themeLight: "midterm-light",
   themeDark: "midterm-dark",
+  iconSet: "material",
   keybindings: {},
   defaultPaneKind: "terminal",
+  defaultTerminal: "terminal",
   plugins: {},
-  ai: { suggestions: true, provider: "", model: "", baseUrl: "", cliPaths: {}, contextBlocks: 5 },
+  ai: { suggestions: true, provider: "", model: "", baseUrl: "", cliPaths: {}, contextBlocks: 5, effort: {} },
 };
 
 export const FONT_SIZE_RANGE = { min: 8, max: 32 } as const;
@@ -139,15 +167,30 @@ export function migrateSettings(raw: unknown): Record<string, unknown> {
     // default theme's own accent, so only a custom choice is kept.
     if (typeof data.accent === "string" && data.accent.toLowerCase() === "#8b9cff") data.accent = "";
   }
+  if (version < 4) {
+    // Classic and blocks terminals became two plugins: the terminal's
+    // "new terminals open in" setting becomes the default terminal.
+    const plugins = isRecord(data.plugins) ? { ...data.plugins } : {};
+    const terminal = isRecord(plugins.terminal) ? { ...plugins.terminal } : null;
+    const settings = terminal && isRecord(terminal.settings) ? { ...terminal.settings } : null;
+    if (terminal && settings && "terminalMode" in settings) {
+      if (settings.terminalMode === "blocks" && !nonEmpty(data.defaultTerminal)) data.defaultTerminal = "block-terminal";
+      delete settings.terminalMode;
+      plugins.terminal = { ...terminal, settings };
+      data.plugins = plugins;
+    }
+  }
   data.version = SETTINGS_VERSION;
   return data;
 }
 
 function validateAi(raw: unknown): AiSettings {
   const d = DEFAULT_SETTINGS.ai;
-  if (!isRecord(raw)) return { ...d, cliPaths: {} };
+  if (!isRecord(raw)) return { ...d, cliPaths: {}, effort: {} };
   const cliPaths: Record<string, string> = {};
   if (isRecord(raw.cliPaths)) for (const [id, path] of Object.entries(raw.cliPaths)) if (nonEmpty(path)) cliPaths[id] = path;
+  const effort: Record<string, EffortLevel> = {};
+  if (isRecord(raw.effort)) for (const [id, level] of Object.entries(raw.effort)) if (isEffortLevel(level)) effort[id] = level;
   return {
     suggestions: typeof raw.suggestions === "boolean" ? raw.suggestions : d.suggestions,
     provider: typeof raw.provider === "string" ? raw.provider : d.provider,
@@ -155,6 +198,7 @@ function validateAi(raw: unknown): AiSettings {
     baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl.trim() : d.baseUrl,
     cliPaths,
     contextBlocks: Math.round(clampNumber(raw.contextBlocks, AI_CONTEXT_RANGE, d.contextBlocks)),
+    effort,
   };
 }
 
@@ -203,9 +247,11 @@ export function validateSettings(raw: unknown): Settings {
     themeFollowSystem: typeof data.themeFollowSystem === "boolean" ? data.themeFollowSystem : d.themeFollowSystem,
     themeLight: nonEmpty(data.themeLight) ? data.themeLight : d.themeLight,
     themeDark: nonEmpty(data.themeDark) ? data.themeDark : d.themeDark,
+    iconSet: nonEmpty(data.iconSet) ? data.iconSet : d.iconSet,
     keybindings,
     defaultPaneKind:
       typeof data.defaultPaneKind === "string" && data.defaultPaneKind ? data.defaultPaneKind : d.defaultPaneKind,
+    defaultTerminal: nonEmpty(data.defaultTerminal) ? data.defaultTerminal : d.defaultTerminal,
     plugins,
     ai: validateAi(data.ai),
   };

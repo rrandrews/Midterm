@@ -9,7 +9,7 @@ import { importVSCodeTheme } from "./vscode";
 export { importBase16 } from "./base16";
 export { type ImportOptions, DEFAULT_ANSI, kindOf } from "./common";
 export { importItermColors } from "./iterm";
-export { MIDTERM_THEME_FORMAT, exportTheme, importMidtermTheme } from "./midterm";
+export { MIDTERM_THEME_FORMAT, embeddedIconSet, exportTheme, importMidtermTheme } from "./midterm";
 export { importVSCodeTheme } from "./vscode";
 
 export type ThemeFormat = "midterm" | "iterm" | "vscode" | "base16";

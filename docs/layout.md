@@ -15,7 +15,7 @@ The library and the app use the same words for different things:
 |---|---|
 | workspace | one tab's pane layout (`Layout`) |
 | split | a split (horizontal or vertical) |
-| tabset | a pane's **frame**: the drag handle, menu and drop target |
+| tabset | a pane's **frame**: the options menu, drag handle (rightmost) and drop target |
 | tab | a **pane** (`PaneNode`); its `data` is `PaneData` (`{ kind }`) |
 
 Every frame holds exactly one pane. The library's per-tabset tab list is

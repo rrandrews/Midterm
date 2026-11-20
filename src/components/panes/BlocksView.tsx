@@ -4,13 +4,13 @@ import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, u
 import { homeDirectory } from "../../ipc/system";
 import { type Line, type Run, formatDuration, logicalLines, renderRows } from "../../terminal/blockRender";
 import {
-  canRun,
+  canReplay,
   copyBlockCommand,
   copyBlockOutput,
-  runFromBlocks,
+  replayBlock,
   setContextBlock,
 } from "../../terminal/blockMode";
-import { type Block, type BlocksSnapshot, outputRows } from "../../terminal/blocks";
+import { type Block, type BlocksSnapshot, outputRows, scopeOf } from "../../terminal/blocks";
 import { branchOf } from "../../terminal/gitBranch";
 import type { TerminalSession } from "../../terminal/session";
 import { BlockInput } from "./BlockInput";
@@ -73,8 +73,11 @@ export function BlocksView({
     if (scroller && stuck.current) scroller.scrollTop = scroller.scrollHeight;
   }, [snapshot]);
 
-  const cwd = session.cwd;
-  const branch = useBranch(cwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
+  // A nested shell (over ssh) is somewhere else: its own report, never the pane's cwd.
+  const where = snapshot.nested ? snapshot.location : { cwd: session.cwd };
+  // Never looked up here for a nested shell: even reporting this host, it may be another machine.
+  const branch = useBranch(snapshot.nested ? undefined : where.cwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
+  const promptScope = scopeOf(snapshot.nested, snapshot.location);
 
   return (
     <div
@@ -103,7 +106,8 @@ export function BlocksView({
                 session={session}
                 block={block}
                 branch={block.branch}
-                runnable={atPrompt}
+                // Only at a prompt of the same shell: "Run again" must not run a remote command here.
+                runnable={atPrompt && canReplay(session, block)}
               />
             ) : (
               <RunningBlock key={block.id} session={session} block={block} branch={block.branch} />
@@ -113,11 +117,15 @@ export function BlocksView({
       </div>
       {atPrompt && (
         <BlockInput
+          // A new editor (no draft, no history walk) when the prompt is
+          // another shell's: ssh ended or started under it.
+          key={promptScope}
+          scope={promptScope}
           session={session}
           inputRef={inputRef}
           footer={(status) => (
             <div className="blocks-meta mt-1.5">
-              {cwd && <span className="truncate">{displayPath(cwd)}</span>}
+              <Location cwd={where.cwd} host={where.host} />
               {branch && <span className="truncate">{branch}</span>}
               <span className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
                 {status}
@@ -176,7 +184,7 @@ const FinishedBlock = memo(function FinishedBlock({
           <ActionButton
             label="Run again"
             disabled={!runnable || !block.command}
-            onClick={() => canRun(session) && runFromBlocks(session, block.command)}
+            onClick={() => replayBlock(session, block)}
           >
             <RotateCw size={12} />
           </ActionButton>
@@ -242,7 +250,7 @@ function RunningBlock({ session, block, branch }: { session: TerminalSession; bl
 function BlockHeader({ block, branch, children }: { block: Block; branch: string | null | undefined; children: React.ReactNode }) {
   return (
     <div className="blocks-meta block-header">
-      {block.cwd && <span className="truncate">{displayPath(block.cwd)}</span>}
+      <Location cwd={block.cwd} host={block.host} />
       {branch && <span className="truncate">{branch}</span>}
       <span className="ml-auto" />
       {children}
@@ -305,7 +313,17 @@ function RunSpan({ run }: { run: Run }) {
   );
 }
 
-/** `~`-relative path for display. */
+/** A directory, as `host:path` when it is on another machine. */
+function Location({ cwd, host }: { cwd: string | undefined; host: string | undefined }) {
+  if (!host) return cwd ? <span className="truncate">{displayPath(cwd)}</span> : null;
+  return (
+    <span className="truncate">
+      <span className="block-host">{host}</span>:{cwd ?? "?"}
+    </span>
+  );
+}
+
+/** `~`-relative path for display (this machine's only). */
 function displayPath(path: string): string {
   const home = homeDirectory();
   if (home && (path === home || path.startsWith(`${home}/`))) return `~${path.slice(home.length)}`;

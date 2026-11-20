@@ -54,19 +54,25 @@ export const TERMINAL_OPTIONS: ITerminalOptions = {
   allowProposedApi: true,
 };
 
-/** The colors for the given config: the theme's, with a solid background if asked for. */
-export function terminalTheme(config: Pick<TerminalConfig, "colors" | "terminalBackground" | "solidBackground">): ITheme {
-  return {
-    ...config.colors,
-    background: config.terminalBackground === "solid" ? config.solidBackground : config.colors.background,
-  };
+/**
+ * The colors for the given config: the theme's, with a solid background if
+ * asked for. `solid` overrides the setting (see `effectiveSolid`).
+ */
+export function terminalTheme(
+  config: Pick<TerminalConfig, "colors" | "terminalBackground" | "solidBackground">,
+  solid = config.terminalBackground === "solid",
+): ITheme {
+  return { ...config.colors, background: solid ? config.solidBackground : config.colors.background };
 }
 
-/** The xterm options that follow the settings. Everything else stays as in `TERMINAL_OPTIONS`. */
-export function terminalOptions(settings: TerminalConfig): ITerminalOptions {
+/**
+ * The xterm options that follow the settings. Everything else stays as in
+ * `TERMINAL_OPTIONS`. `solid` overrides the background setting.
+ */
+export function terminalOptions(settings: TerminalConfig, solid = settings.terminalBackground === "solid"): ITerminalOptions {
   return {
-    theme: terminalTheme(settings),
-    allowTransparency: settings.terminalBackground === "transparent",
+    theme: terminalTheme(settings, solid),
+    allowTransparency: !solid,
     fontFamily: monoFontStack(settings.fontFamily),
     fontSize: settings.fontSize,
     cursorStyle: settings.cursorStyle,

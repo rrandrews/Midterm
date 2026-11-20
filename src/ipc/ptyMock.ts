@@ -8,14 +8,17 @@ import type { Pty, PtyOptions } from "./pty";
  * scripts (OSC 7, OSC 133 A/B/C/D) and knows a handful of commands:
  * `ls`, `cd`, `pwd`, `echo`, `git status`, `seq N`, `sleep N` (⌃C stops
  * it), `ask` (reads a line), `vim`/`less` (alternate screen, `q` quits),
- * `clear`, `true`, `false`, `exit [n]`. Not a shell.
+ * `clear`, `true`, `false`, `exit [n]`, and `ssh <host>`, which starts a
+ * pretend remote shell with its own aid and host (`exit` leaves it), like
+ * the integration over ssh. Not a shell.
  */
 
 const ESC = "\x1b";
 const BEL = "\x07";
-const mark = (payload: string) => `${ESC}]133;${payload}${BEL}`;
 const dim = (text: string) => `${ESC}[38;2;133;138;150m${text}${ESC}[0m`;
 const SGR = (code: string, text: string) => `${ESC}[${code}m${text}${ESC}[0m`;
+/** The pretend remote shell's home directory. */
+const REMOTE_HOME = "/home/demo";
 
 type Job = {
   /** Input while the job runs. */
@@ -35,9 +38,18 @@ export function spawnMockPty(options: PtyOptions): Pty {
   /** Unfinished escape sequence from the last write. */
   let pendingEscape = "";
   let pasting = false;
+  /** The mock shell's `aid=`, like the real scripts'. */
+  const localAid = `${Math.floor(Math.random() * 1e6)}.mock`;
+  /** The pretend shell over `ssh host`, while one runs. */
+  let remote: { host: string; aid: string; localCwd: string } | null = null;
+  const mark = (payload: string) => `${ESC}]133;${payload};aid=${remote?.aid ?? localAid}${BEL}`;
 
-  const display = (path: string) => (path === MOCK_HOME || path.startsWith(`${MOCK_HOME}/`) ? `~${path.slice(MOCK_HOME.length)}` : path);
-  const cwdReport = () => `${ESC}]7;file://localhost${encodeURI(cwd)}${BEL}`;
+  const home = () => (remote ? REMOTE_HOME : MOCK_HOME);
+  const display = (path: string) => {
+    const relative = path === home() || path.startsWith(`${home()}/`) ? `~${path.slice(home().length)}` : path;
+    return remote ? `${remote.host}:${relative}` : relative;
+  };
+  const cwdReport = () => `${ESC}]7;file://${remote?.host ?? "localhost"}${encodeURI(cwd)}${BEL}`;
   const prompt = () => `${cwdReport()}${mark("A")}${dim(display(cwd))} ${SGR("38;2;139;156;255", "❯")} ${mark("B")}`;
 
   const finish = (code: number) => {
@@ -46,8 +58,8 @@ export function spawnMockPty(options: PtyOptions): Pty {
   };
 
   const resolve = (path: string) => {
-    if (!path || path === "~") return MOCK_HOME;
-    if (path.startsWith("~/")) path = `${MOCK_HOME}${path.slice(1)}`;
+    if (!path || path === "~") return home();
+    if (path.startsWith("~/")) path = `${home()}${path.slice(1)}`;
     const parts = (path.startsWith("/") ? [] : cwd.split("/").filter(Boolean));
     for (const part of path.split("/")) {
       if (!part || part === ".") continue;
@@ -159,7 +171,28 @@ export function spawnMockPty(options: PtyOptions): Pty {
         job = { input: (char) => char === "q" && quit(), interrupt: () => {} };
         return null;
       }
+      case "ssh": {
+        const host = args.find((arg) => !arg.startsWith("-"));
+        if (!host || args.length > 1 || remote) {
+          send(`mock: only \`ssh <host>\` from the local shell\r\n`);
+          return 255;
+        }
+        send(`Welcome to ${host} (mock)\r\n`);
+        remote = { host, aid: `${Math.floor(Math.random() * 1e6)}.remote`, localCwd: cwd };
+        cwd = REMOTE_HOME;
+        // The local `ssh` command runs on; the remote shell prompts.
+        send(prompt());
+        return null;
+      }
       case "exit":
+        if (remote) {
+          const { host, localCwd } = remote;
+          send(`logout\r\nConnection to ${host} closed.\r\n`);
+          remote = null;
+          cwd = localCwd;
+          finish(Number(args[0]) || 0);
+          return null;
+        }
         exited = true;
         send("\r\n");
         queueMicrotask(() => options.onExit({ code: Number(args[0]) || 0, runtimeMs: performance.now() - started }));
@@ -241,6 +274,11 @@ export function spawnMockPty(options: PtyOptions): Pty {
     resize: () => {},
     ack: () => {},
     kill: () => {},
-    foreground: async () => ({ pid: 0, name: job ? "mock-job" : "mock", isShell: job === null }),
+    // While the pretend remote shell runs, ssh has the terminal.
+    foreground: async () => ({
+      pid: 0,
+      name: remote ? "ssh" : job ? "mock-job" : "mock",
+      isShell: job === null && remote === null,
+    }),
   };
 }

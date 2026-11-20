@@ -31,14 +31,18 @@ async function start(): Promise<void> {
   const { loadSettings } = await import("./settings/settings");
   const { loadRecent } = await import("./palette/sources");
   const { loadCustomThemes } = await import("./theme/state");
+  const { loadIconSets } = await import("./icons/state");
   // All before any pane exists: restored terminals start in their saved
   // directories, directory reports are checked against the host name, and
   // explorers start in (and abbreviate) the home directory.
+  // Settings come first: an old saved state is migrated according to them
+  // (which terminal panes were in blocks mode).
+  await loadSettings({ persist });
   await Promise.all([
     persist ? restoreSavedState() : undefined,
-    loadSettings({ persist }),
     loadRecent({ persist }),
     loadCustomThemes({ persist }),
+    loadIconSets({ persist }),
     loadLocalHostname(),
     loadHomeDirectory(),
   ]);

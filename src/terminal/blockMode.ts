@@ -1,17 +1,19 @@
-import { activePaneId, updatePaneData } from "../actions";
+import { activePaneId, setPaneKind } from "../actions";
 import { copyText } from "../ipc/clipboard";
-import { focusPane } from "../layout/dock";
+import { activePlugin } from "../plugins/registry";
 import { findPane } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
 import { rowsText } from "./blockRender";
-import { type Block, outputRows } from "./blocks";
+import { type Block, outputRows, scopeOf } from "./blocks";
+import { recordPair } from "./commandLog";
 import { recordCommand } from "./history";
 import type { TerminalSession } from "./session";
 import { peekSession } from "./sessions";
-import { type TerminalData, type TerminalMode, terminalSettings } from "./settings";
+import { BLOCK_TERMINAL, CLASSIC_TERMINAL, isSessionKind } from "./kinds";
+import type { TerminalData, TerminalMode } from "./settings";
 
 /*
- * Per-pane blocks/classic mode and the block actions shared by the blocks
+ * Classic vs block terminal, and the block actions shared by the blocks
  * view, the terminal's right-click menu and the command registry.
  */
 
@@ -22,18 +24,26 @@ function paneData(paneId: string): TerminalData | undefined {
   return tab && (findPane(tab.layout, paneId)?.data as TerminalData | undefined);
 }
 
-/** The mode a terminal pane asks for: its own, else the `terminalMode` setting. */
+/** How a terminal pane renders: blocks for a block terminal, else classic. */
 export function requestedMode(paneId: string): TerminalMode {
-  return paneData(paneId)?.terminalMode ?? terminalSettings().terminalMode;
+  return paneData(paneId)?.kind === BLOCK_TERMINAL ? "blocks" : "classic";
 }
 
-/** Switches a terminal pane between blocks and classic rendering. */
+/** The other built-in terminal kind, if the pane is a terminal and that plugin is enabled. */
+export function otherTerminalKind(paneId: string): string | undefined {
+  const kind = paneData(paneId)?.kind;
+  if (!isSessionKind(kind)) return undefined;
+  const other = kind === BLOCK_TERMINAL ? CLASSIC_TERMINAL : BLOCK_TERMINAL;
+  return activePlugin(other) ? other : undefined;
+}
+
+/**
+ * Switches a terminal pane between the classic and block terminal. The
+ * pane keeps its shell and scrollback (sessions are kept by pane id).
+ */
 export function toggleBlocks(paneId: string): void {
-  const data = paneData(paneId);
-  if (data?.kind !== "terminal") return;
-  updatePaneData(paneId, { terminalMode: requestedMode(paneId) === "blocks" ? "classic" : "blocks" });
-  // The focus target (input editor or terminal) changes with the mode.
-  requestAnimationFrame(() => focusPane(paneId));
+  const other = otherTerminalKind(paneId);
+  if (other) setPaneKind(paneId, other);
 }
 
 /** Whether the pane's shell reports prompts, which blocks mode needs. `undefined` until known. */
@@ -54,10 +64,35 @@ export function canRun(session: TerminalSession): boolean {
   return snap.integration === "present" && snap.phase === "prompt" && !snap.altScreen;
 }
 
-/** Runs a command line from the blocks view (input editor or re-run). */
-export function runFromBlocks(session: TerminalSession, command: string): void {
+/**
+ * Runs a command line from the blocks view (input editor, a skill). With
+ * `scope`, only if the prompt still belongs to that shell: a line composed
+ * at a remote prompt is not sent to the local shell after ssh ended.
+ */
+export function runFromBlocks(session: TerminalSession, command: string, scope?: string): void {
   if (!command.trim() || !canRun(session)) return;
-  if (session.runCommand(command)) recordCommand(command);
+  if (scope !== undefined && session.blocks.scope !== scope) return;
+  // A nested shell's commands (over ssh) stay out of this machine's history.
+  const root = !session.blocks.snapshot().nested;
+  const previous = root ? session.blocks.commandsFor("").slice(-1)[0] : undefined;
+  if (session.runCommand(command) && root) {
+    recordCommand(command);
+    recordPair(previous, command);
+  }
+}
+
+/**
+ * Whether a block's command can be run again now: the shell is at a prompt
+ * and it is the shell that ran it (never a remote command in the local
+ * shell, or the other way round).
+ */
+export function canReplay(session: TerminalSession, block: Block): boolean {
+  return !!block.command && canRun(session) && scopeOf(block.nested, block) === session.blocks.scope;
+}
+
+/** "Run again", checked at the moment it runs. */
+export function replayBlock(session: TerminalSession, block: Block): void {
+  if (canReplay(session, block)) runFromBlocks(session, block.command);
 }
 
 export const copyBlockCommand = (block: Block) => void copyText(block.command);
@@ -80,8 +115,8 @@ export function contextBlockOf(session: TerminalSession): Block | undefined {
   return session.blocks.snapshot().blocks.find((block) => block.id === id);
 }
 
-/** The active pane, if it is a terminal. */
+/** The active pane, if it is a built-in terminal. */
 export function activeTerminal(): string | undefined {
   const id = activePaneId();
-  return id && paneData(id)?.kind === "terminal" ? id : undefined;
+  return id && isSessionKind(paneData(id)?.kind) ? id : undefined;
 }

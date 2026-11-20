@@ -19,6 +19,8 @@ export type PtyOptions = {
   shell?: string;
   /** Arguments for `shell`. */
   shellArgs?: string[];
+  /** Wrap `ssh` to load the shell integration on the remote (default true). */
+  sshIntegration?: boolean;
   /** Raw output bytes. May be called before `spawnPty` resolves. */
   onData: (bytes: Uint8Array) => void;
   /** Called once, after the last `onData`. */
@@ -76,6 +78,7 @@ async function spawnTauriPty(options: PtyOptions): Promise<Pty> {
     cwd: options.cwd ?? null,
     shell: options.shell || null,
     shellArgs: options.shell ? (options.shellArgs ?? []) : null,
+    sshIntegration: options.sshIntegration ?? true,
     onData,
     onEvent,
   });

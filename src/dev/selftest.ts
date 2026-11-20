@@ -8,6 +8,7 @@ import { isConfirming } from "../components/ui/ConfirmDialog";
 import { findPane } from "../state/layout";
 import { findTabOfPane, selectActiveTab, useAppStore } from "../state/store";
 import { peekSession, sessionCount } from "../terminal/sessions";
+import type { TerminalSession } from "../terminal/session";
 import { menuSpecs } from "../commands/nativeMenu";
 import { findFiles, readTextFile, writeTextFile } from "../ipc/fs";
 import { getSettings, useSettings } from "../settings/settings";
@@ -20,6 +21,8 @@ import { suggestNow, useAiSuggestions } from "../ai/engine";
 import { runCommand } from "../commands/registry";
 import { bundledTheme } from "../theme/bundled";
 import { editTheme } from "../theme/commands";
+import { svgDataUrl, sanitizeSvg } from "../icons/sanitize";
+import { loadIconSet } from "../icons/state";
 
 /*
  * Development aid: exercises the real app (real webview, real PTY) and posts
@@ -310,6 +313,10 @@ async function featureChecks(checks: Check[]): Promise<void> {
     });
   }
 
+  // A nested shell started the way `ssh host` starts one (the remote
+  // command, run here instead of on a remote), gets blocks of its own.
+  if (atPrompt && canRun(session)) await nestedShellCheck(checks, session);
+
   // Settings reach live terminals.
   const fontSize = getSettings().fontSize;
   useSettings.getState().updateSettings({ fontSize: fontSize + 1.5 });
@@ -357,6 +364,41 @@ async function featureChecks(checks: Check[]): Promise<void> {
   });
 }
 
+/**
+ * MID-64: `eval` of the remote command `ssh host` would send starts an
+ * integrated shell with its own aid in a temporary directory; its commands
+ * become nested blocks and `exit` returns to the root scope with the pane's
+ * cwd unchanged. Skipped when the shell has no ssh wrapper (fish, or the
+ * setting off).
+ */
+async function nestedShellCheck(checks: Check[], session: TerminalSession): Promise<void> {
+  const cwdBefore = session.cwd;
+  const count = () => session.blocks.snapshot().blocks.length;
+  const lastBlock = () => session.blocks.snapshot().blocks[count() - 1];
+  const before = count();
+  session.runCommand('[ -n "${_midterm_ssh_dir-}" ] && eval "$(cat "$_midterm_ssh_dir/remote-command")"');
+  const nested = await waitFor(() => session.blocks.snapshot().nested && canRun(session), 8000);
+  if (!nested) {
+    const last = lastBlock();
+    // `[ -n … ]` failed: no wrapper in this shell.
+    if (last?.exitCode === 1 && count() === before + 1) return;
+    checks.push({ name: "ssh: the remote command starts a nested shell", ok: false, detail: session.blocks.snapshot() });
+    return;
+  }
+  const inner = count();
+  session.runCommand("echo nested-$((40+2))");
+  const ran = await waitFor(() => count() > inner && lastBlock()?.exitCode !== undefined, 8000);
+  const block = lastBlock();
+  const output = block ? blockOutput(session, block) : "";
+  session.runCommand("exit");
+  const back = await waitFor(() => !session.blocks.snapshot().nested && canRun(session), 8000);
+  checks.push({
+    name: "ssh: a nested shell's commands are nested blocks, and exit returns",
+    ok: ran && block?.nested === true && output.includes("nested-42") && back && session.cwd === cwdBefore,
+    detail: { nested: block?.nested, output: output.slice(0, 100), back, cwd: session.cwd, cwdBefore },
+  });
+}
+
 /** Switching theme reaches CSS variables, a live terminal's palette, and the editor pane plugin opens. */
 async function themeChecks(checks: Check[]): Promise<void> {
   const paneId = listPanes(selectActiveTab(useAppStore.getState()).layout)[0]?.id;
@@ -379,6 +421,33 @@ async function themeChecks(checks: Check[]): Promise<void> {
   if (editorPane) closePaneNow(editorPane);
   useSettings.getState().updateSettings({ theme: "midterm-dark" });
   await sleep(100);
+}
+
+/** File icons in the real WebView: the default set's assets load, and hostile SVG is defused. */
+async function iconChecks(checks: Check[]): Promise<void> {
+  const decodedWidth = async (url: string) => {
+    const img = new Image();
+    img.src = url;
+    await img.decode().catch(() => {});
+    return img.naturalWidth;
+  };
+  const material = await loadIconSet("material");
+  const image = material?.icon({ name: "package.json", kind: "file", expanded: false, light: false });
+  const width = image && "url" in image ? await decodedWidth(image.url) : 0;
+  checks.push({ name: "icons: the Material set loads and its icons decode", ok: width > 0, detail: { image, width } });
+
+  const flag = window as unknown as { __midtermIconXss?: boolean };
+  flag.__midtermIconXss = false;
+  const clean = sanitizeSvg(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" onload="window.__midtermIconXss=true"><script>window.__midtermIconXss=true</script><circle cx="8" cy="8" r="6"/></svg>',
+  );
+  const cleanWidth = clean ? await decodedWidth(svgDataUrl(clean)) : 0;
+  await sleep(50);
+  checks.push({
+    name: "icons: hostile SVG is sanitized, still draws, and runs nothing",
+    ok: !!clean && !/script|onload/i.test(clean) && cleanWidth > 0 && !flag.__midtermIconXss,
+    detail: { clean, cleanWidth },
+  });
 }
 
 /** The example plugin imported, opened from the palette, disabled (placeholder) and removed again. */
@@ -442,6 +511,9 @@ async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
     return;
   }
   if (requestedMode(paneId) !== "blocks") toggleBlocks(paneId);
+  // Switching to the block terminal keeps the pane's shell.
+  await sleep(50);
+  checks.push({ name: "terminal: switching to the block terminal keeps the session", ok: peekSession(paneId) === session });
   await waitFor(() => canRun(session), 8000);
   const before = session.blocks.snapshot().blocks.length;
   session.runCommand("export MIDTERM_SELFTEST_PASSWORD=hunter2-selftest; true");
@@ -486,6 +558,7 @@ export async function runSelfTest(port: string): Promise<void> {
     await sleep(1500);
     await pluginChecks(checks);
     await themeChecks(checks);
+    await iconChecks(checks);
     await integrationChecks(checks);
     await featureChecks(checks);
     const stubPort = new URLSearchParams(location.search).get("aistub");

@@ -1,10 +1,10 @@
-import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITerminalOptions, type ITheme, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { effectiveSolid, oscColor } from "./solidBackground";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
 import { copyText } from "../ipc/clipboard";
 import { openExternal } from "../ipc/shell";
@@ -12,6 +12,7 @@ import { localHostname } from "../ipc/system";
 import { BlockTracker } from "./blocks";
 import { branchOf } from "./gitBranch";
 import { registerFileLinks } from "./fileLinkProvider";
+import { fitTerminal } from "./fit";
 import { parseOsc7 } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { type TerminalConfig, terminalConfig, terminalSettings } from "./settings";
@@ -70,7 +71,6 @@ export class TerminalSession {
   private readonly search = new SearchAddon();
   private copyTimer: ReturnType<typeof setTimeout> | undefined;
   private bellTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly fit = new FitAddon();
   private readonly resizeObserver = new ResizeObserver(() => this.scheduleFit());
   /** Commands and their output, from the shell's OSC 133 marks (blocks mode). */
   readonly blocks: BlockTracker;
@@ -106,6 +106,10 @@ export class TerminalSession {
   private firstHost: string | undefined;
 
   private lastForeground: PtyForeground | null = null;
+  /** Whether the terminal currently renders a solid background (see `effectiveSolid`). */
+  private solid = false;
+  /** A program set the background itself (OSC 11); xterm reports that color, not us. */
+  private backgroundSet = false;
   private foregroundTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -117,9 +121,9 @@ export class TerminalSession {
     this.currentCwd = initialCwd;
     this.host.className = "terminal-host";
 
-    this.term.loadAddon(this.fit);
     this.term.loadAddon(this.search);
-    this.host.classList.toggle("is-solid", terminalSettings().terminalBackground === "solid");
+    this.solid = this.computeSolid(terminalConfig());
+    this.host.classList.toggle("is-solid", this.solid);
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11";
     this.term.loadAddon(
@@ -129,7 +133,13 @@ export class TerminalSession {
       }),
     );
 
-    registerFileLinks(this.term, paneId, () => this.currentCwd);
+    // Paths a shell over ssh prints are not files here.
+    registerFileLinks(
+      this.term,
+      paneId,
+      () => this.currentCwd,
+      () => !this.blocks.snapshot().nested,
+    );
 
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
@@ -141,6 +151,14 @@ export class TerminalSession {
       this.handleCwdReport(data);
       return true;
     });
+    // Apps (codex) ask for the default background to blend against; a
+    // transparent theme would answer black, so answer with the solid color.
+    this.term.parser.registerOscHandler(11, (data) => this.answerBackgroundQuery(data));
+    this.term.parser.registerOscHandler(111, () => {
+      this.backgroundSet = false;
+      return false;
+    });
+    this.term.buffer.onBufferChange(() => this.refreshSolid());
     this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
     this.term.onBell(() => this.ring());
     // Copy on select: only selections made with the mouse (the search addon
@@ -162,20 +180,56 @@ export class TerminalSession {
   /** Applies changed settings to the live terminal (fonts, cursor, colors, scrollback). */
   applySettings(settings: TerminalConfig): void {
     if (this.disposed) return;
-    const next = terminalOptions(settings);
+    this.solid = this.computeSolid(settings);
+    // Assigning the theme drops colors a program set (OSC 11 included).
+    this.backgroundSet = false;
+    const next = terminalOptions(settings, this.solid);
     const current = this.term.options;
     const transparencyChanged = next.allowTransparency !== current.allowTransparency;
     const metricsChanged = next.fontFamily !== current.fontFamily || next.fontSize !== current.fontSize;
     for (const [key, value] of Object.entries(next) as [keyof ITerminalOptions, unknown][]) {
       if (key === "theme" || current[key] !== value) (this.term.options as Record<string, unknown>)[key] = value;
     }
-    this.host.classList.toggle("is-solid", settings.terminalBackground === "solid");
+    this.host.classList.toggle("is-solid", this.solid);
     // The WebGL renderer picks up transparency when it is created.
     if (transparencyChanged && this.webgl) {
       this.disableWebgl();
       this.enableWebgl();
     }
     if (metricsChanged) this.scheduleFit();
+  }
+
+  private computeSolid(settings: TerminalConfig): boolean {
+    return effectiveSolid({
+      terminalBackground: settings.terminalBackground,
+      solidForFullscreen: settings.solidForFullscreen,
+      solidBackgroundCommands: settings.solidBackgroundCommands,
+      alternateScreen: this.term.buffer.active.type === "alternate",
+      foregroundName: this.lastForeground?.name,
+    });
+  }
+
+  /** Re-evaluates the effective background; touches xterm only when it flips. */
+  private refreshSolid(): void {
+    if (this.disposed) return;
+    const config = terminalConfig();
+    if (this.computeSolid(config) !== this.solid) this.applySettings(config);
+  }
+
+  /** Replies to `OSC 11 ; ?` with the solid color when the theme is transparent. */
+  private answerBackgroundQuery(data: string): boolean {
+    if (data !== "?") {
+      this.backgroundSet = true;
+      return false;
+    }
+    if (this.disposed || this.backgroundSet) return false;
+    const background = this.term.options.theme?.background;
+    // An opaque theme background is reported by xterm itself.
+    if (background && !/^#[0-9a-f]{6}00$/i.test(background) && background !== "transparent") return false;
+    const color = oscColor(terminalConfig().solidBackground);
+    if (!color) return false;
+    this.send({ binary: false, data: `\x1b]11;${color}\x1b\\` });
+    return true;
   }
 
   /*
@@ -366,11 +420,12 @@ export class TerminalSession {
     if (this.phase !== "idle") return;
     this.phase = "starting";
 
-    const { shell, shellArgs } = terminalSettings();
+    const { shell, shellArgs, sshIntegration } = terminalSettings();
     spawnPty({
       cwd: this.currentCwd,
       shell: shell || undefined,
       shellArgs,
+      sshIntegration,
       cols: this.term.cols,
       rows: this.term.rows,
       onData: (bytes) => this.receive(bytes),
@@ -446,11 +501,12 @@ export class TerminalSession {
    * inside `ssh`) are not directories here and are ignored.
    */
   private isLocal(host: string): boolean {
-    if (host === "" || host === "localhost") return true;
     const local = localHostname();
-    if (local) return host === local || host === local.replace(/\.local$/, "");
+    if (local) return host === "" || host === "localhost" || host === local || host === local.replace(/\.local$/, "");
+    // Without the host name (outside Tauri), the first report is taken to be
+    // this machine's: `localhost` too, so a later `file://box/…` is not.
     this.firstHost ??= host;
-    return host === this.firstHost;
+    return host === this.firstHost || ((host === "" || host === "localhost") && (this.firstHost === "" || this.firstHost === "localhost"));
   }
 
   private scheduleForegroundCheck(delay = FOREGROUND_CHECK_MS): void {
@@ -465,16 +521,25 @@ export class TerminalSession {
 
   private noteForeground(current: PtyForeground | null): void {
     if (this.disposed) return;
+    // The root shell has the terminal again, so no nested shell (ssh) is
+    // running, whatever marks were missed.
+    if (current?.isShell) this.blocks.resetScope();
     const last = this.lastForeground;
     this.lastForeground = current;
     if (last?.pid !== current?.pid || last?.name !== current?.name) {
+      this.refreshSolid();
       this.events.onForegroundChange(this);
     }
   }
 
   private handleCwdReport(data: string): void {
     const reported = parseOsc7(data);
-    if (!reported || !this.isLocal(reported.host) || reported.path === this.currentCwd) return;
+    if (!reported) return;
+    const local = this.isLocal(reported.host);
+    // Every report, remote ones too, places a nested shell's blocks.
+    this.blocks.noteCwd({ cwd: reported.path, host: local ? undefined : reported.host });
+    // Only this machine's directories become the pane's (splits open there).
+    if (!local || reported.path === this.currentCwd) return;
     this.currentCwd = reported.path;
     this.events.onCwdChange(this, reported.path);
   }
@@ -507,7 +572,7 @@ export class TerminalSession {
     // A hidden or collapsed host has no size to fit to.
     if (!this.attached || !this.host.clientWidth || !this.host.clientHeight) return;
     try {
-      this.fit.fit();
+      fitTerminal(this.term);
     } catch (error) {
       console.warn("Terminal fit failed:", error);
     }

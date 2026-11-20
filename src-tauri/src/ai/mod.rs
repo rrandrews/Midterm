@@ -5,6 +5,7 @@
 mod anthropic;
 mod cli;
 pub mod commands;
+pub mod effort;
 mod error;
 mod http;
 mod keys;
@@ -15,12 +16,15 @@ mod shell_path;
 #[cfg(test)]
 mod stub;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
+use serde::Serialize;
 use tokio::sync::oneshot;
 
+use effort::{AnthropicCaps, Effort, EffortSetting, Resolved};
 pub use error::{AiError, ErrorKind};
 pub use provider::{Backend, ProviderConfig, ProviderId};
 
@@ -31,22 +35,77 @@ pub struct Completion<'a> {
     pub prompt: &'a str,
     /// The whole output budget, thinking included.
     pub max_tokens: u32,
+    /// The reasoning effort to send; `None` sends no effort field.
+    pub effort: Option<Effort>,
+    /// Total time allowed for the request.
+    pub timeout: Duration,
+}
+
+/// A completion's text, and whether the provider rejected the effort field
+/// (the request was then sent again without it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub text: String,
+    pub effort_dropped: bool,
 }
 
 /// The reply budget when the caller gives none.
 const DEFAULT_REPLY_TOKENS: u32 = 512;
 const MAX_REPLY_TOKENS: u32 = 32_000;
-/// Added to the reply budget for the model's reasoning: on current models
-/// `max_tokens` covers thinking too, and too small a limit ends in an empty
-/// reply.
-const THINKING_HEADROOM: u32 = 4096;
 
-/// The `max_tokens` sent for a reply budget of `reply` tokens.
-pub fn output_budget(reply: Option<u32>) -> u32 {
+/// The reply budget for a requested `reply` tokens.
+pub fn reply_budget(reply: Option<u32>) -> u32 {
     reply
         .unwrap_or(DEFAULT_REPLY_TOKENS)
         .clamp(16, MAX_REPLY_TOKENS)
-        + THINKING_HEADROOM
+}
+
+/// The `max_tokens` sent for a reply budget of `reply` tokens: room for the
+/// model's reasoning is added (see [`effort::headroom`]).
+pub fn output_budget(reply: Option<u32>, resolved: &Resolved) -> u32 {
+    reply_budget(reply) + effort::headroom(resolved)
+}
+
+/// What Settings → AI shows for the effort picker.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortOptions {
+    /// Offered levels, lowest first; "Provider default" is always offered too.
+    pub levels: Vec<Effort>,
+    /// What would be sent for the stored setting (`None`: nothing).
+    pub effective: Option<Effort>,
+    pub note: Option<String>,
+}
+
+/// Remembers effort fields a provider rejected, until restart, so later
+/// requests do not pay for a failed attempt first. Keyed by provider and
+/// base URL, model and level: rejecting `xhigh` says nothing about `low`.
+#[derive(Default)]
+struct Rejections(Mutex<HashSet<(String, String, Effort)>>);
+
+impl Rejections {
+    fn key(provider: &ProviderConfig, model: &str, level: Effort) -> (String, String, Effort) {
+        let endpoint = format!(
+            "{}|{}",
+            provider.id.as_str(),
+            provider.base_url.as_deref().unwrap_or("")
+        );
+        (endpoint, model.to_string(), level)
+    }
+
+    fn contains(&self, provider: &ProviderConfig, model: &str, level: Effort) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .contains(&Self::key(provider, model, level))
+    }
+
+    fn insert(&self, provider: &ProviderConfig, model: &str, level: Effort) {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(Self::key(provider, model, level));
+    }
 }
 
 /// How many cancels of not-yet-started requests are remembered.
@@ -111,6 +170,10 @@ pub struct AiManager {
     http: OnceLock<reqwest::Client>,
     requests: Mutex<Requests>,
     discovery: cli::Discovery,
+    /// Anthropic model capabilities by base URL and model id; `None` when
+    /// the lookup failed (it is not retried until restart).
+    anthropic_caps: Mutex<HashMap<(String, String), Option<AnthropicCaps>>>,
+    rejections: Rejections,
 }
 
 impl AiManager {
@@ -200,7 +263,78 @@ impl AiManager {
         resolve_key(provider.id, lookup)
     }
 
-    /// One completion from `provider`.
+    /// The capabilities of an Anthropic model, looked up once per launch.
+    /// `None` when the lookup failed (callers then send today's request).
+    /// A failure that may go away (no key yet, network, timeout) is not
+    /// remembered; any other (an unknown model, a gateway without the
+    /// endpoint) is, until restart.
+    async fn anthropic_caps(
+        &self,
+        base: &str,
+        key: &str,
+        model: &str,
+    ) -> Result<Option<AnthropicCaps>, AiError> {
+        let cache_key = (base.to_string(), model.to_string());
+        if let Some(caps) = self.anthropic_caps.lock().unwrap().get(&cache_key) {
+            return Ok(caps.clone());
+        }
+        let caps = match anthropic::capabilities(self.http()?, base, key, model).await {
+            Ok(caps) => Some(caps),
+            Err(e) => {
+                eprintln!(
+                    "ai: capabilities of {model} unavailable: {}",
+                    error::redact(&e.message, Some(key))
+                );
+                let transient = matches!(
+                    e.kind,
+                    ErrorKind::Auth | ErrorKind::NoKey | ErrorKind::Network | ErrorKind::Timeout
+                );
+                if transient {
+                    return Ok(None);
+                }
+                None
+            }
+        };
+        self.anthropic_caps
+            .lock()
+            .unwrap()
+            .insert(cache_key, caps.clone());
+        Ok(caps)
+    }
+
+    /// The stored effort setting resolved for `model`, minus a level the
+    /// provider is known to reject.
+    fn resolve(
+        &self,
+        provider: &ProviderConfig,
+        model: &str,
+        caps: Option<&AnthropicCaps>,
+        setting: Option<EffortSetting>,
+    ) -> Resolved {
+        let mut resolved = effort::resolve(provider.id, model, caps, setting);
+        if resolved
+            .level
+            .is_some_and(|level| self.rejections.contains(provider, model, level))
+        {
+            resolved.level = None;
+        }
+        resolved
+    }
+
+    fn note_reply(
+        &self,
+        provider: &ProviderConfig,
+        model: &str,
+        resolved: &Resolved,
+        reply: &Reply,
+    ) {
+        if let (true, Some(level)) = (reply.effort_dropped, resolved.level) {
+            self.rejections.insert(provider, model, level);
+        }
+    }
+
+    /// One completion from `provider`, at the reasoning effort `setting`
+    /// (`None`: Midterm's pick, see [`effort::builtin`]).
     pub async fn complete(
         &self,
         provider: &ProviderConfig,
@@ -208,38 +342,93 @@ impl AiManager {
         system: &str,
         prompt: &str,
         reply_tokens: Option<u32>,
-    ) -> Result<String, AiError> {
+        setting: Option<EffortSetting>,
+    ) -> Result<Reply, AiError> {
         let backend = provider.id.backend();
-        if !matches!(backend, Backend::Cli(_)) && model.trim().is_empty() {
+        let model = model.trim();
+        if !matches!(backend, Backend::Cli(_)) && model.is_empty() {
             return Err(AiError::other("choose a model"));
         }
-        let req = Completion {
-            model: model.trim(),
+        let completion = |resolved: &Resolved| Completion {
+            model,
             system,
             prompt,
-            max_tokens: output_budget(reply_tokens),
+            max_tokens: output_budget(reply_tokens, resolved),
+            effort: resolved.level,
+            timeout: effort::scaled(http::REQUEST_TIMEOUT, resolved),
         };
         match backend {
             Backend::OpenAiCompatible(flavor) => {
                 let base = provider.base_url()?;
                 let key = self.key(provider).await?;
-                openai::complete(self.http()?, flavor, &base, key.as_deref(), &req)
-                    .await
-                    .map_err(|e| redact(e, key.as_deref()))
+                let resolved = self.resolve(provider, model, None, setting);
+                let reply = openai::complete(
+                    self.http()?,
+                    flavor,
+                    &base,
+                    key.as_deref(),
+                    &completion(&resolved),
+                )
+                .await
+                .map_err(|e| redact(e, key.as_deref()))?;
+                self.note_reply(provider, model, &resolved, &reply);
+                Ok(reply)
             }
             Backend::Anthropic => {
                 let base = provider.base_url()?;
                 let key = self.key(provider).await?.unwrap_or_default();
-                anthropic::complete(self.http()?, &base, &key, &req)
+                let caps = self.anthropic_caps(&base, &key, model).await?;
+                let resolved = self.resolve(provider, model, caps.as_ref(), setting);
+                let mut req = completion(&resolved);
+                let (shape, max_tokens) = anthropic::plan(
+                    resolved.level,
+                    resolved.explicit,
+                    caps.as_ref(),
+                    reply_budget(reply_tokens),
+                    req.max_tokens,
+                );
+                req.max_tokens = max_tokens;
+                let reply = anthropic::complete(self.http()?, &base, &key, &req, shape)
                     .await
-                    .map_err(|e| redact(e, Some(&key)))
+                    .map_err(|e| redact(e, Some(&key)))?;
+                self.note_reply(provider, model, &resolved, &reply);
+                Ok(reply)
             }
             Backend::Cli(kind) => {
-                self.discovery
-                    .complete(kind, provider.cli_path(), model, system, prompt)
-                    .await
+                let resolved = self.resolve(provider, model, None, setting);
+                let reply = self
+                    .discovery
+                    .complete(kind, provider.cli_path(), model, system, prompt, &resolved)
+                    .await?;
+                self.note_reply(provider, model, &resolved, &reply);
+                Ok(reply)
             }
         }
+    }
+
+    /// The effort levels Settings → AI offers for `provider` and `model`,
+    /// and what the stored `setting` would send.
+    pub async fn effort_options(
+        &self,
+        provider: &ProviderConfig,
+        model: &str,
+        setting: Option<EffortSetting>,
+    ) -> Result<EffortOptions, AiError> {
+        let model = model.trim();
+        let mut caps = None;
+        let mut caps_failed = false;
+        if provider.id.backend() == Backend::Anthropic && !model.is_empty() {
+            let base = provider.base_url()?;
+            let key = self.key(provider).await?.unwrap_or_default();
+            caps = self.anthropic_caps(&base, &key, model).await?;
+            caps_failed = caps.is_none();
+        }
+        let resolved = self.resolve(provider, model, caps.as_ref(), setting);
+        Ok(EffortOptions {
+            levels: effort::levels(provider.id, model, caps.as_ref()),
+            effective: resolved.level,
+            note: effort::note(provider.id, model, caps_failed),
+        })
     }
 
     pub async fn models(&self, provider: &ProviderConfig) -> Result<Vec<String>, AiError> {
@@ -284,17 +473,67 @@ mod tests {
     use super::stub::{self, Canned};
     use super::*;
 
+    fn at(level: Option<Effort>) -> Resolved {
+        Resolved {
+            level,
+            explicit: true,
+            provider_default: false,
+        }
+    }
+
     #[test]
     fn budgets_leave_room_for_thinking() {
+        let low = at(Some(Effort::Low));
+        assert_eq!(output_budget(None, &low), DEFAULT_REPLY_TOKENS + 4096);
+        assert_eq!(output_budget(Some(0), &low), 16 + 4096);
+        assert_eq!(output_budget(Some(u32::MAX), &low), MAX_REPLY_TOKENS + 4096);
         assert_eq!(
-            output_budget(None),
-            DEFAULT_REPLY_TOKENS + THINKING_HEADROOM
+            output_budget(None, &at(Some(Effort::Max))),
+            DEFAULT_REPLY_TOKENS + 32_768
         );
-        assert_eq!(output_budget(Some(0)), 16 + THINKING_HEADROOM);
-        assert_eq!(
-            output_budget(Some(u32::MAX)),
-            MAX_REPLY_TOKENS + THINKING_HEADROOM
-        );
+    }
+
+    #[tokio::test]
+    async fn rejected_levels_are_remembered_per_level() {
+        let server = stub::serve(vec![
+            Canned::json(
+                400,
+                json!({ "error": { "message": "reasoning_effort 'xhigh' is not supported" } }),
+            ),
+            Canned::json(
+                200,
+                json!({ "choices": [{ "message": { "content": "a" }, "finish_reason": "stop" }] }),
+            ),
+            Canned::json(
+                200,
+                json!({ "choices": [{ "message": { "content": "b" }, "finish_reason": "stop" }] }),
+            ),
+            Canned::json(
+                200,
+                json!({ "choices": [{ "message": { "content": "c" }, "finish_reason": "stop" }] }),
+            ),
+        ])
+        .await;
+        let manager = AiManager::default();
+        let config = ProviderConfig {
+            id: ProviderId::Custom,
+            base_url: Some(server.url.clone()),
+            cli_path: None,
+        };
+        // Custom keys are optional; a broken keychain must not matter here.
+        let ask = |setting| manager.complete(&config, "m", "", "p", None, Some(setting));
+        let first = ask(EffortSetting::High).await.unwrap();
+        assert!(first.effort_dropped);
+        assert_eq!(ask(EffortSetting::High).await.unwrap().text, "b");
+        assert_eq!(ask(EffortSetting::Low).await.unwrap().text, "c");
+        let sent = server.requests();
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[0].json()["reasoning_effort"], "high");
+        assert!(sent[1].json().get("reasoning_effort").is_none());
+        // Remembered: no failed attempt first.
+        assert!(sent[2].json().get("reasoning_effort").is_none());
+        // Another level is still tried.
+        assert_eq!(sent[3].json()["reasoning_effort"], "low");
     }
 
     #[tokio::test]
@@ -311,6 +550,8 @@ mod tests {
             system: "",
             prompt: "p",
             max_tokens: 10,
+            effort: None,
+            timeout: http::REQUEST_TIMEOUT,
         };
         let client = stub::client();
         let canceller = manager.clone();
@@ -459,7 +700,7 @@ mod tests {
             cli_path: Some(fake.to_string_lossy().into_owned()),
         };
         let result = manager
-            .cancellable("c1", manager.complete(&config, "", "", "p", None))
+            .cancellable("c1", manager.complete(&config, "", "", "p", None, None))
             .await;
         assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -475,7 +716,7 @@ mod tests {
             cli_path: None,
         };
         let e = manager
-            .complete(&config, " ", "", "p", None)
+            .complete(&config, " ", "", "p", None, None)
             .await
             .unwrap_err();
         assert_eq!(e.kind, ErrorKind::Other);

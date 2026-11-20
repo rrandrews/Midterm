@@ -15,7 +15,10 @@ describe("parseOsc133", () => {
     expect(parseOsc133("B")).toEqual({ kind: "B" });
     expect(parseOsc133("C;cmdline=ls")).toEqual({ kind: "C" });
     expect(parseOsc133("D;0")).toEqual({ kind: "D", exitCode: 0 });
-    expect(parseOsc133("D;130;aid=1")).toEqual({ kind: "D", exitCode: 130 });
+    expect(parseOsc133("D;130;aid=1")).toEqual({ kind: "D", exitCode: 130, aid: "1" });
+    expect(parseOsc133("A;aid=123.45")).toEqual({ kind: "A", aid: "123.45" });
+    expect(parseOsc133("C;cmdline=ls;aid=9")).toEqual({ kind: "C", aid: "9" });
+    expect(parseOsc133("B;aid=")).toEqual({ kind: "B" });
     expect(parseOsc133("D")).toEqual({ kind: "D", exitCode: undefined });
     expect(parseOsc133("D;x")).toEqual({ kind: "D", exitCode: undefined });
     expect(parseOsc133("P;k=i")).toBeNull();
@@ -215,6 +218,157 @@ describe("BlockTracker", () => {
     t.term.write(PROMPT);
     await vi.advanceTimersByTimeAsync(10);
     expect(t.tracker.snapshot().integration).toBe("present");
+  });
+});
+
+/** Marks as a shell with aid `aid` prints them. */
+function shellMarks(aid: string) {
+  const m = (payload: string) => `\x1b]133;${payload};aid=${aid}\x07`;
+  return {
+    prompt: (text = "$ ") => `${m("A")}${text}${m("B")}`,
+    C: m("C"),
+    D: (code: number) => m(`D;${code}`),
+  };
+}
+const cwdReport = (host: string, path: string) => `\x1b]7;file://${host}${path}\x07`;
+
+describe("BlockTracker: nested shells (ssh)", () => {
+  const local = shellMarks("100.1");
+  const remote = shellMarks("200.2");
+
+  async function sshSession() {
+    const t = setup();
+    const branch = vi.fn(async () => "main");
+    // Recreate with a spy for branch lookups.
+    t.tracker.dispose();
+    let cwd = "/home/me";
+    let clock = 0;
+    const tracker = new BlockTracker(t.term as unknown as BlockTerminal, {
+      cwd: () => cwd,
+      branch,
+      now: () => clock,
+      integrationTimeoutMs: 50,
+    });
+    const write = (data: string) => new Promise<void>((resolve) => t.term.write(data, resolve));
+    const output = (index: number) => {
+      const block = tracker.snapshot().blocks[index];
+      const rows = outputRows(block, tracker.buffer);
+      return rows ? rowsText(tracker.buffer, rows.from, rows.to, t.term.cols, rows.lastCells) : null;
+    };
+    await write(local.prompt("~ ❯ "));
+    expect(tracker.submit("ssh box")).toBe(true);
+    clock = 100;
+    await write(`ssh box\r\n${local.C}Welcome to box\r\n`);
+    // The remote shell's first prompt: OSC 7, then A with another aid.
+    tracker.noteCwd({ host: "box", cwd: "/srv" });
+    await write(`${cwdReport("box", "/srv")}${remote.prompt("box$ ")}`);
+    return {
+      tracker,
+      write,
+      output,
+      branch,
+      setCwd: (dir: string) => (cwd = dir),
+      tick: (ms: number) => (clock += ms),
+    };
+  }
+
+  it("parses nested prompts into flat blocks with the remote host and cwd", async () => {
+    const t = await sshSession();
+    let snap = t.tracker.snapshot();
+    expect(snap.nested).toBe(true);
+    expect(snap.location).toEqual({ host: "box", cwd: "/srv" });
+    // The ssh block ended at the remote prompt and holds the banner.
+    expect(snap.blocks).toHaveLength(1);
+    expect(snap.blocks[0]).toMatchObject({ command: "ssh box", nested: false, cwd: "/home/me" });
+    expect(t.output(0)).toBe("Welcome to box");
+    t.branch.mockClear();
+
+    expect(t.tracker.submit("ls")).toBe(true);
+    await t.write(`ls\r\n${remote.C}a b\r\n${remote.D(0)}${remote.prompt("box$ ")}`);
+    snap = t.tracker.snapshot();
+    expect(snap.blocks[1]).toMatchObject({ command: "ls", nested: true, host: "box", cwd: "/srv", exitCode: 0 });
+    expect(t.output(1)).toBe("a b");
+    // No git lookup on this machine for a remote directory.
+    expect(t.branch).not.toHaveBeenCalled();
+    // History is kept per scope.
+    expect(t.tracker.scope).toBe("box");
+    expect(t.tracker.commandsFor("box")).toEqual(["ls"]);
+    expect(t.tracker.commands).toEqual(["ssh box"]);
+  });
+
+  it("adds a closing block when ssh ends at a nested prompt", async () => {
+    const t = await sshSession();
+    t.tick(5000);
+    // ⌃D at the remote prompt: no C; ssh prints its goodbye and exits.
+    await t.write(`\r\nConnection to box closed.\r\n`);
+    await t.write(`${local.D(0)}${local.prompt("~ ❯ ")}`);
+    const snap = t.tracker.snapshot();
+    expect(snap.nested).toBe(false);
+    expect(snap.location).toEqual({});
+    const closing = snap.blocks[snap.blocks.length - 1];
+    expect(closing).toMatchObject({ command: "ssh box", nested: false, exitCode: 0, startedAt: 0, cwd: "/home/me" });
+    expect(closing.endedAt).toBe(5100);
+    expect(t.output(snap.blocks.length - 1)).toContain("Connection to box closed.");
+    // The closing block is not a second history entry.
+    expect(t.tracker.commands).toEqual(["ssh box"]);
+  });
+
+  it("ends a nested block still running with ssh's status", async () => {
+    const t = await sshSession();
+    expect(t.tracker.submit("sleep 100")).toBe(true);
+    await t.write(`sleep 100\r\n${remote.C}`);
+    await t.write(`Connection to box closed by remote host.\r\n${local.D(255)}${local.prompt("~ ❯ ")}`);
+    const snap = t.tracker.snapshot();
+    expect(snap.nested).toBe(false);
+    expect(snap.blocks).toHaveLength(2);
+    expect(snap.blocks[1]).toMatchObject({ command: "sleep 100", nested: true, exitCode: 255 });
+  });
+
+  it("gives a nested shell that reported no cwd no location at all", async () => {
+    const t = setup();
+    await t.write(local.prompt());
+    t.tracker.submit("ssh box");
+    await t.write(`ssh box\r\n${local.C}${A}box$ ${B}`);
+    expect(t.tracker.snapshot()).toMatchObject({ nested: true, location: {} });
+    t.tracker.submit("pwd");
+    await t.write(`pwd\r\n${C}/srv\r\n${D(0)}${A}box$ ${B}`);
+    const block = t.tracker.snapshot().blocks[1];
+    expect(block).toMatchObject({ command: "pwd", nested: true, cwd: undefined, host: undefined });
+    expect(t.tracker.scope).toBe("nested");
+  });
+
+  it("ignores aid-less marks at a root prompt and roots without aids", async () => {
+    const t = setup();
+    // fish 4 prints its own marks (no aid) next to ours.
+    await t.write(`${local.prompt()}${A}`);
+    t.tracker.submit("true");
+    await t.write(`true\r\n${local.C}${C}${local.D(0)}${D(0)}${local.prompt()}${A}`);
+    expect(t.tracker.snapshot().nested).toBe(false);
+
+    // A root shell without aids never enters the nested scope.
+    const u = setup();
+    await u.write(PROMPT);
+    u.tracker.submit("ssh box");
+    await u.write(`ssh box\r\n${C}${remote.prompt()}`);
+    expect(u.tracker.snapshot().nested).toBe(false);
+  });
+
+  it("looks up no branch for a nested shell that reports this host", async () => {
+    const t = await sshSession();
+    t.branch.mockClear();
+    t.tracker.noteCwd({ cwd: "/home/me" });
+    t.tracker.submit("ls");
+    await t.write(`ls\r\n${remote.C}${remote.D(0)}${remote.prompt()}`);
+    expect(t.tracker.snapshot().blocks[1]).toMatchObject({ nested: true, cwd: "/home/me", host: undefined });
+    expect(t.branch).not.toHaveBeenCalled();
+  });
+
+  it("resetScope leaves the nested scope without a closing block", async () => {
+    const t = await sshSession();
+    t.tracker.resetScope();
+    const snap = t.tracker.snapshot();
+    expect(snap.nested).toBe(false);
+    expect(snap.blocks).toHaveLength(1);
   });
 });
 

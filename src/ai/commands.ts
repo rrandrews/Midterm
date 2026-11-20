@@ -18,11 +18,12 @@ export function toggleSuggestions(): void {
 
 /** The terminal menu's switch for one pane (kept in its pane data). */
 export function aiMenuItems(paneId: string): MenuItemSpec[] {
-  if (!aiConfigured()) return [];
+  // Local predictions need no provider, so the switch shows whenever suggestions are on.
+  if (!getSettings().ai.suggestions) return [];
   const on = paneAllows(paneId);
   return [
     {
-      label: "AI suggestions in this pane",
+      label: "Suggestions in this pane",
       checked: on,
       run: () => {
         if (!livePane(paneId)) return;

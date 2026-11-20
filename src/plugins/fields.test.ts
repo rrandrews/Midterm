@@ -51,5 +51,7 @@ describe("checkPluginExport", () => {
     expect(checkPluginExport({ id: "x", name: "X", pane: { mount: () => {} } }, "x")).toEqual([]);
     expect(checkPluginExport({ id: "y", name: "X", pane: {} }, "x")).toHaveLength(2);
     expect(checkPluginExport(undefined, "x")).toHaveLength(1);
+    expect(checkPluginExport({ id: "x", name: "X", pane: { mount: () => {} }, terminal: true }, "x")).toEqual([]);
+    expect(checkPluginExport({ id: "x", name: "X", pane: { mount: () => {} }, terminal: "yes" }, "x")).toHaveLength(1);
   });
 });

@@ -19,6 +19,45 @@ fn app_quit(app: AppHandle) {
     app.exit(0);
 }
 
+/// The window's close button: on macOS this hides the app instead of closing
+/// the window, as Mac apps do; its shells keep running, and clicking the
+/// Dock icon (`RunEvent::Reopen`) or ⌘-Tab brings it back. Returns whether it
+/// hid; elsewhere it returns false and the window closes as usual.
+#[tauri::command]
+fn app_hide_on_close(app: AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = app.hide() {
+            eprintln!("app_hide_on_close: {error}");
+            return false;
+        }
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// Brings the app forward: unhides it (after `app_hide_on_close`) and
+/// focuses its window. Called before a confirmation is shown, so a quit
+/// from the Dock while hidden does not ask in an invisible window.
+#[tauri::command]
+fn app_show(app: AppHandle) {
+    show_app(&app);
+}
+
+fn show_app(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.show();
+    for window in app.webview_windows().values() {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// This machine's host name, as shells report it in OSC 7 (`gethostname`).
 #[tauri::command]
 fn local_hostname() -> Option<String> {
@@ -42,7 +81,15 @@ fn local_hostname() -> Option<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(all(debug_assertions, feature = "tauri-mcp"))]
+    let builder = builder.plugin(
+        tauri_plugin_mcp_bridge::Builder::new()
+            .bind_address("127.0.0.1")
+            .build(),
+    );
+
+    let app = builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -99,6 +146,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_quit,
+            app_hide_on_close,
+            app_show,
             local_hostname,
             menu::menu_set,
             pty::commands::pty_spawn,
@@ -129,6 +178,7 @@ pub fn run() {
             ai::commands::ai_suggest,
             ai::commands::ai_cancel,
             ai::commands::ai_models,
+            ai::commands::ai_effort_options,
             ai::commands::ai_test,
             ai::commands::ai_key_set,
             ai::commands::ai_key_delete,
@@ -148,6 +198,10 @@ pub fn run() {
             app.state::<PtyManager>().kill_owned_by(&label);
             app.state::<WatchManager>().stop_owned_by(&label);
         }
+        // The Dock icon was clicked: show the app again if it was hidden by
+        // its close button (`app_hide_on_close`) or its window minimized.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => show_app(app),
         // Last chance to make sure no shell outlives the app.
         RunEvent::Exit => {
             app.state::<PtyManager>().kill_all();
