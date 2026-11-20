@@ -65,28 +65,122 @@ pub async fn send(
     key: Option<&str>,
     timeout: Duration,
 ) -> Result<Value, Failure> {
+    let response = open(request, timeout).await?;
+    json(response, key, timeout).await
+}
+
+/// Sends `request` with a total time of `timeout` and returns the response
+/// once its status is known to be 2xx. A non-2xx body is read into
+/// [`Failure::Status`], so callers can retry before any reply byte is read.
+pub async fn open(
+    request: reqwest::RequestBuilder,
+    timeout: Duration,
+) -> Result<reqwest::Response, Failure> {
     let response = request
         .timeout(timeout)
         .send()
         .await
         .map_err(|e| Failure::Other(transport_error(&e, timeout)))?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| Failure::Other(transport_error(&e, timeout)))?;
     if !status.is_success() {
+        let body = response
+            .text()
+            .await
+            .map_err(|e| Failure::Other(transport_error(&e, timeout)))?;
         return Err(Failure::Status {
             status: status.as_u16(),
             body,
         });
     }
+    Ok(response)
+}
+
+/// The JSON body of a response from [`open`]. `timeout` is only for the
+/// error message (the request's own timeout still applies).
+pub async fn json(
+    response: reqwest::Response,
+    key: Option<&str>,
+    timeout: Duration,
+) -> Result<Value, Failure> {
+    let body = response
+        .text()
+        .await
+        .map_err(|e| Failure::Other(transport_error(&e, timeout)))?;
     serde_json::from_str(&body).map_err(|_| {
         Failure::Other(AiError::other(format!(
             "the provider sent a response that is not JSON: {}",
             truncate(&redact(&body, key), 200)
         )))
     })
+}
+
+/// Sends `request` with effort first (when `with_effort`), and once more
+/// without it when the provider rejects the effort field: an HTTP 400/422
+/// mentioning any of `words`. Returns the outcome and whether the effort was
+/// dropped. The rejection arrives before any reply byte, so this works for
+/// streamed requests too.
+pub async fn retry_without_effort<T, F, Fut>(
+    with_effort: bool,
+    words: &[&str],
+    send: F,
+) -> (Result<T, Failure>, bool)
+where
+    F: Fn(bool) -> Fut,
+    Fut: std::future::Future<Output = Result<T, Failure>>,
+{
+    match send(with_effort).await {
+        Err(f) if with_effort && f.is_bad_request_about(words) => (send(false).await, true),
+        other => (other, false),
+    }
+}
+
+/// The overall cap on a streamed request; the gaps between chunks are
+/// limited separately (see [`open_stream`] and [`next_chunk`]).
+pub const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
+
+fn stalled(idle: Duration) -> AiError {
+    AiError::new(
+        ErrorKind::Timeout,
+        format!("the provider sent nothing for {} s", idle.as_secs()),
+    )
+}
+
+/// [`open`] for a streamed request: at most [`STREAM_TIMEOUT`] in all, and
+/// at most `idle` until the status and headers arrive.
+pub async fn open_stream(
+    request: reqwest::RequestBuilder,
+    idle: Duration,
+) -> Result<reqwest::Response, Failure> {
+    tokio::time::timeout(idle, open(request, STREAM_TIMEOUT))
+        .await
+        .unwrap_or_else(|_| Err(Failure::Other(stalled(idle))))
+}
+
+/// The next chunk of a streamed body (`None` at its end), waiting at most
+/// `idle` for it.
+pub async fn next_chunk(
+    response: &mut reqwest::Response,
+    idle: Duration,
+) -> Result<Option<Vec<u8>>, AiError> {
+    match tokio::time::timeout(idle, response.chunk()).await {
+        Err(_) => Err(stalled(idle)),
+        Ok(Err(e)) => Err(transport_error(&e, STREAM_TIMEOUT)),
+        Ok(Ok(chunk)) => Ok(chunk.map(|bytes| bytes.to_vec())),
+    }
+}
+
+/// Whether a response is an SSE stream (a server may ignore `stream: true`
+/// and answer with plain JSON).
+pub fn is_event_stream(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.trim()
+                .to_ascii_lowercase()
+                .starts_with("text/event-stream")
+        })
 }
 
 pub fn transport_error(e: &reqwest::Error, timeout: Duration) -> AiError {

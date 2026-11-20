@@ -14,6 +14,7 @@ mod openai;
 mod process;
 mod provider;
 mod shell_path;
+mod sse;
 #[cfg(test)]
 mod stub;
 
