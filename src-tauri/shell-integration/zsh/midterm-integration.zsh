@@ -99,6 +99,25 @@ _midterm_preexec() {
   builtin print -rn -- $'\e]133;C;aid='"$_midterm_aid"$'\a'
 }
 
+# `ssh host` loads this integration on the remote too, so its commands get
+# blocks of their own: when Midterm asks for it (MIDTERM_SSH_DIR), an `ssh`
+# function adds the remote command for plain interactive logins
+# (ssh/should-wrap.sh decides). A function of the user's, defined later in
+# .zshrc, replaces it; `command ssh` skips it.
+if [[ -n ${MIDTERM_SSH_DIR-} ]]; then
+  builtin typeset -g _midterm_ssh_dir=$MIDTERM_SSH_DIR
+  builtin unset MIDTERM_SSH_DIR
+  if (( ! ${+functions[ssh]} )); then
+    ssh() {
+      if command sh "$_midterm_ssh_dir/should-wrap.sh" "$@"; then
+        command ssh -t "$@" "$(<"$_midterm_ssh_dir/remote-command")"
+      else
+        command ssh "$@"
+      fi
+    }
+  fi
+fi
+
 # The hooks are put in place at the first prompt rather than now: the user's
 # .zprofile/.zshrc have not run yet and may add hooks of their own.
 # _midterm_precmd goes first so that it sees the command's exit status,

@@ -89,11 +89,45 @@ impl Sandbox {
         cwd: &Path,
         configure: impl FnOnce(&mut CommandBuilder),
     ) -> Harness {
+        self.spawn_with_ssh(shell, cwd, false, configure)
+    }
+
+    fn spawn_with_ssh(
+        &self,
+        shell: &Path,
+        cwd: &Path,
+        ssh: bool,
+        configure: impl FnOnce(&mut CommandBuilder),
+    ) -> Harness {
         let mut cmd = self.command(shell, cwd);
         configure(&mut cmd);
         integration::install(&self.scripts()).expect("install failed");
-        assert!(integration::inject(&mut cmd, &self.scripts()).is_some());
+        assert!(integration::inject(&mut cmd, &self.scripts(), ssh).is_some());
         Harness::spawn(cmd)
+    }
+
+    /// A directory of fake programs, put first on `PATH` by [`Self::path`].
+    fn bin(&self) -> PathBuf {
+        let bin = self.root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        bin
+    }
+
+    /// Writes an executable `sh` script named `name` into [`Self::bin`].
+    fn fake_program(&self, name: &str, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = self.bin().join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// `PATH` with [`Self::bin`] first.
+    fn path(&self) -> String {
+        format!(
+            "{}:{}",
+            self.bin().display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
     }
 }
 
@@ -647,4 +681,308 @@ fn foreground_json_shape_and_unknown_ids() {
         r#"{"pid":42,"name":"vim","isShell":false}"#
     );
     assert_eq!(PtyManager::default().foreground(42), None);
+}
+
+/* ---- ssh (MID-64) ---- */
+
+/// Runs `should-wrap.sh` on each argument list in a terminal (it wants one)
+/// with a fake `ssh -G`, and returns whether each would be wrapped.
+fn should_wrap(cases: &[&str], ssh_g_prints: &str) -> Vec<bool> {
+    let sandbox = Sandbox::new("should-wrap");
+    integration::install(&sandbox.scripts()).unwrap();
+    sandbox.fake_program("ssh", &format!("printf '%s\\n' '{ssh_g_prints}'\n"));
+    let script = sandbox.scripts().join("ssh/should-wrap.sh");
+    let mut lines = String::new();
+    for (i, case) in cases.iter().enumerate() {
+        lines.push_str(&format!(
+            "sh '{}' {case}; echo \"case{i}=$?\"\n",
+            script.display()
+        ));
+    }
+    lines.push_str("echo done-cases\n");
+    let mut cmd = CommandBuilder::new("/bin/sh");
+    cmd.args(["-c", &lines]);
+    cmd.env("PATH", sandbox.path());
+    let mut h = Harness::spawn(cmd);
+    h.wait_for_output("done-cases");
+    let text = h.text();
+    (0..cases.len())
+        .map(|i| {
+            let at = text
+                .find(&format!("case{i}="))
+                .unwrap_or_else(|| panic!("no result for {:?}: {text:?}", cases[i]));
+            text[at..].starts_with(&format!("case{i}=0"))
+        })
+        .collect()
+}
+
+#[test]
+fn should_wrap_only_plain_interactive_logins() {
+    let wrap = [
+        "host",
+        "user@host -p 2222",
+        "-J jump -i key -F cfg -o ProxyCommand=x host",
+        "host -p 22",
+        "-A -4 host",
+        "-oServerAliveInterval=5 host",
+        "-t host",
+    ];
+    let plain = [
+        "host ls",
+        "-N host",
+        "-T host",
+        "-f host",
+        "-W h:22 host",
+        "-O check host",
+        "-Q cipher",
+        "-G host",
+        "-V",
+        "-s host sftp",
+        "-n host",
+        "-oRemoteCommand=x host",
+        "-o 'RequestTTY no' host",
+        "-Z host",
+        "",
+        "-p",
+        "-- host ls",
+    ];
+    let cases: Vec<&str> = wrap.iter().chain(plain.iter()).copied().collect();
+    let results = should_wrap(&cases, "hostname host");
+    for (case, wrapped) in cases.iter().zip(&results) {
+        assert_eq!(*wrapped, wrap.contains(case), "{case:?}");
+    }
+    // The host's own configuration asks for a command.
+    assert_eq!(should_wrap(&["host"], "remotecommand uptime"), [false]);
+    assert_eq!(should_wrap(&["host"], "requesttty no"), [false]);
+}
+
+/// Each shell's `ssh` function: a plain login gets `-t` and the remote
+/// command, anything else reaches ssh unchanged. `rc` (relative to HOME)
+/// gets `rc_text` plus the fake ssh's directory first on PATH, set there
+/// because login startup files (macOS `path_helper`) rebuild PATH.
+fn check_ssh_function(shell: &Path, sandbox: &Sandbox, rc: &str, rc_text: &str) {
+    sandbox.fake_program(
+        "ssh",
+        "case \"$1\" in -G) echo 'hostname x'; exit 0;; esac\n\
+         printf 'FAKE-SSH[%s]' \"$@\"; echo\n",
+    );
+    let path_line = if rc.ends_with(".fish") {
+        format!("set -gx PATH {} $PATH\n", sandbox.bin().display())
+    } else {
+        format!("PATH='{}':$PATH\n", sandbox.bin().display())
+    };
+    sandbox.write(rc, &format!("{rc_text}{path_line}"));
+    let mut h = sandbox.spawn_with_ssh(shell, &sandbox.home, true, |_| {});
+    h.wait_for_marks(2);
+    h.session.write(b"ssh box\n".to_vec()).unwrap();
+    h.wait_for_output("FAKE-SSH[box]");
+    let text = h.text();
+    assert!(
+        text.contains("FAKE-SSH[-t]FAKE-SSH[box]FAKE-SSH[sh -c 'p="),
+        "not wrapped: {text:?}"
+    );
+    h.session
+        .write(b"ssh box uptime; echo $MIDTERM_SSH_DIR-unset\n".to_vec())
+        .unwrap();
+    h.wait_for_output("FAKE-SSH[box]FAKE-SSH[uptime]");
+    h.wait_for_output("-unset");
+    let text = h.text();
+    assert!(!text.contains("/ssh-unset"), "MIDTERM_SSH_DIR still exported: {text:?}");
+    h.session.write(b"exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+}
+
+#[test]
+fn zsh_wraps_ssh() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-ssh");
+    check_ssh_function(&zsh, &sandbox, ".zshrc", "PS1='zsh> '\n");
+}
+
+#[test]
+fn bash_wraps_ssh() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-ssh");
+    check_ssh_function(&bash, &sandbox, ".bash_profile", "PS1='bash> '\n");
+}
+
+#[test]
+fn fish_wraps_ssh() {
+    let Some(fish) = find_shell("fish") else {
+        eprintln!("fish not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("fish-ssh");
+    check_ssh_function(&fish, &sandbox, ".config/fish/config.fish", "");
+}
+
+#[test]
+fn a_users_ssh_function_wins() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-own-ssh");
+    sandbox.write(
+        ".bash_profile",
+        "PS1='bash> '\nssh() { echo \"MINE:$*\"; }\n",
+    );
+    let mut h = sandbox.spawn_with_ssh(&bash, &sandbox.home, true, |_| {});
+    h.wait_for_marks(2);
+    h.session.write(b"ssh box\n".to_vec()).unwrap();
+    h.wait_for_output("MINE:box");
+    h.session.write(b"exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+}
+
+/// `outer -c <remote command>` in a sandboxed environment, as sshd runs it.
+fn remote_login(outer: &Path, shell: &Path, sandbox: &Sandbox) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(outer);
+    cmd.args(["-c", &integration::remote_command()]);
+    cmd.cwd(&sandbox.home);
+    cmd.env("SHELL", shell);
+    cmd.env("HOME", &sandbox.home);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("BASH_SILENCE_DEPRECATION_WARNING", "1");
+    for key in [
+        "ZDOTDIR",
+        "PROMPT_COMMAND",
+        "ENV",
+        "BASH_ENV",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_DIRS",
+        "MIDTERM_SHELL_INTEGRATION",
+        "MIDTERM_SSH_DIR",
+        "MIDTERM_SI_EPHEMERAL",
+        "MIDTERM_ZSH_ZDOTDIR",
+    ] {
+        cmd.env_remove(key);
+    }
+    cmd
+}
+
+/// The remote side: `outer -c <remote command>`, the way sshd runs it with
+/// the user's login shell, and `$SHELL` naming the shell to start.
+fn check_bootstrap(outer: &Path, shell: &Path, sandbox: &Sandbox, prompt: &str) {
+    let tmp = sandbox.root.join("tmp");
+    fs::create_dir_all(&tmp).unwrap();
+    let mut cmd = remote_login(outer, shell, sandbox);
+    cmd.env("TMPDIR", &tmp);
+    let mut h = Harness::spawn(cmd);
+    h.wait_for_output(prompt);
+    h.wait_for_marks(2);
+    let marks = osc133_marks(&h.text());
+    assert_eq!(mark_names(&marks)[..2], ["A", "B"], "{:?}", h.text());
+    assert_one_aid(&marks);
+    h.session
+        .write(b"echo \"si=$MIDTERM_SHELL_INTEGRATION eph=${MIDTERM_SI_EPHEMERAL-gone} zd=${ZDOTDIR-unset}\"; ls -A \"$TMPDIR\" | wc -l\n".to_vec())
+        .unwrap();
+    h.wait_for_marks(6);
+    let text = h.text();
+    assert!(text.contains("si=1 eph=gone"), "{text:?}");
+    if shell.ends_with("zsh") {
+        assert!(text.contains("zd=unset"), "ZDOTDIR left set: {text:?}");
+    }
+    // The temporary directory was removed at startup.
+    let leftovers: Vec<_> = fs::read_dir(&tmp).unwrap().collect();
+    assert!(leftovers.is_empty(), "left in TMPDIR: {leftovers:?}");
+    h.session.write(b"exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+}
+
+#[test]
+fn bootstrap_starts_an_integrated_zsh_and_cleans_up() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("boot-zsh");
+    sandbox.write(".zshrc", "PS1='remote-zsh> '\n");
+    sandbox.write(".zprofile", "echo zprofile-read\n");
+    check_bootstrap(&zsh, &zsh, &sandbox, "remote-zsh> ");
+    // sh and bash as the login shell that parses the outer command.
+    for outer in ["/bin/sh", "/bin/bash"] {
+        let sandbox = Sandbox::new("boot-zsh-outer");
+        sandbox.write(".zshrc", "PS1='remote-zsh> '\n");
+        check_bootstrap(Path::new(outer), &zsh, &sandbox, "remote-zsh> ");
+    }
+}
+
+#[test]
+fn bootstrap_starts_an_integrated_bash_and_cleans_up() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("boot-bash");
+    sandbox.write(".bash_profile", "PS1='remote-bash> '\n");
+    check_bootstrap(&bash, &bash, &sandbox, "remote-bash> ");
+    if let Some(zsh) = find_shell("zsh") {
+        let sandbox = Sandbox::new("boot-bash-outer");
+        sandbox.write(".bash_profile", "PS1='remote-bash> '\n");
+        check_bootstrap(&zsh, &bash, &sandbox, "remote-bash> ");
+    }
+}
+
+#[test]
+fn bootstrap_starts_an_integrated_fish_and_cleans_up() {
+    let Some(fish) = find_shell("fish") else {
+        eprintln!("fish not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("boot-fish");
+    sandbox.write(
+        ".config/fish/config.fish",
+        "function fish_prompt; printf 'remote-fish> '; end\n",
+    );
+    check_bootstrap(&fish, &fish, &sandbox, "remote-fish> ");
+}
+
+/// Runs a command in a plain login shell started by the remote command and
+/// returns the output once it exits.
+fn run_plain_remote(sandbox: &Sandbox, tmp: &Path) -> String {
+    let mut cmd = remote_login(Path::new("/bin/sh"), Path::new("/bin/sh"), sandbox);
+    cmd.env("TMPDIR", tmp);
+    let mut h = Harness::spawn(cmd);
+    // Typed ahead: the shell reads it once it is up.
+    h.session.write(b"echo plain-shell-up; exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    h.text()
+}
+
+#[test]
+fn bootstrap_falls_back_to_a_plain_shell() {
+    let sandbox = Sandbox::new("boot-sh");
+    let tmp = sandbox.root.join("tmp");
+    fs::create_dir_all(&tmp).unwrap();
+    let text = run_plain_remote(&sandbox, &tmp);
+    assert!(text.contains("plain-shell-up"), "{text:?}");
+    assert!(osc133_marks(&text).is_empty(), "{text:?}");
+    assert!(fs::read_dir(&tmp).unwrap().next().is_none());
+}
+
+#[test]
+fn bootstrap_prints_the_motd_unless_hushed() {
+    // /etc/motd is the machine's: only checked when it has some text.
+    let motd = fs::read_to_string("/etc/motd").unwrap_or_default();
+    let Some(line) = motd.lines().map(str::trim).find(|l| l.len() > 8) else {
+        eprintln!("no /etc/motd text; skipped");
+        return;
+    };
+    for hushed in [false, true] {
+        let sandbox = Sandbox::new("boot-motd");
+        if hushed {
+            sandbox.write(".hushlogin", "");
+        }
+        let tmp = sandbox.root.join("tmp");
+        fs::create_dir_all(&tmp).unwrap();
+        let text = run_plain_remote(&sandbox, &tmp);
+        assert_eq!(text.contains(line), !hushed, "{text:?}");
+    }
 }

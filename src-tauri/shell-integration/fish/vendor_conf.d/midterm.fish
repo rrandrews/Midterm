@@ -41,9 +41,34 @@ if set -q MIDTERM_FISH_DATA_DIR
     set -e MIDTERM_FISH_XDG_DATA_DIRS_UNSET
 end
 
+# Started over ssh (see ssh/bootstrap.sh), this file is in a temporary
+# directory: fish has read it, so it goes.
+if set -q MIDTERM_SI_EPHEMERAL
+    command rm -f -- $MIDTERM_SI_EPHEMERAL/fish/vendor_conf.d/midterm.fish
+    command rmdir -- $MIDTERM_SI_EPHEMERAL/fish/vendor_conf.d $MIDTERM_SI_EPHEMERAL/fish $MIDTERM_SI_EPHEMERAL 2>/dev/null
+    set -e MIDTERM_SI_EPHEMERAL
+end
+
 # Interactive shells only, and only once.
 status is-interactive; or exit 0
 functions -q __midterm_report_cwd; and exit 0
+
+# `ssh host` loads this integration on the remote too (see the zsh script):
+# an `ssh` function adds the remote command for plain interactive logins.
+# A function of the user's (config.fish, or autoloaded) wins.
+if set -q MIDTERM_SSH_DIR
+    set -g __midterm_ssh_dir $MIDTERM_SSH_DIR
+    set -e MIDTERM_SSH_DIR
+    if not functions -q ssh
+        function ssh --wraps ssh
+            if command sh $__midterm_ssh_dir/should-wrap.sh $argv
+                command ssh -t $argv (string collect < $__midterm_ssh_dir/remote-command)
+            else
+                command ssh $argv
+            end
+        end
+    end
+end
 
 # This shell's id in its marks (`aid=`), so the terminal can tell them from
 # the marks of a shell nested inside it (over ssh).

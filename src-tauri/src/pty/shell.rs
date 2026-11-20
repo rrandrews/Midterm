@@ -24,7 +24,7 @@ pub fn shell_command(cwd: Option<&str>, custom: Option<&CustomShell>) -> Command
     #[allow(unused_mut)]
     let mut cmd = base_command(cwd);
     #[cfg(unix)]
-    super::integration::setup(&mut cmd);
+    super::integration::setup(&mut cmd, true);
     cmd
 }
 

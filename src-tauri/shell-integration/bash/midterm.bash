@@ -34,6 +34,14 @@
 if [ -z "${_midterm_si_loaded-}" ]; then
 _midterm_si_loaded=1
 
+# Started over ssh (see ssh/bootstrap.sh), this file is in a temporary
+# directory: bash has read it, so it goes.
+if [ -n "${MIDTERM_SI_EPHEMERAL-}" ]; then
+  command rm -f -- "$MIDTERM_SI_EPHEMERAL/bash/midterm.bash"
+  command rmdir -- "$MIDTERM_SI_EPHEMERAL/bash" "$MIDTERM_SI_EPHEMERAL" 2>/dev/null
+  builtin unset MIDTERM_SI_EPHEMERAL
+fi
+
 if [ -r /etc/profile ]; then
   builtin source /etc/profile
 fi
@@ -44,6 +52,23 @@ for _midterm_si_file in ~/.bash_profile ~/.bash_login ~/.profile; do
   fi
 done
 builtin unset _midterm_si_file
+
+# `ssh host` loads this integration on the remote too (see the zsh script):
+# an `ssh` function adds the remote command for plain interactive logins,
+# unless the user's startup files defined their own.
+if [ -n "${MIDTERM_SSH_DIR-}" ]; then
+  _midterm_ssh_dir=$MIDTERM_SSH_DIR
+  builtin unset MIDTERM_SSH_DIR
+  if ! builtin declare -F ssh >/dev/null; then
+    ssh() {
+      if command sh "$_midterm_ssh_dir/should-wrap.sh" "$@"; then
+        command ssh -t "$@" "$(<"$_midterm_ssh_dir/remote-command")"
+      else
+        command ssh "$@"
+      fi
+    }
+  fi
+fi
 
 # Percent-encodes $1 byte by byte for a file:// URL into _midterm_encoded.
 _midterm_urlencode() {
