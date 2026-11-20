@@ -64,10 +64,11 @@ const SCRIPTS: &[(&str, &str)] = &[
 const SHOULD_WRAP: &str = include_str!("../../shell-integration/ssh/should-wrap.sh");
 const BOOTSTRAP: &str = include_str!("../../shell-integration/ssh/bootstrap.sh");
 
-/// The script with its comment lines and blank lines left out (the
-/// scripts' comments are long, and all of it travels on the ssh command
-/// line). A `#!` line would go too; none of the scripts has one, nor a
-/// heredoc or a multi-line string with a line starting with `#`.
+/// The script with its comment lines, blank lines and indentation left out
+/// (all of it travels on the ssh command line). A `#!` line would go too.
+/// Safe because the scripts have no heredoc, nor a multi-line string with a
+/// line that starts with `#` or with spaces that matter (bootstrap.sh's
+/// heredocs hold only the placeholders).
 fn strip_comments(script: &str) -> String {
     let mut out = String::with_capacity(script.len() / 2);
     for line in script.lines() {
@@ -75,7 +76,7 @@ fn strip_comments(script: &str) -> String {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        out.push_str(line);
+        out.push_str(trimmed);
         out.push('\n');
     }
     out
@@ -388,7 +389,8 @@ mod tests {
         for bad in ['\\', '\n', '!'] {
             assert!(!command.contains(bad), "{bad:?} in the remote command");
         }
-        assert!(command.len() < 16 * 1024, "{} bytes", command.len());
+        // Far below what sshd and a remote `sh -c` take (Linux: 128 KiB per argument).
+        assert!(command.len() < 32 * 1024, "{} bytes", command.len());
         // The same for every host and user: nothing from this machine.
         assert_eq!(command, remote_command());
         if let Some(home) = std::env::home_dir() {

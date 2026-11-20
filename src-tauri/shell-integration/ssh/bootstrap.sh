@@ -6,11 +6,15 @@
 # local `ssh` function appends. This must stay POSIX sh: it runs under
 # whatever /bin/sh the remote has.
 #
-# It writes only the remote shell's scripts to a private temporary
-# directory, which the scripts delete again once loaded
-# (MIDTERM_SI_EPHEMERAL), sets up the shell exactly as integration.rs does
-# locally and execs it as a login shell. An unknown shell, fish before 3.0
-# or a failing mktemp gets a plain login shell instead. Nothing is written
+# zsh and fish: it writes only that shell's scripts to a private temporary
+# directory (mktemp -d makes it 0700), which the scripts delete again once
+# loaded (MIDTERM_SI_EPHEMERAL), sets up the shell as integration.rs does
+# locally and execs it as a login shell. bash: no files; the script travels
+# in MIDTERM_BASH_SCRIPT and a PROMPT_COMMAND entry loads it at the first
+# prompt of a real login shell (`bash -l`: login_shell set, ~/.bash_logout
+# read), after its startup files. If those replace PROMPT_COMMAND rather
+# than add to it, the shell is simply plain. An unknown shell, fish before
+# 3.0 or a failing mktemp gets a plain login shell. Nothing is written
 # anywhere else and no startup file of the user's is touched.
 
 # sshd prints the message of the day only for sessions without a command.
@@ -24,7 +28,24 @@ _midterm_plain() {
 }
 
 case ${_midterm_shell##*/} in
-  zsh | bash) ;;
+  zsh) ;;
+  bash)
+    # A heredoc in a function, not inside $( ): bash 3.2 (a macOS /bin/sh)
+    # misreads the script's case patterns there.
+    _midterm_bash_script() {
+      cat <<'MIDTERM_SI_BASH'
+@BASH@
+MIDTERM_SI_BASH
+    }
+    MIDTERM_BASH_SCRIPT=$(_midterm_bash_script)
+    MIDTERM_BASH_LOAD='eval "$MIDTERM_BASH_SCRIPT"'
+    _midterm_nl='
+'
+    PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND$_midterm_nl}$MIDTERM_BASH_LOAD"
+    export MIDTERM_BASH_SCRIPT MIDTERM_BASH_LOAD PROMPT_COMMAND
+    export MIDTERM_SHELL_INTEGRATION=1
+    exec "$_midterm_shell" -l
+    ;;
   fish)
     # `string escape --style=url` (OSC 7) needs fish 3.
     _midterm_v=$("$_midterm_shell" --version 2>/dev/null)
@@ -38,7 +59,6 @@ case ${_midterm_shell##*/} in
   *) _midterm_plain ;;
 esac
 
-umask 077
 _midterm_d=$(mktemp -d "${TMPDIR:-/tmp}/midterm-si.XXXXXX" 2>/dev/null) || _midterm_plain
 [ -d "$_midterm_d" ] || _midterm_plain
 # fish's XDG_DATA_DIRS entry cannot hold a colon.
@@ -67,13 +87,6 @@ MIDTERM_SI_ZSH
     fi
     export ZDOTDIR="$_midterm_d/zsh"
     exec "$_midterm_shell" -l
-    ;;
-  bash)
-    mkdir "$_midterm_d/bash" || _midterm_plain
-    cat >"$_midterm_d/bash/midterm.bash" <<'MIDTERM_SI_BASH'
-@BASH@
-MIDTERM_SI_BASH
-    exec "$_midterm_shell" --rcfile "$_midterm_d/bash/midterm.bash"
     ;;
   fish)
     mkdir -p "$_midterm_d/fish/vendor_conf.d" || _midterm_plain

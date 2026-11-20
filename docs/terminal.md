@@ -249,19 +249,32 @@ ssh setup changes.
   base64 payload (`base64 -d`, BSD `base64 -D`, or `openssl base64 -d
   -A`) and evals it, else starts `$SHELL -l`. About 11 KB.
 - **Stage 1** (`ssh/bootstrap.sh`, with the four scripts filled in,
-  comment lines stripped) prints `/etc/motd` unless `~/.hushlogin` exists
-  (sshd only does that for sessions without a command), then for zsh,
-  bash or fish (3.0 or later) writes only that shell's scripts to a
-  `mktemp -d` directory (umask 077), sets the same variables as
-  `integration::inject` plus `MIDTERM_SI_EPHEMERAL=<that dir>` and execs
-  the shell as a login shell. An unknown shell, an older fish or a failing
-  `mktemp` gets a plain login shell (one block, as before).
-- **Cleanup**: with `MIDTERM_SI_EPHEMERAL` set, each script deletes its
-  own files by name once loaded and `rmdir`s the directory (zsh in
-  `.zshenv`'s `always` block, bash and fish at the top, after the shell
-  has read the file), then unsets the variable. Only
-  `MIDTERM_SHELL_INTEGRATION=1` stays exported on the remote. The remote
-  gets no `ssh` function, so a second hop is plain.
+  comment lines and indentation stripped) prints `/etc/motd` unless
+  `~/.hushlogin` exists (sshd only does that for sessions without a
+  command), then:
+  - **zsh, fish** (3.0 or later): writes only that shell's scripts to a
+    `mktemp -d` directory (mode 0700; the umask is left alone), sets the
+    same variables as `integration::inject` plus
+    `MIDTERM_SI_EPHEMERAL=<that dir>` and execs the shell as a login
+    shell. With `MIDTERM_SI_EPHEMERAL` set, each script deletes its own
+    files by name once loaded and `rmdir`s the directory (zsh in
+    `.zshenv`'s `always` block, fish at the top), then unsets it.
+  - **bash**: no files. It execs a real login shell (`bash -l`: startup
+    files as usual, `login_shell` set, `~/.bash_logout` read on exit),
+    with the script in `MIDTERM_BASH_SCRIPT` and a `PROMPT_COMMAND` entry
+    (`MIDTERM_BASH_LOAD`, `eval "$MIDTERM_BASH_SCRIPT"`) that loads it at
+    the first prompt. The script then skips reading the startup files,
+    turns that entry into `_midterm_keep_status` (a no-op that keeps
+    `$?`), unexports both variables and `PROMPT_COMMAND`, and marks the
+    first prompt. It arms C for the first command only if nothing in
+    `PROMPT_COMMAND` runs after the entry (a hook a profile appended would
+    be taken for the command); later prompts are normal. If the startup
+    files replace `PROMPT_COMMAND` instead of adding to it, the shell is
+    plain.
+  - An unknown shell, an older fish or a failing `mktemp` gets a plain
+    login shell (one block, as before).
+- Only `MIDTERM_SHELL_INTEGRATION=1` stays exported on the remote. The
+  remote gets no `ssh` function, so a second hop is plain.
 - **Security**: the payload holds only the embedded scripts (the same
   for every host; tested). It is visible briefly in the remote's `ps`. The
   marks and OSC 7 a remote prints only affect display: see "Nested
