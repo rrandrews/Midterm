@@ -3,7 +3,8 @@ import { useState } from "react";
 import { copyText } from "../../ipc/clipboard";
 import { openSettings } from "../../settings/SettingsDialog";
 import { continueInPane } from "./actions";
-import { dismissCard, dismissCardProblem, stopConversation, useAgent, useCardProblems } from "./conversation";
+import { isPluginEnabled, usePluginsVersion } from "../../plugins/registry";
+import { AGENT_KIND, dismissCard, dismissCardProblem, stopConversation, useAgent, useCardProblems } from "./conversation";
 import { Transcript, transcriptMarkdown } from "./Transcript";
 
 /*
@@ -26,6 +27,7 @@ export function AgentCard({ paneId }: { paneId: string }) {
   const problem = useCardProblems((state) => state[paneId]);
   // Collapsed to its header, so the pane's bottom (a blocks prompt) is usable meanwhile.
   const [collapsed, setCollapsed] = useState(false);
+  usePluginsVersion();
 
   if (problem && !conversation) {
     return (
@@ -68,7 +70,7 @@ export function AgentCard({ paneId }: { paneId: string }) {
         <CardButton label="Copy" disabled={conversation.items.length === 0} onClick={() => void copyText(transcriptMarkdown(conversation.items))}>
           <ClipboardCopy size={12} />
         </CardButton>
-        <CardButton label="Continue in agent pane" onClick={() => continueInPane(paneId)}>
+        <CardButton label="Continue in agent pane" disabled={!isPluginEnabled(AGENT_KIND)} onClick={() => continueInPane(paneId)}>
           <PanelRightOpen size={12} />
         </CardButton>
         <CardButton label={collapsed ? "Expand" : "Collapse"} onClick={() => setCollapsed(!collapsed)}>

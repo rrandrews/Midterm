@@ -11,6 +11,7 @@ import {
   RESULT_LIMIT,
   clipMiddle,
   newConversation,
+  resultContent,
   runTurn,
 } from "./loop";
 import { buildToolset } from "./tools";
@@ -244,6 +245,13 @@ describe("runTurn", () => {
     expect(content).not.toContain("sk-ant-0123");
     expect(content).toContain("characters left out");
     expect(clipMiddle("short")).toBe("short");
+  });
+
+  it("redacts quoted credentials in tool output before JSON escapes them", () => {
+    const file = 'config:\nAPI_KEY="hunter2-very-secret"\nexport GITHUB_TOKEN="abc123def456"\n';
+    const content = resultContent({ content: file });
+    expect(content).not.toContain("hunter2-very-secret");
+    expect(content).not.toContain("abc123def456");
   });
 
   it("passes its own confirm through to the skill call", async () => {

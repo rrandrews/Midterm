@@ -589,11 +589,15 @@ impl<'k> ChatStream<'k> {
                 json!(self.content)
             },
         );
-        let stop = if !raw_calls.is_empty() {
+        // The token limit wins over calls: a cut-off call must not run.
+        let has_calls = !raw_calls.is_empty();
+        if has_calls {
             raw.insert("tool_calls".into(), Value::Array(raw_calls));
-            Stop::Tools
-        } else if length {
+        }
+        let stop = if length {
             Stop::Length
+        } else if has_calls {
+            Stop::Tools
         } else {
             Stop::End
         };
@@ -717,10 +721,11 @@ pub fn parse_turn(response: &Value) -> Result<AgentTurn, AiError> {
     if text.is_empty() && tool_calls.is_empty() {
         return Err(empty_reply(finish == "length"));
     }
-    let stop = if !tool_calls.is_empty() {
-        Stop::Tools
-    } else if finish == "length" {
+    // The token limit wins over calls: a cut-off call must not run.
+    let stop = if finish == "length" {
         Stop::Length
+    } else if !tool_calls.is_empty() {
+        Stop::Tools
     } else {
         Stop::End
     };

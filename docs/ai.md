@@ -242,8 +242,9 @@ Reading the stream (the Phase 2 accumulators, extended):
   objects merged, other values last-wins. `raw` = `{ role: "assistant",
   content: <as received, a <think> block included, or null>, tool_calls?,
   …unknown }`; a JSON (non-streamed) answer's `raw` is `choices[0].message`
-  as received. `stop` is `tools` whenever there is a call, whatever
-  `finish_reason` says.
+  as received. `stop` is `length` when `finish_reason` is `length` (even
+  with calls, so a cut-off call is not run), else `tools` whenever there is
+  a call, whatever `finish_reason` says.
 - **Anthropic**: the whole `content` array is rebuilt in order from
   `content_block_start`/`_delta`/`_stop`: `text` (whitespace-only text
   blocks dropped: the API rejects them on replay), `thinking` with its
@@ -913,8 +914,11 @@ API model. Choose another model for Agent in Settings → AI."
   the tab menu's "Open the agent" (each focuses the tab's Agent pane or
   opens one beside), or the card's "Continue in agent pane" (moves the
   conversation, history, transcript, allowed tools and all, into a new
-  Agent pane). Header (`text-meta`): "Working with: <kind> · <directory>"
-  (the tab's last active non-agent pane, fixed while a turn runs), the
+  Agent pane; the button is disabled while the Agent plugin is, and the card
+  keeps the conversation if the pane could not be opened). Header
+  (`text-meta`): "Working with: <kind> · <directory>" (the tab's last active
+  non-agent pane, fixed while a turn runs; none when the tab has no other
+  pane, rather than a pane of another tab), the
   model, New conversation. Then the transcript and a textarea (⏎ sends, ⇧⏎
   adds a line, Esc stops; a Stop button while running). Plugin:
   `closeBlockers` → `{ type: "running", name: "the agent" }` while a turn
@@ -927,8 +931,10 @@ token limit" under a partial one), one row per tool call (`skill › tool`,
 the input's gist, status running / waiting for you / done / failed /
 denied / cancelled / not run; expandable to the input and the result sent
 back), "Loaded skill: …", errors with Retry, notes ("Stopped after 12
-steps." with Continue). A write tool's row, while it waits, shows its input
-(a command in mono) and **Allow / Allow for this conversation / Deny**.
+steps." with Continue). A write tool's row, while it waits, shows where it
+acts ("In: Block terminal · ~/x": the pane its input names, else the
+conversation's), its input (a command in mono) and **Allow / Allow for this
+conversation / Deny**.
 "Allow for this conversation" is remembered per tool (wire name) in the
 conversation and forgotten by New conversation. It sticks to the bottom
 unless scrolled up. No confirmation hook is installed globally
@@ -961,8 +967,9 @@ turn):
    `{"INVALID_JSON": …, "arguments": …}`; unknown name → an error;
    `load_skill` → `{ skill, title, instructions, tools }`; otherwise
    `invokeSkillTool(skillId, tool, input, { paneId: targetPane, signal,
-   confirm })`. Each result is `JSON.stringify(result | { error })`, passed
-   through `redact`, clipped to 16 000 characters (head and tail), and all
+   confirm })`. Each result is `JSON.stringify(result | { error })` with
+   every string in it redacted first (before JSON escapes quotes and line
+   breaks), the whole text redacted again, clipped to 16 000 characters (head and tail), and all
    of a round's results are appended as one `tool` message. Then the next
    round.
 4. It ends when a turn calls no tool. After 12 rounds: "Stopped after 12

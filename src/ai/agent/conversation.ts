@@ -345,8 +345,9 @@ export function newPaneConversation(paneId: string): void {
 
 /** Before a turn in an Agent pane: work with the tab's last active non-agent pane. */
 export function retargetPaneConversation(paneId: string, id: string): void {
-  const target = workPaneFor(paneId);
-  if (!target || isRunning(id)) return;
+  if (isRunning(id)) return;
+  // No work pane in this tab (the Agent pane moved on its own): work with nothing rather than a pane in another tab.
+  const target = workPaneFor(paneId) ?? paneId;
   handleOf(id).update((c) => (c.targetPane === target ? c : { ...c, targetPane: target }));
 }
 
@@ -359,6 +360,18 @@ export function handOff(id: string, fromCardPane: string, toAgentPane: string): 
   });
   // The card's entry is dropped without disposing the conversation: its owner is now the pane.
   cardState.delete(fromCardPane);
+}
+
+/** Gives a conversation back to its card when the Agent pane it was handed to did not open. */
+export function undoHandOff(id: string, cardPane: string, agentPane: string): void {
+  handoffs.delete(agentPane);
+  if (!useAgent.getState().conversations[id]) return;
+  useAgent.setState((state) => ({
+    cards: { ...state.cards, [cardPane]: id },
+    owners: { ...state.owners, [id]: { type: "card", paneId: cardPane } },
+  }));
+  cardState.acquire(cardPane, () => id);
+  cardState.release(cardPane, id);
 }
 
 /** The Agent pane's conversation, if mounted. */

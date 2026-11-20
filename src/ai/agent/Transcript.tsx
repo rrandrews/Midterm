@@ -1,7 +1,7 @@
 import { Ban, Check, ChevronDown, ChevronRight, CircleSlash, LoaderCircle, ShieldQuestion, X } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import { Markdown } from "../../components/ui/Markdown";
-import { answerConfirm, sendMessage, useAgent } from "./conversation";
+import { answerConfirm, describePane, sendMessage, useAgent } from "./conversation";
 import type { ToolStatus, TranscriptItem } from "./loop";
 
 /*
@@ -63,7 +63,16 @@ function pretty(text: string | undefined): string {
   }
 }
 
-const ToolRow = memo(function ToolRow({ conversationId, item }: { conversationId: string; item: ToolItem }) {
+/** Where a write tool acts: the pane its input names, else the conversation's. */
+function destination(input: unknown, targetPane: string): string {
+  const named = input && typeof input === "object" ? (input as { paneId?: unknown }).paneId : undefined;
+  const paneId = typeof named === "string" ? named : targetPane;
+  const described = describePane(paneId);
+  if (!described) return `pane ${paneId} (not found)`;
+  return [described.name, described.directory].filter(Boolean).join(" · ");
+}
+
+const ToolRow = memo(function ToolRow({ conversationId, item, targetPane }: { conversationId: string; item: ToolItem; targetPane: string }) {
   const [open, setOpen] = useState(false);
   const asking = item.status === "asking";
   const summary = inputSummary(item.input, item.invalid);
@@ -81,6 +90,7 @@ const ToolRow = memo(function ToolRow({ conversationId, item }: { conversationId
       </button>
       {asking && (
         <div className="agent-confirm">
+          <div className="agent-meta">In: {destination(item.input, targetPane)}</div>
           {typeof command === "string" ? (
             <pre className="agent-confirm-command">{command}</pre>
           ) : (
@@ -115,7 +125,9 @@ const ToolRow = memo(function ToolRow({ conversationId, item }: { conversationId
   );
 });
 
-function Item({ conversationId, item, last, resume }: { conversationId: string; item: TranscriptItem; last: boolean; resume?: "retry" | "continue" }) {
+type ItemProps = { conversationId: string; item: TranscriptItem; last: boolean; resume?: "retry" | "continue"; targetPane: string };
+
+function Item({ conversationId, item, last, resume, targetPane }: ItemProps) {
   switch (item.type) {
     case "user":
       return <div className="agent-user">{item.text}</div>;
@@ -129,7 +141,7 @@ function Item({ conversationId, item, last, resume }: { conversationId: string; 
       );
     }
     case "tool":
-      return <ToolRow conversationId={conversationId} item={item} />;
+      return <ToolRow conversationId={conversationId} item={item} targetPane={targetPane} />;
     case "skill":
       return <div className="agent-meta">Loaded skill: {item.title}</div>;
     case "error":
@@ -185,7 +197,7 @@ export function Transcript({ conversationId, className = "" }: { conversationId:
       }}
     >
       {items.map((item, index) => (
-        <Item key={item.id} conversationId={conversationId} item={item} last={index === items.length - 1} resume={conversation.resume} />
+        <Item key={item.id} conversationId={conversationId} item={item} last={index === items.length - 1} resume={conversation.resume} targetPane={conversation.targetPane} />
       ))}
       {waiting && <div className="agent-meta animate-pulse">thinking…</div>}
     </div>

@@ -723,7 +723,8 @@ mod tests {
             }
         };
         let t = turn(0).await.unwrap();
-        assert_eq!(t.stop, Stop::Tools);
+        // The limit wins over the calls, so the loop does not run them.
+        assert_eq!(t.stop, Stop::Length);
         assert_eq!(t.tool_calls[0].input, Value::Null);
         assert_eq!(t.tool_calls[0].invalid.as_deref(), Some("{\"a\":"));
         let raw: Value = serde_json::from_str(&t.raw).unwrap();

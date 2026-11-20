@@ -140,6 +140,15 @@ describe("invokeSkillTool", () => {
     expect((await invokeSkillTool("eko.echo", "shout", {})).ok).toBe(false);
   });
 
+  it("does not run a write tool whose skill was switched off while the user was asked", async () => {
+    withSkills("eko", [echo]);
+    const confirm = async () => {
+      setSkillEnabled("eko", "echo", false);
+      return true;
+    };
+    expect(await invokeSkillTool("eko.echo", "shout", {}, { confirm })).toEqual({ ok: false, error: 'The skill "eko.echo" is switched off' });
+  });
+
   it("turns failures and non-JSON results into errors", async () => {
     withSkills("eko", [echo]);
     expect(await invokeSkillTool("eko.echo", "fail", {})).toEqual({ ok: false, error: "nope" });

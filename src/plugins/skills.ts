@@ -226,6 +226,11 @@ export async function invokeSkillTool(
     if (!allowed) return { ok: false, error: "The user did not allow this action" };
   }
   if (options.signal?.aborted) return { ok: false, error: "Cancelled" };
+  if (tool.effect === "write") {
+    // The skill or its plugin may have been switched off while the user was asked.
+    const live = skills.get(skillId);
+    if (!live?.enabled || !live.skill.tools?.includes(tool)) return { ok: false, error: `The skill "${skillId}" is switched off` };
+  }
   const api = apiOf(skill.pluginId);
   if (!api) return { ok: false, error: "The plugin host is not ready" };
   try {

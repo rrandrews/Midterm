@@ -190,7 +190,8 @@ type SkillTool = {
      the hook), else the hook set by `setWriteConfirmation`; with neither,
      write tools are refused. No hook is installed by default: the agent
      passes its own `confirm` per call (Allow / Allow for this
-     conversation / Deny in its transcript);
+     conversation / Deny in its transcript). After a yes, the skill's
+     switch is checked again (it may have been switched off meanwhile);
   4. requires the result to be plain JSON.
 - The agent declares every enabled skill's tools up front, under wire names
   `<plugin>__<skill>__<tool>` (characters outside `[A-Za-z0-9_-]` become
@@ -205,7 +206,10 @@ type SkillTool = {
   when the model names no pane.
 - In dev builds it is also available as `window.__midterm.invokeSkillTool`.
 - Built-in skills:
-  - `terminal.commands`: `recent_blocks`, `run_command` (write)
+  - `terminal.commands`: `recent_blocks`, `run_command` (write; only in
+    the terminal named or the agent's own pane, never a fallback, and
+    refuses commands with control characters other than line breaks and
+    tabs)
   - `explorer.files`: `list_directory`, `reveal`
   - `editor.edit`: `open_file`, `read_open_file`, `save` (write)
   - `viewer.view`: `open_file`

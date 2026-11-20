@@ -108,11 +108,19 @@ export function clipMiddle(text: string, limit = RESULT_LIMIT): string {
   return `${text.slice(0, half)}${marker}${text.slice(text.length - half)}`;
 }
 
-/** A tool result as sent to the model: JSON, redacted, clipped. */
+/** `value` with every string (keys too) redacted, so secrets are matched before JSON escapes their quotes and line breaks. */
+export function redactValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return redact(value);
+  if (depth > 64 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [redact(key), redactValue(item, depth + 1)]));
+}
+
+/** A tool result as sent to the model: string values redacted, JSON, redacted again as a whole, clipped. */
 export function resultContent(value: unknown): string {
   let json: string;
   try {
-    json = JSON.stringify(value) ?? "null";
+    json = JSON.stringify(redactValue(value)) ?? "null";
   } catch {
     json = JSON.stringify({ error: "The result could not be serialized" });
   }

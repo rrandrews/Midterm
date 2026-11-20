@@ -2,6 +2,7 @@ import { activePaneId, addPaneBeside, livePane, openPaneBeside, selectTab } from
 import { confirm } from "../../components/ui/ConfirmDialog";
 import { focusPane } from "../../layout/dock";
 import { openPrompt } from "../../palette/state";
+import { isPluginEnabled } from "../../plugins/registry";
 import { openSettings } from "../../settings/SettingsDialog";
 import { createPane, listPanes } from "../../state/layout";
 import { findTabOfPane, selectActiveTab, useAppStore } from "../../state/store";
@@ -11,6 +12,7 @@ import {
   askAgent,
   cardOf,
   handOff,
+  undoHandOff,
   isRunning,
   newPaneConversation,
   paneConversationOf,
@@ -73,9 +75,12 @@ export function promptForAgent(paneId = activePaneId()): void {
 export function continueInPane(cardPaneId: string): void {
   const id = cardOf(cardPaneId);
   if (!id || !useAgent.getState().conversations[id]) return;
+  // A disabled Agent plugin renders a placeholder that would never take the conversation over.
+  if (!isPluginEnabled(AGENT_KIND)) return;
   const pane = createPane(AGENT_KIND);
   handOff(id, cardPaneId, pane.id);
   addPaneBeside(cardPaneId, pane);
+  if (!livePane(pane.id)) undoHandOff(id, cardPaneId, pane.id);
 }
 
 /** "AI: Open the agent": focuses the tab's Agent pane, or opens one beside the active pane. */

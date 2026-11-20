@@ -78,13 +78,20 @@ export const terminalSkills: Skill[] = [
         effect: "write",
         inputSchema: {
           type: "object",
-          properties: { paneId: paneIdProperty, command: { type: "string", minLength: 1 } },
+          properties: {
+            paneId: { type: "string", description: "A terminal pane id; the terminal the agent works with if omitted" },
+            command: { type: "string", minLength: 1 },
+          },
           required: ["command"],
           additionalProperties: false,
         },
         run: async (input, ctx) => {
           const { paneId, command } = input as { paneId?: string; command: string };
-          const id = terminalPane(paneId, ctx.paneId);
+          // What runs must be what the user saw: no control characters (a newline is a line break of a multi-line command).
+          if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(command)) throw new Error("The command contains control characters");
+          // Only the terminal named, or the one the agent works with: never a fallback the user did not approve.
+          const id = typeof paneId === "string" ? paneId : ctx.paneId;
+          if (!id || !isSessionKind(livePane(id)?.data.kind)) throw new Error(id ? `No terminal pane "${id}"` : "No terminal to run the command in");
           const session = peekSession(id);
           if (!session || !canRun(session)) throw new Error("The terminal is not waiting at a prompt");
           runFromBlocks(session, command);
