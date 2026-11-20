@@ -1,4 +1,4 @@
-import { Ban, Check, ChevronDown, ChevronRight, CircleSlash, LoaderCircle, ShieldQuestion, X } from "lucide-react";
+import { Ban, Check, ChevronDown, ChevronRight, CircleSlash, LoaderCircle, ShieldQuestion, TriangleAlert, X } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import { Markdown } from "../../components/ui/Markdown";
 import { answerConfirm, describePane, sendMessage, useAgent } from "./conversation";
@@ -8,8 +8,8 @@ import type { ToolStatus, TranscriptItem } from "./loop";
  * An agent conversation's transcript, shared by the agent card and the
  * Agent pane: the user's messages, Markdown answers, one row per tool call
  * (expandable to its input and result; a write tool waiting for the user
- * shows Allow / Allow for this conversation / Deny), loaded skills, errors
- * with Retry, and notes. Sticks to the bottom while new items arrive,
+ * shows Allow / Allow for this conversation / Deny), loaded skills, muted
+ * rows for tools a CLI ran on its own (ACP), errors with Retry, and notes. Sticks to the bottom while new items arrive,
  * unless the user scrolled up.
  */
 
@@ -144,6 +144,14 @@ function Item({ conversationId, item, last, resume, targetPane }: ItemProps) {
       return <ToolRow conversationId={conversationId} item={item} targetPane={targetPane} />;
     case "skill":
       return <div className="agent-meta">Loaded skill: {item.title}</div>;
+    case "foreign":
+      return (
+        <div className="agent-foreign" data-status={item.status} title="A tool the CLI ran on its own, outside Midterm’s skills">
+          {item.status === "running" ? <LoaderCircle size={11} className="animate-spin" /> : <TriangleAlert size={11} />}
+          <span className="agent-foreign-title">CLI tool: {item.title}</span>
+          <span className="agent-tool-status">{item.status}</span>
+        </div>
+      );
     case "error":
       return (
         <div className="agent-error">
@@ -178,7 +186,8 @@ export function Transcript({ conversationId, className = "" }: { conversationId:
   const lastItem = items[items.length - 1];
   const busy =
     (lastItem?.type === "assistant" && lastItem.streaming) ||
-    (lastItem?.type === "tool" && (lastItem.status === "running" || lastItem.status === "asking"));
+    (lastItem?.type === "tool" && (lastItem.status === "running" || lastItem.status === "asking")) ||
+    (lastItem?.type === "foreign" && lastItem.status === "running");
   const waiting = running && !busy;
 
   useEffect(() => {
@@ -217,6 +226,8 @@ export function transcriptMarkdown(items: readonly TranscriptItem[]): string {
           return `- ${item.skillTitle} › ${item.tool}: ${inputSummary(item.input, item.invalid)} (${STATUS_LABEL[item.status]})`;
         case "skill":
           return `- Loaded skill: ${item.title}`;
+        case "foreign":
+          return `- CLI tool: ${item.title} (${item.status})`;
         case "error":
         case "note":
           return `_${item.type === "error" ? item.message : item.text}_`;

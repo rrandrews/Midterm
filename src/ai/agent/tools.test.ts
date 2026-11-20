@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RegisteredSkill } from "../../plugins/skills";
 import type { Skill, SkillTool } from "../../plugins/types";
-import { AGENT_SYSTEM_PROMPT, LOAD_SKILL, buildToolset, wireName } from "./tools";
+import { ACP_MAX_NAME, ACP_PROMPT_LINE, AGENT_SYSTEM_PROMPT, LOAD_SKILL, buildToolset, wireName } from "./tools";
 
 const tool = (name: string, effect: SkillTool["effect"] = "read"): SkillTool => ({
   name,
@@ -76,6 +76,20 @@ describe("buildToolset", () => {
     expect(set.loadSkill("a.notes")).toEqual({ skill: "a.notes", title: "NOTES", instructions: "Read the notes.", tools: [] });
     expect(set.loadSkill("c.tools")).toEqual({ skill: "c.tools", title: "TOOLS", instructions: "About tools.", tools: ["c__tools__go"] });
     expect(set.loadSkill("b.off")).toBeUndefined();
+  });
+
+  it("has an ACP variant: names capped for the CLI's MCP prefix, and a line about that prefix", () => {
+    const skills = [registered("p".repeat(40), { id: "s".repeat(40), tools: [tool("a"), tool("b")] })];
+    const api = buildToolset(skills);
+    const acp = buildToolset(skills, { acp: true });
+    expect(api.system).not.toContain(ACP_PROMPT_LINE);
+    expect(acp.system.startsWith(`${AGENT_SYSTEM_PROMPT}\n${ACP_PROMPT_LINE}\n\nSkills:`)).toBe(true);
+    const names = acp.tools.slice(1).map((t) => t.name);
+    expect(new Set(names).size).toBe(2);
+    for (const name of names) expect(name.length).toBeLessThanOrEqual(ACP_MAX_NAME);
+    // Claude Code's limit is 128 including "mcp__midterm__".
+    for (const name of names) expect(`mcp__midterm__${name}`.length).toBeLessThanOrEqual(128);
+    expect(acp.resolve(names[1])).toMatchObject({ toolName: "b" });
   });
 
   it("declares no tools when no skill is enabled", () => {

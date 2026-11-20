@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { livePane } from "../../actions";
-import { aiAgentTurn, aiCancel } from "../../ipc/ai";
+import { aiAcpClose, aiAcpPrompt, aiAcpToolResult, aiAgentTurn, aiCancel, providerInfo } from "../../ipc/ai";
 import { homeDirectory } from "../../ipc/system";
 import { createPaneState } from "../../plugins/paneState";
 import { getPlugin } from "../../plugins/registry";
@@ -8,8 +8,9 @@ import { allSkills, invokeSkillTool } from "../../plugins/skills";
 import { findPane } from "../../state/layout";
 import { findTabOfPane, useAppStore } from "../../state/store";
 import { branchOf } from "../../terminal/gitBranch";
-import { AGENT_CLI_PROBLEM, featureProblem, profileFor, targetFor } from "../profiles";
-import { type ConfirmAnswer, type Conversation, type ConversationHandle, type LoopDeps, newConversation, runTurn } from "./loop";
+import { agentProviderProblem, featureProblem, profileFor, targetFor } from "../profiles";
+import { type AcpDeps, runAcpTurn } from "./acp";
+import { type AgentBackend, type ConfirmAnswer, type Conversation, type ConversationHandle, type LoopDeps, newConversation, runTurn } from "./loop";
 import { buildToolset } from "./tools";
 
 /*
@@ -20,12 +21,14 @@ import { buildToolset } from "./tools";
  * dropped when its owner goes away (the card's pane closes, the card is
  * dismissed or replaced, the Agent pane closes), except that "Continue in
  * agent pane" hands it from a card to a new pane, state and all.
+ *
+ * API profiles run on `runTurn` (one `ai_agent_turn` per model turn); CLI
+ * profiles (Claude Code) on `runAcpTurn`, over an ACP session the backend
+ * keeps per conversation until the conversation is dropped.
  */
 
 export const AGENT_KIND = "agent";
 
-/** Shown when the agent's profile is a CLI: a CLI runs its own tool loop and cannot call Midterm's skills. */
-export const CLI_MESSAGE = AGENT_CLI_PROBLEM;
 export const NO_MODEL_MESSAGE = "Choose a model for Agent in Settings → AI.";
 
 export type Owner = { type: "card"; paneId: string } | { type: "pane"; paneId: string };
@@ -45,9 +48,9 @@ export const useAgent = create<AgentState>()(() => ({ conversations: {}, owners:
 
 /** Why the agent cannot run, or null when it can. */
 export function agentProblem(): string | null {
-  const problem = featureProblem("agent");
-  if (!problem) return null;
-  return problem === CLI_MESSAGE ? CLI_MESSAGE : NO_MODEL_MESSAGE;
+  if (!featureProblem("agent")) return null;
+  const profile = profileFor("agent");
+  return (profile && agentProviderProblem(profile.provider)) ?? NO_MODEL_MESSAGE;
 }
 
 /* ---- Runtime (outside the store) ---- */
@@ -116,26 +119,30 @@ async function contextLine(conversation: Conversation): Promise<string> {
   return `[Context — ${parts.join("; ")}]`;
 }
 
-const deps: LoopDeps = {
-  turn: aiAgentTurn,
-  cancel: (requestId) => void aiCancel(requestId).catch(() => {}),
+const ask: LoopDeps["ask"] = ({ conversationId, callId }, signal) =>
+  new Promise<ConfirmAnswer>((resolve) => {
+    const runtime = runtimes.get(conversationId);
+    if (!runtime || signal.aborted) return resolve("deny");
+    const done = (answer: ConfirmAnswer) => {
+      runtime.asks.delete(callId);
+      signal.removeEventListener("abort", onAbort);
+      resolve(answer);
+    };
+    const onAbort = () => done("deny");
+    runtime.asks.set(callId, done);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+
+const shared = {
+  cancel: (requestId: string) => void aiCancel(requestId).catch(() => {}),
   invoke: invokeSkillTool,
-  ask: ({ conversationId, callId }, signal) =>
-    new Promise<ConfirmAnswer>((resolve) => {
-      const runtime = runtimes.get(conversationId);
-      if (!runtime || signal.aborted) return resolve("deny");
-      const done = (answer: ConfirmAnswer) => {
-        runtime.asks.delete(callId);
-        signal.removeEventListener("abort", onAbort);
-        resolve(answer);
-      };
-      const onAbort = () => done("deny");
-      runtime.asks.set(callId, done);
-      signal.addEventListener("abort", onAbort, { once: true });
-    }),
+  ask,
   contextLine,
   newRequestId: () => `agent-${Date.now().toString(36)}-${++counter}`,
 };
+
+const deps: LoopDeps = { ...shared, turn: aiAgentTurn };
+const acpDeps: AcpDeps = { ...shared, prompt: aiAcpPrompt, toolResult: aiAcpToolResult };
 
 /* ---- Lifecycle ---- */
 
@@ -145,8 +152,10 @@ function createConversation(targetPane: string, owner: Owner): string | null {
   const target = targetFor("agent");
   if (!target) return null;
   const id = `c${Date.now().toString(36)}${++counter}`;
-  const conversation = newConversation(id, target, buildToolset(allSkills()), targetPane);
-  conversation.model = profileFor("agent")?.model || conversation.model;
+  const backend: AgentBackend = providerInfo(target.provider.id)?.type === "cli" ? "acp" : "api";
+  const conversation = newConversation(id, target, buildToolset(allSkills(), { acp: backend === "acp" }), targetPane, backend);
+  // A CLI profile without a model uses the CLI's default: show the CLI's name.
+  conversation.model = profileFor("agent")?.model || (backend === "acp" ? providerInfo(target.provider.id)?.name : undefined) || conversation.model;
   useAgent.setState((state) => ({
     conversations: { ...state.conversations, [id]: conversation },
     owners: { ...state.owners, [id]: owner },
@@ -162,6 +171,8 @@ export function stopConversation(id: string): void {
 function dropConversation(id: string): void {
   stopConversation(id);
   runtimes.delete(id);
+  // Ends the ACP session and its process (after the cancel above).
+  if (useAgent.getState().conversations[id]?.backend === "acp") void aiAcpClose(id).catch(() => {});
   useAgent.setState((state) => {
     const { [id]: _gone, ...conversations } = state.conversations;
     const { [id]: _owner, ...owners } = state.owners;
@@ -180,7 +191,9 @@ export function sendMessage(id: string, text: string | null): void {
   if (text !== null && !text.trim()) return;
   const runtime: Runtime = { controller: new AbortController(), asks: new Map() };
   runtimes.set(id, runtime);
-  void runTurn(handleOf(id), text, deps, runtime.controller.signal)
+  const signal = runtime.controller.signal;
+  const run = conversation.backend === "acp" ? runAcpTurn(handleOf(id), text, acpDeps, signal) : runTurn(handleOf(id), text, deps, signal);
+  void run
     .catch((error: unknown) => console.error("The agent failed:", error))
     .finally(() => {
       if (runtimes.get(id) === runtime) runtimes.delete(id);

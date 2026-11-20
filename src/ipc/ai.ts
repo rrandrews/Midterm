@@ -106,7 +106,17 @@ export type EffortOptions = {
   note: string | null;
 };
 
-export type CliStatus = { found: boolean; path?: string; version?: string; outdated?: string };
+/** Whether a CLI profile can run the agent over ACP (Claude Code only for now): the adapter found and checked, without starting a session. */
+export type AgentStatus = {
+  ready: boolean;
+  adapter?: { path: string; version: string };
+  /** Why it is not ready; may name the install command. */
+  problem?: string;
+  /** Shown muted, e.g. a version newer than the tested ones. */
+  note?: string;
+};
+
+export type CliStatus = { found: boolean; path?: string; version?: string; outdated?: string; agent?: AgentStatus };
 
 /* ---- Browser mock: a key store in memory and a canned suggestion. ---- */
 
@@ -244,6 +254,119 @@ function mockAgentTurn(request: AgentTurnRequest, onEvent: (event: AgentEvent) =
   });
 }
 
+/* ---- ACP sessions (ai_acp_prompt; CLI profiles) ---- */
+
+/** A message on `ai_acp_prompt`'s channel. `toolCall` names use our wire names (no `mcp__midterm__` prefix). */
+export type AcpEvent =
+  | { type: "text"; text: string }
+  | { type: "toolCall"; callId: string; name: string; input: unknown }
+  | { type: "foreignTool"; id: string; title: string; status: "running" | "done" | "failed" | "denied" };
+
+export type AcpStop = "end" | "length" | "refused" | "maxRequests" | "cancelled";
+
+/**
+ * One user prompt in a conversation's ACP session. The first prompt for a
+ * `conversationId` creates the session; `system` and `tools` are only used
+ * then (frozen per conversation).
+ */
+export type AcpPromptRequest = {
+  requestId: string;
+  conversationId: string;
+  target: AiTarget;
+  system: string;
+  tools: ToolDef[];
+  text: string;
+};
+
+export type AcpToolResult = { conversationId: string; callId: string; content: string; isError: boolean };
+
+/** The browser mock's ACP sessions: tool calls waiting for their result, by call id. */
+const mockAcpCalls = new Map<string, (result: AcpToolResult) => void>();
+
+/**
+ * The browser mock's ACP agent: a `recent_blocks` call when that tool is
+ * offered, then (once its result is back) a short Markdown answer.
+ */
+function mockAcpPrompt(request: AcpPromptRequest, onEvent: (event: AcpEvent) => void): Promise<{ stop: AcpStop }> {
+  const tool = request.tools.find((candidate) => candidate.name.endsWith("__recent_blocks"));
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let callId: string | undefined;
+    const finish = () => {
+      mockPending.delete(request.requestId);
+      if (callId) mockAcpCalls.delete(callId);
+    };
+    mockPending.set(request.requestId, () => {
+      clearTimeout(timer);
+      finish();
+      resolve({ stop: "cancelled" });
+    });
+    const answer = (parts: string[]) => {
+      let at = 0;
+      const next = () => {
+        if (at < parts.length) {
+          onEvent({ type: "text", text: parts[at++] });
+          timer = setTimeout(next, 60);
+          return;
+        }
+        finish();
+        resolve({ stop: "end" });
+      };
+      timer = setTimeout(next, 200);
+    };
+    if (!tool) {
+      answer(["The **browser mock** ACP agent", " has no tools to call."]);
+      return;
+    }
+    timer = setTimeout(() => {
+      callId = `mock-acp-${Date.now()}`;
+      mockAcpCalls.set(callId, (result) => {
+        if (result.isError) answer(["The **browser mock** ACP agent", " could not read the recent blocks."]);
+        else answer(["The **browser mock** ACP agent", " read the recent blocks.", "\n\nNothing else to do."]);
+      });
+      onEvent({ type: "toolCall", callId, name: tool.name, input: { count: 3 } });
+    }, 300);
+  });
+}
+
+/**
+ * One prompt in an ACP session: reply text, our tool calls (answer each
+ * with `aiAcpToolResult`) and foreign tool rows arrive on `onEvent`
+ * (events after the promise settled are dropped). Resolves with the stop
+ * reason; failures reject like `aiStream`. Cancel with `aiCancel(requestId)`.
+ */
+export async function aiAcpPrompt(request: AcpPromptRequest, onEvent: (event: AcpEvent) => void): Promise<{ stop: AcpStop }> {
+  let settled = false;
+  const forward = (event: AcpEvent) => {
+    if (!settled) onEvent(event);
+  };
+  try {
+    if (!isTauri()) return await mockAcpPrompt(request, forward);
+    const channel = new Channel<AcpEvent>();
+    channel.onmessage = forward;
+    return await invoke<{ stop: AcpStop }>("ai_acp_prompt", { ...request, onEvent: channel });
+  } finally {
+    settled = true;
+  }
+}
+
+/** The result of a `toolCall` event, sent back to the CLI. */
+export async function aiAcpToolResult(result: AcpToolResult): Promise<void> {
+  if (!isTauri()) {
+    const waiting = mockAcpCalls.get(result.callId);
+    mockAcpCalls.delete(result.callId);
+    waiting?.(result);
+    return;
+  }
+  await invoke("ai_acp_tool_result", result);
+}
+
+/** Ends a conversation's ACP session (and its process); nothing when it has none. */
+export async function aiAcpClose(conversationId: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("ai_acp_close", { conversationId });
+}
+
 /* ---- Commands ---- */
 
 export function aiSuggest(request: SuggestRequest): Promise<{ text: string }> {
@@ -360,6 +483,12 @@ export function aiKeyStatus(provider: ProviderConfig): Promise<boolean> {
 }
 
 export function aiCliStatus(provider: ProviderConfig): Promise<CliStatus> {
-  if (!isTauri()) return Promise.resolve({ found: false });
+  if (!isTauri()) {
+    if (provider.id !== "claude-code") return Promise.resolve({ found: false });
+    return Promise.resolve({
+      found: false,
+      agent: { ready: false, problem: "claude-agent-acp is not on the login shell’s PATH. Install it with `npm install -g @agentclientprotocol/claude-agent-acp`." },
+    });
+  }
   return invoke<CliStatus>("ai_cli_status", { provider });
 }

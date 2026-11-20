@@ -23,11 +23,23 @@ export const FEATURES: readonly { id: AiFeature; label: string; hint: string }[]
   { id: "suggestions", label: "Next-command suggestions", hint: "Ghost text at an empty prompt of the block terminal." },
   { id: "cmd", label: "/cmd", hint: "Writes a command for a task described in the blocks editor." },
   { id: "explain", label: "Explain and fix", hint: "Explains a block's output, and fixes a failed command into the blocks editor." },
-  { id: "agent", label: "Agent", hint: "Works with your panes through plugin skills (/agent, AI: Ask the agent…, the Agent pane). API models only." },
+  { id: "agent", label: "Agent", hint: "Works with your panes through plugin skills (/agent, AI: Ask the agent…, the Agent pane)." },
 ];
 
-/** Why the agent cannot use `profile`: a CLI runs its own tool loop and cannot call Midterm's skills. */
-export const AGENT_CLI_PROBLEM = "The agent needs an API model. Choose another model for Agent in Settings → AI.";
+/**
+ * CLI providers the agent runs over ACP (a long-lived session per
+ * conversation; see docs/ai.md "Agent"). A fixed table, so `featureProblem`
+ * stays pure: whether the adapter is installed shows in Settings → AI and
+ * as the turn's error. Codex is MID-90, Antigravity MID-81.
+ */
+export const AGENT_CLI_PROVIDERS: readonly ProviderId[] = ["claude-code"];
+
+/** Why the agent cannot use a profile of `provider` (a CLI it does not support yet), or null. */
+export function agentProviderProblem(provider: string): string | null {
+  const info = providerInfo(provider);
+  if (info?.type !== "cli" || AGENT_CLI_PROVIDERS.includes(info.id)) return null;
+  return `The agent does not support ${info.name} yet. Choose an API model or Claude Code for Agent in Settings → AI.`;
+}
 
 const featureLabel = (feature: AiFeature) => FEATURES.find((f) => f.id === feature)?.label ?? feature;
 
@@ -73,7 +85,7 @@ export function featureProblem(feature: AiFeature, settings: Settings = getSetti
   if (!profile) return settings.ai.profiles.length ? "No model chosen." : "Add a model first.";
   const problem = profileProblem(profile);
   if (problem) return `${profile.name}: ${problem}.`;
-  if (feature === "agent" && providerInfo(profile.provider)?.type === "cli") return AGENT_CLI_PROBLEM;
+  if (feature === "agent") return agentProviderProblem(profile.provider);
   return null;
 }
 

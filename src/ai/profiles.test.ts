@@ -84,11 +84,15 @@ describe("readiness", () => {
     expect(featureReady("cmd")).toBe(true);
   });
 
-  it("refuses CLI profiles for the agent only", () => {
+  it("runs the agent on Claude Code profiles and refuses other CLIs", () => {
     saveProfile(profile("cli", { provider: "claude-code", model: "" }));
+    expect(featureReady("agent")).toBe(true);
+    expect(targetFor("agent")?.provider.id).toBe("claude-code");
+    saveProfile(profile("codex", { provider: "codex", model: "" }));
+    setFeatureProfile("agent", "codex");
     expect(featureReady("cmd")).toBe(true);
     expect(featureReady("agent")).toBe(false);
-    expect(featureProblem("agent")).toBe("The agent needs an API model. Choose another model for Agent in Settings → AI.");
+    expect(featureProblem("agent")).toBe("The agent does not support Codex yet. Choose an API model or Claude Code for Agent in Settings → AI.");
     expect(targetFor("agent")).toBeNull();
     saveProfile(profile("api"));
     setFeatureProfile("agent", "api");

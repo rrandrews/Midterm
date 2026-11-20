@@ -25,6 +25,21 @@ export const LOAD_SKILL = "load_skill";
 /** Longest tool name providers accept. */
 const MAX_NAME = 64;
 
+/**
+ * Longest wire name over ACP. Claude Code's limit is 128 characters
+ * including the `mcp__midterm__` prefix it adds (longer names are silently
+ * dropped), so 64 leaves room; kept separate in case another CLI needs less.
+ */
+export const ACP_MAX_NAME = 64;
+
+/** The system prompt line an ACP toolset adds: the CLI shows our tools under its MCP prefix. */
+export const ACP_PROMPT_LINE = "Tool names may appear with an mcp__midterm__ prefix; they are the same tools.";
+
+export type ToolsetOptions = {
+  /** For an ACP session (a CLI profile): names capped at `ACP_MAX_NAME`, and one more system prompt line. */
+  acp?: boolean;
+};
+
 /** What a wire name stands for. */
 export type ResolvedTool =
   | { kind: "load_skill" }
@@ -40,16 +55,16 @@ export type Toolset = {
 };
 
 /** A provider-safe tool name: characters outside `[A-Za-z0-9_-]` become `_`, at most 64 long. */
-export function wireName(pluginId: string, skillId: string, tool: string): string {
-  return `${pluginId}__${skillId}__${tool}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, MAX_NAME);
+export function wireName(pluginId: string, skillId: string, tool: string, maxName = MAX_NAME): string {
+  return `${pluginId}__${skillId}__${tool}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, maxName);
 }
 
 /** `name`, or `name` cut and suffixed (`_2`, `_3`…) until it is not in `taken`. */
-function unique(name: string, taken: Set<string>): string {
+function unique(name: string, taken: Set<string>, maxName: number): string {
   if (!taken.has(name)) return name;
   for (let n = 2; ; n++) {
     const suffix = `_${n}`;
-    const candidate = `${name.slice(0, MAX_NAME - suffix.length)}${suffix}`;
+    const candidate = `${name.slice(0, maxName - suffix.length)}${suffix}`;
     if (!taken.has(candidate)) return candidate;
   }
 }
@@ -64,7 +79,9 @@ function skillLine(skill: RegisteredSkill): string {
  * The toolset for `skills`: only enabled ones, sorted by id so the same
  * skills always give the same system prompt and tools.
  */
-export function buildToolset(skills: readonly RegisteredSkill[]): Toolset {
+export function buildToolset(skills: readonly RegisteredSkill[], options: ToolsetOptions = {}): Toolset {
+  const maxName = options.acp ? ACP_MAX_NAME : MAX_NAME;
+  const prompt = options.acp ? `${AGENT_SYSTEM_PROMPT}\n${ACP_PROMPT_LINE}` : AGENT_SYSTEM_PROMPT;
   const enabled = skills.filter((skill) => skill.enabled).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const taken = new Set<string>([LOAD_SKILL]);
   const byName = new Map<string, ResolvedTool>([[LOAD_SKILL, { kind: "load_skill" }]]);
@@ -75,7 +92,7 @@ export function buildToolset(skills: readonly RegisteredSkill[]): Toolset {
     const { skill } = registered;
     const names: string[] = [];
     for (const tool of skill.tools ?? []) {
-      const name = unique(wireName(registered.pluginId, skill.id, tool.name), taken);
+      const name = unique(wireName(registered.pluginId, skill.id, tool.name, maxName), taken, maxName);
       taken.add(name);
       names.push(name);
       byName.set(name, { kind: "tool", skillId: registered.id, skillTitle: skill.title, toolName: tool.name, effect: tool.effect });
@@ -98,8 +115,8 @@ export function buildToolset(skills: readonly RegisteredSkill[]): Toolset {
   };
 
   const system = enabled.length
-    ? `${AGENT_SYSTEM_PROMPT}\n\nSkills:\n${enabled.map(skillLine).join("\n")}`
-    : `${AGENT_SYSTEM_PROMPT}\n\nNo skills are enabled, so there is nothing you can act on; say so if asked to act.`;
+    ? `${prompt}\n\nSkills:\n${enabled.map(skillLine).join("\n")}`
+    : `${prompt}\n\nNo skills are enabled, so there is nothing you can act on; say so if asked to act.`;
 
   return {
     system,

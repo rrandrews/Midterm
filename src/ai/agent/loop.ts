@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentMessage, AgentTurn, AgentTurnRequest, AiTarget } from "../../ipc/ai";
+import type { AgentEvent, AgentMessage, AgentToolCall, AgentTurn, AgentTurnRequest, AiTarget } from "../../ipc/ai";
 import { toAiError } from "../../ipc/ai";
 import type { ToolResult, WriteConfirmation } from "../../plugins/skills";
 import { redact } from "../context";
@@ -46,14 +46,20 @@ export type TranscriptItem =
       result?: string;
     }
   | { id: number; type: "skill"; skillId: string; title: string }
+  /** A tool the CLI ran on its own (ACP; it means the lockdown leaked): shown muted, never run by Midterm. */
+  | { id: number; type: "foreign"; foreignId: string; title: string; status: "running" | "done" | "failed" | "denied" }
   | { id: number; type: "error"; message: string }
   | { id: number; type: "note"; text: string };
 
 /** Distributes `Omit` over the union, so each item keeps its own fields. */
 export type NewItem = TranscriptItem extends infer T ? (T extends TranscriptItem ? Omit<T, "id"> : never) : never;
 
+/** Which driver runs a conversation: `runTurn` over `ai_agent_turn` (API profiles), or `runAcpTurn` over an ACP session (CLI profiles). */
+export type AgentBackend = "api" | "acp";
+
 export type Conversation = {
   id: string;
+  backend: AgentBackend;
   /** Frozen for the conversation: providers reject replayed thinking when these change. */
   target: AiTarget;
   toolset: Toolset;
@@ -66,6 +72,8 @@ export type Conversation = {
   status: "idle" | "running";
   /** What the last stop offers: Retry (a failed turn) or Continue (the round cap). */
   resume?: "retry" | "continue";
+  /** ACP: the prompt text of the last failed prompt, sent again by Retry. */
+  retryText?: string;
   /** Write tools (wire names) the user allowed for the whole conversation. */
   allowed: string[];
   nextItem: number;
@@ -78,6 +86,9 @@ export type ConversationHandle = {
 };
 
 export type ConfirmAnswer = "allow" | "always" | "deny";
+
+/** What running one tool call needs (shared by both drivers). */
+export type ToolCallDeps = Pick<LoopDeps, "invoke" | "ask">;
 
 export type LoopDeps = {
   turn(request: AgentTurnRequest, onEvent: (event: AgentEvent) => void): Promise<AgentTurn>;
@@ -96,8 +107,8 @@ export type LoopDeps = {
 };
 
 /** A blank conversation over a frozen target and toolset. */
-export function newConversation(id: string, target: AiTarget, toolset: Toolset, targetPane: string): Conversation {
-  return { id, target, toolset, model: target.model || target.provider.id, targetPane, messages: [], items: [], status: "idle", allowed: [], nextItem: 1 };
+export function newConversation(id: string, target: AiTarget, toolset: Toolset, targetPane: string, backend: AgentBackend = "api"): Conversation {
+  return { id, backend, target, toolset, model: target.model || target.provider.id, targetPane, messages: [], items: [], status: "idle", allowed: [], nextItem: 1 };
 }
 
 /** `text` with its middle dropped beyond `limit` characters. */
@@ -127,10 +138,10 @@ export function resultContent(value: unknown): string {
   return clipMiddle(redact(json));
 }
 
-const CANCELLED = "Cancelled by the user";
+export const CANCELLED = "Cancelled by the user";
 const CUT_OFF = "Not run: the reply was cut off";
 
-function addItem(h: ConversationHandle, item: NewItem): number {
+export function addItem(h: ConversationHandle, item: NewItem): number {
   let id = 0;
   h.update((c) => {
     id = c.nextItem;
@@ -139,24 +150,96 @@ function addItem(h: ConversationHandle, item: NewItem): number {
   return id;
 }
 
-function patchItem(h: ConversationHandle, id: number, patch: Partial<TranscriptItem>): void {
+export function patchItem(h: ConversationHandle, id: number, patch: Partial<TranscriptItem>): void {
   h.update((c) => ({ ...c, items: c.items.map((item) => (item.id === id ? ({ ...item, ...patch } as TranscriptItem) : item)) }));
 }
 
-function removeItem(h: ConversationHandle, id: number): void {
+export function removeItem(h: ConversationHandle, id: number): void {
   h.update((c) => ({ ...c, items: c.items.filter((item) => item.id !== id) }));
 }
 
-function itemOf(h: ConversationHandle, id: number): TranscriptItem | undefined {
+export function itemOf(h: ConversationHandle, id: number): TranscriptItem | undefined {
   return h.get().items.find((item) => item.id === id);
 }
 
 /** Resolves when `signal` aborts (never rejects). */
-function aborted(signal: AbortSignal): Promise<void> {
+export function aborted(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) resolve();
     else signal.addEventListener("abort", () => resolve(), { once: true });
   });
+}
+
+/**
+ * Runs one tool call the model made: adds its row (none for `load_skill`,
+ * which adds a "Loaded skill" item), resolves it, asks before a write tool
+ * (through `deps.ask`, remembering "always" per wire name), invokes the
+ * skill tool on the conversation's pane, and returns the result as sent to
+ * the model (redacted, clipped). `skip` marks it not run (a reply cut off,
+ * a cap reached). Never throws for the tool's own failures.
+ */
+export async function runToolCall(
+  h: ConversationHandle,
+  call: AgentToolCall,
+  deps: ToolCallDeps,
+  signal: AbortSignal,
+  skip?: { status: ToolStatus; error: string },
+): Promise<{ content: string; isError: boolean }> {
+  const conversation = h.get();
+  const resolved = conversation.toolset.resolve(call.name);
+  const write = resolved?.kind === "tool" && resolved.effect === "write";
+  const isLoad = resolved?.kind === "load_skill";
+  const rowId = isLoad
+    ? undefined
+    : addItem(h, {
+        type: "tool",
+        callId: call.id,
+        name: call.name,
+        skillTitle: resolved?.kind === "tool" ? resolved.skillTitle : "Unknown",
+        tool: resolved?.kind === "tool" ? resolved.toolName : call.name,
+        input: call.input,
+        invalid: call.invalid,
+        write,
+        status: "running",
+      });
+  const finish = (status: ToolStatus, value: unknown, isError: boolean) => {
+    const content = resultContent(value);
+    if (rowId !== undefined) patchItem(h, rowId, { status, result: content });
+    return { content, isError };
+  };
+
+  if (skip) return finish(skip.status, { error: skip.error }, true);
+  if (signal.aborted) return finish("cancelled", { error: CANCELLED }, true);
+  if (call.invalid !== undefined) {
+    return finish("failed", { INVALID_JSON: "The arguments were not valid JSON", arguments: clipMiddle(call.invalid, 2000) }, true);
+  }
+  if (!resolved) return finish("failed", { error: `No tool named "${call.name}"` }, true);
+  if (resolved.kind === "load_skill") {
+    const skillId = (call.input as { skill?: unknown } | null)?.skill;
+    const loaded = typeof skillId === "string" ? conversation.toolset.loadSkill(skillId) : undefined;
+    if (!loaded) return finish("failed", { error: `No enabled skill "${String(skillId)}"` }, true);
+    addItem(h, { type: "skill", skillId: loaded.skill, title: loaded.title });
+    return finish("done", loaded, false);
+  }
+
+  let denied = false;
+  const confirm: WriteConfirmation = async () => {
+    if (h.get().allowed.includes(call.name)) return true;
+    if (rowId !== undefined) patchItem(h, rowId, { status: "asking" });
+    const answer = await deps.ask({ conversationId: conversation.id, callId: call.id }, signal);
+    if (answer === "always") h.update((c) => (c.allowed.includes(call.name) ? c : { ...c, allowed: [...c.allowed, call.name] }));
+    denied = answer === "deny";
+    if (rowId !== undefined) patchItem(h, rowId, { status: denied ? "denied" : "running" });
+    return !denied;
+  };
+  const result = await Promise.race([
+    deps.invoke(resolved.skillId, resolved.toolName, call.input, { paneId: h.get().targetPane, signal, confirm }),
+    aborted(signal).then(() => null),
+  ]);
+  if (result === null || (signal.aborted && !result.ok)) return finish("cancelled", { error: CANCELLED }, true);
+  if (result.ok) return finish("done", result.result, false);
+  if (denied) return finish("denied", { error: "The user denied this action." }, true);
+  return finish("failed", { error: result.error }, true);
 }
 
 /**
@@ -188,7 +271,7 @@ export async function runTurn(h: ConversationHandle, text: string | null, deps: 
   }
 }
 
-function stopped(h: ConversationHandle): void {
+export function stopped(h: ConversationHandle): void {
   addItem(h, { type: "note", text: "Stopped." });
 }
 
@@ -263,74 +346,8 @@ async function oneRound(h: ConversationHandle, deps: LoopDeps, signal: AbortSign
   const results: { id: string; content: string; isError?: boolean }[] = [];
   const cutOff = turn.stop === "length";
   for (const call of turn.toolCalls) {
-    const resolved = conversation.toolset.resolve(call.name);
-    const write = resolved?.kind === "tool" && resolved.effect === "write";
-    const isLoad = resolved?.kind === "load_skill";
-    const rowId = isLoad
-      ? undefined
-      : addItem(h, {
-          type: "tool",
-          callId: call.id,
-          name: call.name,
-          skillTitle: resolved?.kind === "tool" ? resolved.skillTitle : "Unknown",
-          tool: resolved?.kind === "tool" ? resolved.toolName : call.name,
-          input: call.input,
-          invalid: call.invalid,
-          write,
-          status: "running",
-        });
-    const finish = (status: ToolStatus, value: unknown, isError: boolean) => {
-      const content = resultContent(value);
-      results.push(isError ? { id: call.id, content, isError } : { id: call.id, content });
-      if (rowId !== undefined) patchItem(h, rowId, { status, result: content });
-    };
-
-    if (cutOff) {
-      finish("skipped", { error: CUT_OFF }, true);
-      continue;
-    }
-    if (signal.aborted) {
-      finish("cancelled", { error: CANCELLED }, true);
-      continue;
-    }
-    if (call.invalid !== undefined) {
-      finish("failed", { INVALID_JSON: "The arguments were not valid JSON", arguments: clipMiddle(call.invalid, 2000) }, true);
-      continue;
-    }
-    if (!resolved) {
-      finish("failed", { error: `No tool named "${call.name}"` }, true);
-      continue;
-    }
-    if (resolved.kind === "load_skill") {
-      const skillId = (call.input as { skill?: unknown } | null)?.skill;
-      const loaded = typeof skillId === "string" ? conversation.toolset.loadSkill(skillId) : undefined;
-      if (!loaded) {
-        finish("failed", { error: `No enabled skill "${String(skillId)}"` }, true);
-        continue;
-      }
-      addItem(h, { type: "skill", skillId: loaded.skill, title: loaded.title });
-      finish("done", loaded, false);
-      continue;
-    }
-
-    let denied = false;
-    const confirm: WriteConfirmation = async () => {
-      if (h.get().allowed.includes(call.name)) return true;
-      if (rowId !== undefined) patchItem(h, rowId, { status: "asking" });
-      const answer = await deps.ask({ conversationId: conversation.id, callId: call.id }, signal);
-      if (answer === "always") h.update((c) => (c.allowed.includes(call.name) ? c : { ...c, allowed: [...c.allowed, call.name] }));
-      denied = answer === "deny";
-      if (rowId !== undefined) patchItem(h, rowId, { status: denied ? "denied" : "running" });
-      return !denied;
-    };
-    const result = await Promise.race([
-      deps.invoke(resolved.skillId, resolved.toolName, call.input, { paneId: h.get().targetPane, signal, confirm }),
-      aborted(signal).then(() => null),
-    ]);
-    if (result === null || (signal.aborted && !result.ok)) finish("cancelled", { error: CANCELLED }, true);
-    else if (result.ok) finish("done", result.result, false);
-    else if (denied) finish("denied", { error: "The user denied this action." }, true);
-    else finish("failed", { error: result.error }, true);
+    const { content, isError } = await runToolCall(h, call, deps, signal, cutOff ? { status: "skipped", error: CUT_OFF } : undefined);
+    results.push(isError ? { id: call.id, content, isError } : { id: call.id, content });
   }
   h.update((c) => ({ ...c, messages: [...c.messages, { role: "tool", results }] }));
 
