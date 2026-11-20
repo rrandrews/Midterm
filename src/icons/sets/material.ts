@@ -7,7 +7,9 @@ import type { IconMapping, LoadedIconSet } from "../types";
  * the default set. Only its data is used: the generated VS Code icon theme
  * manifest and the SVG files, emitted as separate assets (`?no-inline`) so
  * each is fetched only when a row needs it. This module is reached only
- * through `import()`, so none of it is in the startup bundle.
+ * through `import()`, so none of it is in the startup bundle. Its MIT
+ * notice ships as public/licenses/material-icon-theme.txt (dist/licenses/);
+ * a test keeps that copy equal to the package's LICENSE.
  */
 
 // `exhaustive`: Vite skips node_modules in globs otherwise.

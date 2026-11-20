@@ -179,7 +179,7 @@ function IconSetPicker({ theme }: { theme: Theme }) {
   const sets = allIconSets();
   const value = theme.icons?.set ?? "";
   const shownId = knownIconSet(value) ? value : activeIconSetId();
-  const shown = loaded[shownId] ?? null;
+  const shown = loaded.get(shownId) ?? null;
   useEffect(() => {
     if (!shown) void loadIconSet(shownId);
   }, [shown, shownId]);

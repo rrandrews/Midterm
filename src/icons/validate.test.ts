@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { minimalSet } from "./sets/minimal";
-import { createCustomSet } from "./state";
+import { createCustomSet, loadIconSet, saveIconSet, useIconState } from "./state";
 import type { IconQuery } from "./types";
 import { exportIconSet, parseIconSet, validateIconSet } from "./validate";
 
@@ -74,5 +74,18 @@ describe("custom sets over a base", () => {
   it("uses its own fallbacks before the base's", () => {
     const image = loaded.icon(query("notes"));
     expect(image && "url" in image && image.mono).toBe(true);
+  });
+});
+
+describe("set ids that are Object.prototype members", () => {
+  it("loads a custom set called constructor", async () => {
+    expect(useIconState.getState().loaded.get("constructor")).toBeUndefined();
+    expect(await loadIconSet("constructor")).toBeNull();
+    const set = parseIconSet({ ...base, name: "Constructor" }, BUNDLED);
+    expect(set.id).toBe("constructor");
+    saveIconSet(set);
+    const loaded = await loadIconSet("constructor");
+    expect(loaded?.id).toBe("constructor");
+    expect(typeof loaded?.icon).toBe("function");
   });
 });

@@ -53,9 +53,14 @@ so there are slightly fewer files than icons). Each is fetched when a row
 first needs it. The manifest and the URL map are a lazy chunk of about
 85 KB gzipped; the startup bundle holds only `state.ts` and the resolver.
 
+Its MIT notice ships as `public/licenses/material-icon-theme.txt`, which
+Vite copies to `dist/licenses/`.
+
 Bumping Material: change the exact version in `package.json`, run
 `bunx vitest run src/icons` (`material.test.ts` fails if an icon id has no
-SVG), and look at the explorer in a dark and a light theme.
+SVG, or if the shipped license differs from the package's; copy
+`node_modules/material-icon-theme/LICENSE` over it), and look at the
+explorer in a dark and a light theme.
 
 ## Resolution
 
@@ -67,7 +72,9 @@ VS Code's order (`resolve.ts`):
   set's `file`.
 - **Folders**: folder name (`folderNamesExpanded` when open), path tails
   too (`.github/workflows`); then `folderExpanded` / `folder`.
-- Under a light theme the set's `light` mappings are tried first.
+- Under a light theme the set's `light` mappings are tried first, its
+  fallbacks (`light.file`, `light.folder`, `light.folderExpanded`) included;
+  a name match still beats any fallback.
 - Matching is case-insensitive and uses `Map`s throughout, because files
   named `constructor` or `__proto__` exist.
 
@@ -114,7 +121,9 @@ copied from a VS Code icon theme:
 ```
 
 - A `path` definition is relative to the JSON file, must end in `.svg`,
-  and is read and inlined at import, so stored sets stand alone.
+  and is read and inlined at import, so stored sets stand alone. The icon
+  count is checked before anything is read, and each file's size (and the
+  running total) before it is read.
 - `mono: true` draws the icon as a mask in the row's text color.
 - Without `extends` the set replaces the default; entries it does not
   match get its own `file` / `folder`, or no icon.
@@ -138,6 +147,9 @@ Limits: 64 KB per icon, 4,000 icons, 4 MB per set, 128-character mapping
 keys, icon ids `[\w.-]{1,64}`.
 
 ### Storage
+
+Loaded sets are kept in a `Map` (`useIconState.loaded`): `constructor` is a
+valid set id.
 
 `iconsets.json` (tauri-plugin-store): `index` lists the sets
 (`IconSetInfo` without `bundled`), and `set:<id>` holds one set, read the
