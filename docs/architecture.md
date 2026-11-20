@@ -50,7 +50,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src-tauri/src/pty/` | PTY sessions and the commands that drive them. |
 | `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer; whole-file reads and atomic writes for editors and viewers. |
 | `src-tauri/src/plugins/` | Installed plugins: manifest validation, import (folder or .zip), remove, the `plugin://` scheme. |
-| `src-tauri/src/ai/` | AI providers: HTTP adapters (OpenAI-compatible, Anthropic), CLI providers, keys in the OS keychain, the `ai_*` commands; see [ai.md](ai.md). The only code that makes outbound network requests. |
+| `src-tauri/src/ai/` | AI providers: HTTP adapters (OpenAI-compatible, Anthropic), CLI providers, ACP agent sessions (`acp/`: long-lived adapter processes serving Midterm's skills as MCP tools), keys in the OS keychain, the `ai_*` commands; see [ai.md](ai.md). The only code that makes outbound network requests (the CLIs it runs make their own). |
 | `src-tauri/src/menu.rs` | Native menu. Has no "Close Window", so ⌘W reaches the app. |
 | `src-tauri/src/traffic_lights.rs` | Centres the macOS traffic lights in the web title bar; re-applied on resize and focus. |
 

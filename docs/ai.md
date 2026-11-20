@@ -27,11 +27,16 @@ runs the CLI. The webview's CSP stays "nothing remote"
 | `sse.rs` | A byte-level Server-Sent Events parser (`SseParser::push`/`finish`). |
 | `stream.rs` | What the streaming adapters share: `Stop` (`end`, `length`, `tools`), `Streamed`, the `StreamState` accumulator trait, `Text` (leading whitespace, trimming), and the read loop (`read`/`read_with`: one delta per network chunk). |
 | `agent.rs` | Agent turns (`ai_agent_turn`): the wire types, both adapters' request bodies with tools and the history (assistant turns spliced in verbatim as `RawValue`), strict tool-input parsing, and the turn read loop. The adapters' accumulators (`ChatStream`, `MessageStream`) gather tool calls and the native assistant message (`finish_turn`). |
-| `cli.rs` | CLI providers: locating, status, argument builders, running. |
+| `cli.rs` | CLI providers: locating, status (`CliStatus`, with `agent` for ACP-capable CLIs), argument builders, running. |
 | `shell_path.rs` | The login shell's PATH (marker extraction, merge, executable lookup). |
-| `process.rs` | Child process with stdin, timeout, and process-group kill on drop. |
+| `process.rs` | Child process with stdin, timeout, and process-group kill on drop; `LongChild` (piped stdio, long-lived, shut down or killed with its group) and `GroupHandle` (kills that group from another thread) for ACP adapters. |
 | `keys.rs` | Keys in the OS credential store (`keyring`). |
 | `error.rs` | `AiError { kind, message }`. |
+| `acp/mod.rs` | `AcpManager` (in `AiManager.acp`): live ACP sessions by conversation id, the 8-session cap, `prompt` / `tool_result` / `close` / `close_owned_by` / `close_all`, adapter launch (`launch`), `AcpEvent`, `Stop`. |
+| `acp/session.rs` | One session over a transport: `initialize`, `session/new`, config options, then prompts, cancels and close; timeouts (`Timing`), the permission policy, session updates → events, error mapping; `run_process` runs it over an adapter's stdio. |
+| `acp/tools.rs` | Midterm's tools served as the MCP server `midterm` over the ACP connection; `Shared` (running turn, pending calls, idle clock). |
+| `acp/agents.rs` | Per-agent recipe (`AgentSpec`, only `CLAUDE_CODE`): adapter, version bounds, env, `session/new` `_meta`, config option picks, prompt escaping, the status checks behind `ai_cli_status.agent`. |
+| `acp/tests.rs` | Tests with an in-process fake agent and fake adapter scripts; the ignored `live_acp`. |
 | `stub.rs` | Tests only: a stub HTTP server on 127.0.0.1 (JSON answers, or SSE frames with gaps). |
 
 ### Providers
@@ -390,6 +395,133 @@ UI takes free text (Claude Code accepts aliases such as `sonnet`).
 CLI replies can come wrapped in backticks (Antigravity did in testing); the
 backend returns the text as printed.
 
+### ACP sessions
+
+Why: a CLI runs its own tool loop and, run headless (`-p`), cannot call the
+webview's skills. Over the **Agent Client Protocol** (ACP) the CLI stays the
+agent and Midterm supplies the system prompt, its tools and the
+confirmations. `acp/` runs one long-lived session per agent conversation
+(`ai_acp_prompt`); the one-shot CLI runs above are unchanged. Built on the
+`agent-client-protocol` crate (5.4, `unstable_mcp_over_acp`); the adapter is
+a separate program per CLI that speaks ACP on stdio. **Claude Code only**
+(adapter `claude-agent-acp`); Codex (MID-90) and Antigravity (MID-81) are not
+supported yet (`agents::spec` has no entry: the prompt fails with "The agent
+doesn't support Codex yet. Choose a Claude Code or API model for Agent in
+Settings → AI.").
+
+Adding that crate turned on serde_json's `preserve_order` for the whole
+backend: `serde_json::Map` keeps insertion order everywhere, so JSON the
+backend builds or re-serializes keeps its key order (`Cargo.toml` notes it).
+
+**The Claude Code recipe** (`agents.rs`, `session.rs`), verified live in the
+MID-82 spike:
+
+- **Process**: the adapter (`claude-agent-acp`, no arguments) in its own
+  process group, working directory a fresh empty temporary directory
+  `midterm-agent-*` (canonical path; deleted when the session ends). Env:
+  the resolved PATH, `NO_COLOR=1`, `CLAUDE_CODE_EXECUTABLE` = the resolved
+  `claude` (so `cliPath` applies), `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`;
+  removed: `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` (Claude Code refuses to
+  start inside another session) and `CLAUDE_CODE_EFFORT_LEVEL` (it would
+  outrank the effort option). Nothing is installed or fetched (no `npx`).
+- **Handshake**: `initialize` (no client capabilities: no file system or
+  terminal access for the agent). An adapter that does not advertise
+  MCP-over-ACP is refused with the update command.
+- **`session/new`**: `cwd` as above; the system prompt as `systemPrompt`
+  with mode `override` when the adapter offers it (`append` when it only
+  offers a system prompt; with neither, it is put in front of the first
+  prompt text), so Claude Code's own prompt is not used; and
+  `_meta.claudeCode.options`: `tools: []` (no built-in tools),
+  `settingSources: []` (no settings, CLAUDE.md, skills, hooks),
+  `persistSession: false`, `strictMcpConfig: true`,
+  `allowDangerouslySkipPermissions: false`, `mcpServersDelivery:
+  "initialize"` (the MCP config stays off the CLI's argv) and `allowedTools`
+  = `mcp__midterm__<name>` for each of Midterm's tools. These win over the
+  adapter's defaults.
+- **MCP-over-ACP**: Midterm's tools are served to the agent as the MCP
+  server `midterm` over the same connection (`tools.rs`, hand-written
+  against the SDK's `McpService`: MCP revision 2026-07-28, stateless;
+  `server/discover`, `tools/list`, `ping`, `tools/call`; the tool list is
+  the frozen toolset's wire names, with `ttlMs: 0`). A `tools/call` is not
+  run in Rust: it becomes a `toolCall` event (`callId` = the agent's tool
+  use id when given, else `call-<n>`; `name` without the `mcp__midterm__`
+  prefix) and waits for `ai_acp_tool_result`. If the prompt is cancelled
+  meanwhile, the call is answered with an error ("The user stopped this
+  request; the tool was not run.") and a later result is ignored.
+- **Config options** (`session/set_config_option`, after `session/new`):
+  `mode` = `default`; `model` = the profile's model matched against the
+  option's values (exactly, then ignoring case; aliases such as `sonnet`
+  are values; empty keeps the agent's default; an unlisted model fails with
+  the list it offers); `thought_level` = the profile's effort, resolved as
+  for the one-shot CLI (Midterm's pick: low; `default`: not set) and clamped
+  to the levels offered.
+- **Prompts**: the text of a message that starts with `/` is sent with a
+  leading space (Claude Code would run it as a slash command; `" /context"`
+  reaches the model as text).
+
+**Permissions.** The agent asks `session/request_permission` before a
+tool. For Midterm's tools (the SDK name `mcp__midterm__…`) Midterm answers
+`allow_once` at once: the real confirmation happens in the webview inside
+the tool call (Allow / Allow for this conversation / Deny). Any other tool
+gets a reject option (`reject_once`, else `reject_always`) and shows as a
+denied foreign row; an "always" option is never chosen. With no fitting
+option, or during a cancel, the answer is `cancelled`. Other agent
+requests get method-not-found; the client has no capabilities.
+
+**Lifecycle.** One adapter process per conversation, started by its first
+prompt (`system` and `tools` are only used then), kept for the later ones.
+
+- At most **8** sessions: opening a ninth closes the idle one used longest
+  ago; if all eight are answering, the new prompt fails ("8 agent sessions
+  are already answering; try again when one finishes").
+- A session ends on `ai_acp_close` (the conversation was dropped; waits up to
+  6 s, then kills the group), when its window's page loads or the window is
+  destroyed (`close_owned_by`, the window label owns it), at app exit
+  (`close_all` kills every group and removes the directories), or when the
+  process dies. The process's whole group is killed when its task is
+  dropped. A dead or closed session is forgotten: the conversation's next
+  prompt starts a fresh one.
+- If the caller of `ai_acp_prompt` goes away or `ai_cancel` arrives, the
+  turn is cancelled (`session/cancel`); a prompt for a session that is
+  still answering fails.
+
+**Timeouts** (`session::Timing`): **30 s** from spawn to the config
+options set (`timeout`: "<adapter> did not start within 30 s"). An **idle
+watchdog**: a prompt fails with `timeout` when the agent sends nothing for
+180 s (scaled with effort like HTTP: ×2 high, ×3 xhigh and max), and the
+clock is **paused while a tool call waits for the webview** (a confirmation
+can take as long as the user needs). After a cancel the agent has **5 s** to
+settle the prompt, else the session is killed and the prompt ends
+`cancelled`. Closing: `session/close` 2 s, then the process's own exit 2 s
+before the group is killed.
+
+**Errors.** Stop reasons map `max_tokens` → `length`, `refusal` →
+`refused`, `max_turn_requests` → `maxRequests`, `cancelled` → `cancelled`,
+anything else `end` (a prompt cancelled by the user always ends
+`cancelled`). An agent error answer is `auth` when it is ACP's
+auth-required code (with "Sign in by running `claude` in a terminal."), else
+`other` "the agent failed: <message>" (message and data, 400 characters). A
+process that died is reported from the tail of its stderr through the same
+mapping as CLI failures (the adapter's own `[session/…]` and `[authStatus]`
+log lines left out; `auth` gets the sign-in hint). A missing adapter is
+`notFound` with its install command; a missing `claude` as for any CLI.
+
+**Adapter discovery and checks** (`ai_cli_status().agent`, no session
+started, only `--version` calls). The adapter is found like a CLI (login
+shell PATH, `locate_named`); `ProviderConfig.acpPath` overrides it (same
+forms as `cliPath`; **no Settings field sets it yet**). Install with
+`npm install -g @agentclientprotocol/claude-agent-acp`. Checks, in the order
+a user would fix them; the first failure is `problem` and `ready` is false:
+
+| Check | Requirement |
+|---|---|
+| Adapter | on PATH, and `--version` parses |
+| Adapter version | `claude-agent-acp` **0.108.0 or later** (what the recipe needs). Newer than the tested **0.109.x** (a higher minor): still ready, with a `note` ("report problems") |
+| Node.js | `node` on PATH, major **22 or later** (what the adapter runs on) |
+| Claude Code | `claude` found, version **2.1.326 or later** (the first with `mcpServersDelivery: "initialize"`) |
+
+Versions checked: `claude-agent-acp` 0.109.0 with Claude Code 2.1.329.
+
 ### Keys
 
 `keys.rs` stores one entry per HTTP provider in the OS credential store via
@@ -457,7 +589,8 @@ camelCase.
 ```ts
 type ProviderId = "openai" | "anthropic" | "deepseek" | "openrouter" | "gemini" | "custom"
                | "claude-code" | "codex" | "antigravity";
-type ProviderConfig = { id: ProviderId; baseUrl?: string; cliPath?: string };
+type ProviderConfig = { id: ProviderId; baseUrl?: string; cliPath?: string;
+                        acpPath?: string };   // the backend takes acpPath; the webview type does not carry it yet
 // What a request goes to: a model profile resolved for a feature (Rust `Target`).
 type AiTarget = { provider: ProviderConfig; model: string; effort?: EffortLevel;
                   extra?: Record<string, unknown> };
@@ -470,6 +603,12 @@ ai_stream({ requestId: string, target: AiTarget, system: string, prompt: string,
 ai_agent_turn({ requestId: string, target: AiTarget, system: string, tools: ToolDef[],
                 messages: AgentMessage[], maxTokens?: number, onEvent: Channel<AgentEvent> })
     -> AgentTurn                                            // see Agent
+ai_acp_prompt({ requestId: string, conversationId: string, target: AiTarget, system: string,
+                tools: ToolDef[], text: string, onEvent: Channel<AcpEvent> })
+    -> { stop: "end" | "length" | "refused" | "maxRequests" | "cancelled" }   // see ACP sessions
+ai_acp_tool_result({ conversationId: string, callId: string, content: string,
+                     isError: boolean }) -> void
+ai_acp_close({ conversationId: string }) -> void
 ai_cancel({ requestId: string }) -> void
 ai_models({ provider: ProviderConfig }) -> string[]         // text -> text only (see Models)
 ai_test({ target: AiTarget }) -> { ok: boolean, message: string }
@@ -478,7 +617,10 @@ ai_effort_options({ target: AiTarget })                      // extra ignored
 ai_key_set({ provider: ProviderConfig, key: string }) -> void
 ai_key_delete({ provider: ProviderConfig }) -> void
 ai_key_status({ provider: ProviderConfig }) -> boolean
-ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, version?: string }
+ai_cli_status({ provider: ProviderConfig })
+    -> { found: boolean, path?: string, version?: string, outdated?: string, agent?: AgentStatus }
+type AgentStatus = { ready: boolean, adapter?: { path: string, version: string },
+                     problem?: string, note?: string };   // Claude Code only
 ```
 
 - `ai_suggest`: `target.model` is required for HTTP providers and optional
@@ -495,8 +637,24 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
 - `ai_agent_turn`: one model turn of an agent conversation (see
   [Requests with tools](#requests-with-tools-agent-turns) and
   [Agent](#agent)). Errors, `ai_cancel` and the gate as for `ai_stream`.
+- `ai_acp_prompt`: one user message in the conversation's ACP session, which
+  the first prompt starts (`system` and `tools` are only used then; see
+  [ACP sessions](#acp-sessions)). `onEvent` gets `text` (reply text),
+  `toolCall` (`callId`, `name`, `input`: run it and answer with
+  `ai_acp_tool_result`) and `foreignTool` (`id`, `title`, `status` running,
+  done, failed or denied: a tool the CLI ran itself). The result is the stop
+  reason. `target` must be a CLI profile the agent supports; an API target
+  rejects with `other`, an unsupported CLI with the not-supported message.
+  Errors, `ai_cancel(requestId)` and the gate as for `ai_stream`: a cancel
+  ends the turn with `cancelled` and later events are dropped.
+- `ai_acp_tool_result`: the answer to a `toolCall` (`content` is what the
+  model sees; `isError`). Results for unknown, finished or cancelled calls
+  are ignored.
+- `ai_acp_close`: ends the conversation's session and its process (waits up
+  to 6 s); no session: nothing happens. The webview calls it when a
+  conversation is dropped.
 - `ai_cancel`: aborts the HTTP request or kills the CLI; the pending
-  `ai_suggest`, `ai_stream` or `ai_agent_turn` rejects with `cancelled`. A cancel that arrives before its
+  `ai_suggest`, `ai_stream`, `ai_agent_turn` or `ai_acp_prompt` rejects with `cancelled`. A cancel that arrives before its
   `ai_suggest` registered is remembered (the last 64), so the request is
   cancelled as soon as it starts. Cancels for ids that already started
   (the last 256) are ignored, so a late or repeated cancel never cancels a
@@ -526,7 +684,9 @@ ai_cli_status({ provider: ProviderConfig }) -> { found: boolean, path?: string, 
   required (and validated like a request's): the key is stored under that
   URL. Other providers ignore `baseUrl`.
 - `ai_cli_status`: rejects HTTP providers. `version` is the first line of
-  `--version`.
+  `--version`. For Claude Code `agent` says whether the agent can run over
+  ACP (the adapter, Node.js and `claude` checks of
+  [ACP sessions](#acp-sessions)); it is absent for Codex and Antigravity.
 
 ### Errors
 
@@ -590,6 +750,23 @@ clamping, headroom) have unit tests.
 `cargo test live_clis -- --ignored --nocapture` runs the CLIs installed on
 the machine at low and medium effort (spends a little quota).
 
+ACP (`acp/tests.rs`, `cargo test ai::acp`): an in-process fake agent over a
+duplex transport drives `session.rs` (handshake and `session/new` shape,
+config options and picks, an unknown model, an adapter without MCP-over-ACP,
+stop reasons, updates → events, the permission policy, the leading-slash
+escape, version and Node.js judgments, death messages without adapter log
+lines, an MCP round trip with permissions, cancel answering pending calls
+and stopping events, the agent dying mid-turn, the idle watchdog pausing
+for tool calls, the startup timeout). Fake adapter scripts exercise
+`AcpManager` end to end: a session and `close` killing its process group,
+window close and app exit killing groups, closing during startup, a dying
+adapter's stderr, unsupported CLIs and a missing adapter.
+`MIDTERM_ACP_ADAPTER=<path> cargo test live_acp -- --ignored --nocapture`
+runs the real adapter and Claude Code (haiku, low effort) through a tool
+call (`MIDTERM_ACP_ADAPTER` unset: `claude-agent-acp` on the login shell's
+PATH; spends a little quota). Frontend: `agent/acp.test.ts` runs
+`runAcpTurn` with fakes (below).
+
 ## Frontend
 
 Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
@@ -597,7 +774,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 
 | File | What |
 |---|---|
-| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`; the agent wire types (`ToolDef`, `AgentMessage`, `AgentEvent`, `AgentTurn`). `aiStream` and `aiAgentTurn` create the Channel and drop messages that arrive after the promise settled. In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, a canned Markdown stream in 12 chunks 40 ms apart (both cancellable), an agent (`mockAgentTurn`: a `…__recent_blocks` call, then a short answer), and a model list of ~40 ids for API providers (none for CLIs). |
+| `src/ipc/ai.ts` | Typed wrappers for the `ai_*` commands; `AiTarget`; `PROVIDERS` (names, API or CLI, key needed); `PROTECTED_EXTRA_KEYS`; `toAiError`; the agent wire types (`ToolDef`, `AgentMessage`, `AgentEvent`, `AgentTurn`). `aiStream`, `aiAgentTurn` and `aiAcpPrompt` create the Channel and drop messages that arrive after the promise settled; `aiAcpToolResult`, `aiAcpClose` and the ACP types (`AcpEvent`, `AcpStop`, `AcpPromptRequest`, `AgentStatus`). In a plain browser a mock answers: keys in memory, a canned suggestion after 600 ms, a canned Markdown stream in 12 chunks 40 ms apart (both cancellable), an agent (`mockAgentTurn`: a `…__recent_blocks` call, then a short answer), and a model list of ~40 ids for API providers (none for CLIs), and an ACP agent (`mockAcpPrompt`: a `…__recent_blocks` `toolCall` when offered, answered through `aiAcpToolResult`, then a short streamed answer; `ai_cli_status` for Claude Code reports the adapter missing). |
 | `stream.ts` | `streamText(feature, { system, prompt, maxTokens }, onText)` → `{ result, cancel }`: resolves `targetFor(feature)`, makes the request id, accumulates deltas and calls `onText(soFar)` at most once per animation frame, then once with the authoritative text. Explain uses it. Tested in `stream.test.ts` against the mock. |
 | `profiles.ts` | Pure apart from the settings store: which profile a feature uses (`profileFor`), `providerConfigOf`, `profileReady` / `profileProblem`, `featureReady` / `featureProblem`, `targetFor(feature)` (omits `extra` for CLIs), `FEATURES` (the rows under Features), `parseExtra`, and the mutations (`saveProfile`, `deleteProfile`, `duplicateProfile`, `setDefaultProfile`, `setFeatureProfile`). Unit-tested in `profiles.test.ts`. |
 | `context.ts` | Pure: `contextBody` (facts, earlier commands, blocks; redacted), `buildContext` (body + "Next command:", and the body for other requests), `formatBlock`, `redact`, `trimOutput(output, limits?)`, `parseSuggestion`. Unit-tested in `context.test.ts`. |
@@ -608,12 +785,14 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `slash.ts` | Slash commands for the blocks editor: the registry, `parseSlash`, `slashCompletion`, and `/cmd`'s request (`writeCommand`, `buildCmdRequest`). Unit-tested in `slash.test.ts`. |
 | `predict.ts` | Pure: local next-command prediction from the command log (`predictNext`, `tokenize`). Unit-tested in `predict.test.ts`. |
 | `AiSection.tsx` | Settings → AI: suggestions switches, Models, Features. |
+| `settings/AgentStatus.tsx` | The agent's adapter status: `AgentStatusLine` (the profile editor's second status line), `useAgentAdapterProblem` (the Features row), `ProblemText` (a problem with its install command in mono and a copy button). |
 | `settings/ProfileList.tsx`, `settings/ProfileEditor.tsx` | Settings → AI → Models: the profile rows and the inline draft editor (key and CLI status, model list, effort options). |
 | `src/components/ui/Combobox.tsx` | The model field: a text field with a fuzzy-filtered list (Radix `Popover` + `cmdk` + `fuzzysort`). `comboItems` is the pure row logic, tested in `Combobox.test.ts`. |
 | `commands.ts` | Commands, the terminal menu's per-pane switch and block items (`blockAiMenuItems`), registration (the Agent plugin and the `/agent` handler too). |
-| `agent/tools.ts` | Pure: `buildToolset(skills)` → `{ system, tools, resolve, loadSkill }`, wire names, `AGENT_SYSTEM_PROMPT`. Tested in `tools.test.ts`. |
-| `agent/loop.ts` | The loop, pure apart from injected `LoopDeps` (`turn`, `cancel`, `invoke`, `ask`, `contextLine`): `runTurn`, the transcript item types, limits, result clipping. Tested in `loop.test.ts` with fakes. |
-| `agent/conversation.ts` | The conversation store (`useAgent`, keyed by id), owners (card or pane), runtime (abort controller, pending confirmations), cards (`askAgent`, `dismissCard`), Agent pane slots (`holdPaneConversation`, `newPaneConversation`), the work pane, the context line. |
+| `agent/tools.ts` | Pure: `buildToolset(skills, { acp? })` → `{ system, tools, resolve, loadSkill }`, wire names, `AGENT_SYSTEM_PROMPT`; the ACP variant caps names at 64 and adds a prompt line that our tools may appear under an `mcp__midterm__` prefix. Tested in `tools.test.ts`. |
+| `agent/loop.ts` | The loop, pure apart from injected `LoopDeps` (`turn`, `cancel`, `invoke`, `ask`, `contextLine`): `runTurn`, `runToolCall` (one tool call: resolve, confirm, invoke, redact, clip; shared by both drivers), the transcript item types, limits, result clipping. Tested in `loop.test.ts` with fakes. |
+| `agent/acp.ts` | The ACP driver `runAcpTurn` (CLI profiles), pure apart from `AcpDeps`: one `ai_acp_prompt` per message, events → transcript items, `MAX_ACP_TOOL_CALLS`, `CONTINUE_PROMPT`. Tested in `acp.test.ts` with fakes. |
+| `agent/conversation.ts` | The conversation store (`useAgent`, keyed by id), owners (card or pane), runtime (abort controller, pending confirmations), cards (`askAgent`, `dismissCard`), Agent pane slots (`holdPaneConversation`, `newPaneConversation`), the work pane, the context line; picks the backend from the profile (`runTurn` for API, `runAcpTurn` for CLI) and closes a dropped conversation's ACP session. |
 | `agent/actions.ts` | What the commands, menus and `/agent` do: `askAgentAbout`, `promptForAgent`, `continueInPane`, `openAgent`, `agentNewConversation`. |
 | `agent/AgentCard.tsx`, `AgentPane.tsx`, `Transcript.tsx`, `plugin.tsx` | The card (rendered by `PaneHost`), the Agent pane, the shared transcript, the `agent` plugin. Styles in `src/styles/agent.css`. |
 | `src/components/panes/BlockNote.tsx`, `src/components/ui/Markdown.tsx` | The note panel under a block; a sanitized Markdown block (`renderMarkdown`) whose http(s) links open in the browser. |
@@ -628,7 +807,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `contextBlocks` | Finished blocks sent as context (0–20, default 5). |
 | `profiles` | Model profiles, in display order (at most 50). |
 | `defaultProfile` | The profile id every feature without an override uses; `""` for none. |
-| `features` | Per-feature overrides, feature → profile id. Features: `AI_FEATURES` = `suggestions`, `cmd`, `explain` ("Explain and fix": Explain and Fix share it), `agent` (API profiles only: `featureProblem` reports a CLI profile). |
+| `features` | Per-feature overrides, feature → profile id. Features: `AI_FEATURES` = `suggestions`, `cmd`, `explain` ("Explain and fix": Explain and Fix share it), `agent` (API and Claude Code profiles: `featureProblem` reports any other CLI profile as not supported yet). |
 
 A profile (`AiProfile`):
 
@@ -639,7 +818,7 @@ A profile (`AiProfile`):
 | `provider` | A provider id; an unknown id makes the profile "not ready". |
 | `model` | The model id. Empty means the CLI's default (CLI providers only). |
 | `baseUrl` | `custom` only (cleared for other providers). |
-| `cliPath` | Executable override (CLI providers). |
+| `cliPath` | Executable override (CLI providers). There is no field for the ACP adapter's path (`acpPath`) yet. |
 | `effort` | Missing (Midterm's pick), `default` (send nothing) or a level. See "Reasoning effort". |
 | `extra` | Extra request JSON (API providers only). See [Extra request JSON](#extra-request-json). |
 
@@ -911,10 +1090,15 @@ with an error in `text-err` under any partial text. Styles: `.block-ai` in
 
 An agent over plugin skills ([plugins.md](plugins.md#skills)): the model
 acts through the enabled skills' tools (read recent blocks, run a command,
-list a directory, open, read or save a file…). **API providers only**: a
-CLI runs its own tool loop and cannot call the webview's skills, so with a
-CLI profile the card, the pane and the Features row say "The agent needs an
-API model. Choose another model for Agent in Settings → AI."
+list a directory, open, read or save a file…). **API profiles** run the loop
+in the webview (`runTurn`, one `ai_agent_turn` per model turn). **Claude
+Code profiles** run it in the CLI, over a per-conversation ACP session that
+serves the skills' tools back to it (`runAcpTurn`, see
+[ACP sessions](#acp-sessions) and [The ACP driver](#the-acp-driver)). Other
+CLI profiles (Codex, Antigravity) are not supported yet: the card, the pane
+and the Features row say "The agent does not support Codex yet. Choose an
+API model or Claude Code for Agent in Settings → AI." (a CLI cannot call the
+webview's skills headless, which is why ACP is needed).
 
 **Two surfaces, one loop.** Conversations live in one store
 (`agent/conversation.ts`) keyed by id; two views show them:
@@ -965,7 +1149,8 @@ unless scrolled up. No confirmation hook is installed globally
 (`setWriteConfirmation`): the agent passes its own `confirm` to each
 `invokeSkillTool` call.
 
-**Frozen per conversation.** Current Claude models reject replayed thinking
+**Frozen per conversation.** (API loop; the ACP driver freezes `system` and
+`tools` at the session's first prompt, below.) Current Claude models reject replayed thinking
 blocks (400) when `system`, `tools` or earlier turns changed, so:
 
 - all enabled skills' tools are declared up front (`buildToolset`), with
@@ -1013,6 +1198,53 @@ What is sent: the user's messages, the context line, and whatever the tools
 return (recent commands and output, directory listings, file contents),
 all redacted (`redact`); Settings → AI says so.
 
+#### The ACP driver
+
+`runAcpTurn` (`agent/acp.ts`) is the loop for a CLI profile. The CLI runs
+the tool loop; the webview only feeds it and runs the tools:
+
+- **One `ai_acp_prompt` per user message.** The session keeps the history,
+  so the conversation's `messages` only records the prompts the session has
+  seen. `system` (`AGENT_SYSTEM_PROMPT` plus the skill lines, and the one
+  line about the `mcp__midterm__` prefix) and `tools` are **frozen at the
+  first prompt** (the toolset is built with `{ acp: true }`: names capped at
+  64, since Claude Code drops longer ones silently), and the conversation
+  keeps the profile it started with.
+- **Context line**: the redacted `[Context — …]` line starts the first
+  prompt the session has seen, not later ones.
+- **Events** map onto the same transcript as the API loop: `text` streams
+  into an answer (a new answer starts after a tool row), `toolCall` is run
+  **serially** through `runToolCall` (shared with `runTurn`: the same
+  resolve, Allow / Allow for this conversation / Deny confirmations, input
+  validation, redaction of every string, clipping to 16 000 characters;
+  the result goes back with `ai_acp_tool_result`), `foreignTool` is a muted
+  "CLI tool: <title>" row with its status (a tool the CLI ran itself,
+  which the lockdown should have prevented; its permission request is rejected). Events are
+  handled in order, so a call waiting for confirmation holds back what
+  follows.
+- **Stop** cancels the prompt (`ai_cancel`), declines a pending
+  confirmation and aborts the tool; the answer so far stays, marked
+  stopped, and a call still running gets "Cancelled by the user". Stop
+  reasons: `end` finishes; `length` shows "cut off at the token limit"
+  (note, or the answer marked cut); `refused` is an error with Retry;
+  `maxRequests` (the CLI's own request limit) a note with Continue;
+  `cancelled` a stopped answer.
+- **30-call cap** (`MAX_ACP_TOOL_CALLS`): past 30 of our tool calls in one
+  prompt, further calls are answered "not run", the prompt is cancelled and
+  a note "Stopped after 30 tool calls." offers **Continue** (sends "Continue
+  where you left off." in the same session).
+- **Errors** (including the backend's: adapter missing, `auth`, timeouts)
+  show with **Retry**, which sends the **failed prompt again**
+  (`retryText`; it was not recorded as seen, so a first prompt keeps its
+  context line).
+- **Lifecycle**: the session lives until the conversation is dropped (the
+  card or pane goes, Dismiss, New conversation; then `ai_acp_close`).
+  "Continue in agent pane" moves the conversation, so the session goes with
+  it. A session the backend evicted (more than 8 alive), lost to a crash or
+  closed with its window is simply started fresh by the next prompt, with
+  the same frozen system and tools but **no memory** of the earlier
+  messages (the transcript still shows them).
+
 ### Commands
 
 - `ai.toggleSuggestions`: AI: Toggle suggestions.
@@ -1043,7 +1275,7 @@ all redacted (`redact`); Settings → AI says so.
 - The **editor** works on a draft with explicit Save / Cancel (keys are the
   exception: saved and removed at once). Rows: Name; Provider, grouped into
   APIs and CLIs, with its status (key saved, or the CLI found with its path
-  and version); Base URL (custom), API key with Save and Remove (APIs; the
+  and version, and for Claude Code a second **Agent** line, see below); Base URL (custom), API key with Save and Remove (APIs; the
   hint says the key is shared by every profile of the provider), or
   Executable (CLIs); Model; Reasoning effort (Automatic, Provider default,
   and the levels `ai_effort_options` returns; the hint says what is sent
@@ -1064,7 +1296,17 @@ all redacted (`redact`); Settings → AI says so.
   dialog's scroll lock does not eat them.
 - **Features**: "Default model" (a select of profiles), then one row per
   `FEATURES` entry with "Default (<name>)" plus every profile; the hint
-  shows `featureProblem`. Without profiles, one line pointing at Add model.
+  shows `featureProblem`. The Agent row also shows the adapter problem when
+  its profile is Claude Code and `ai_cli_status().agent` is not ready
+  (checked once per profile config, `useAgentAdapterProblem`), with the
+  install command in mono and a copy button. Without profiles, one line
+  pointing at Add model.
+- The editor's **Agent status line** (`AgentStatusLine`, under the
+  provider's status, CLIs only): `Agent: ready · claude-agent-acp <version>`
+  in `text-ok`, with the adapter's `note` muted (a version newer than
+  tested); or the problem in `text-warn` with its install command copyable;
+  "Agent: not supported for <CLI> yet" for Codex and Antigravity. The
+  adapter's path (`acpPath`) cannot be set in Settings yet.
 
 ### Self-test
 

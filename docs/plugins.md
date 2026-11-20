@@ -201,6 +201,12 @@ type SkillTool = {
   switched off or a plugin disabled during a conversation is refused by
   `invokeSkillTool`; the declared tools only change with a new
   conversation.
+- A Claude Code profile ([ai.md](ai.md#acp-sessions)) gets the same tools
+  as **MCP tools**: the backend serves them to the CLI as the MCP server
+  `midterm` over the ACP connection (the CLI shows them as
+  `mcp__midterm__<wire name>`), with names capped at 64 characters. Each
+  call runs through `invokeSkillTool` like any other, so the same
+  validation and confirmations apply.
 - `paneId` is the pane the agent works with (a card's pane, or the tab's
   last active non-agent pane for the Agent pane); tools should act on it
   when the model names no pane.
