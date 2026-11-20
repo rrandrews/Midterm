@@ -83,6 +83,10 @@ pub fn plan(
     reply: u32,
     max_tokens: u32,
 ) -> (Shape, u32) {
+    // Every shape stays within the model's output cap; a budget plan already
+    // does (and keeps `budget < max_tokens`).
+    let cap = caps.and_then(|c| c.max_output).unwrap_or(u32::MAX);
+    let max_tokens = max_tokens.min(cap);
     let Some(level) = level else {
         return (Shape::Plain, max_tokens);
     };
@@ -104,10 +108,7 @@ pub fn plan(
         ),
         Some(caps) if caps.budget => match budget_plan(level, reply, caps.max_output) {
             Some((budget, max_tokens)) => (Shape::Budget { budget }, max_tokens),
-            None => (
-                Shape::Plain,
-                max_tokens.min(caps.max_output.unwrap_or(u32::MAX)),
-            ),
+            None => (Shape::Plain, max_tokens),
         },
         Some(_) => (Shape::Plain, max_tokens),
     }
@@ -354,6 +355,63 @@ mod tests {
         }));
         assert!(c.effort.is_empty() && c.budget && !c.adaptive);
         assert_eq!(caps(json!({})), AnthropicCaps::default());
+    }
+
+    #[test]
+    fn plans_stay_within_the_output_cap() {
+        let capped = |effort: Vec<Effort>, budget| AnthropicCaps {
+            effort,
+            adaptive: true,
+            budget,
+            max_output: Some(8192),
+        };
+        // Provider default: nothing sent, headroom 16384 on a 512 reply.
+        assert_eq!(
+            plan(
+                None,
+                false,
+                Some(&capped(vec![Effort::High], false)),
+                512,
+                16_896
+            ),
+            (Shape::Plain, 8192)
+        );
+        // An effort shape.
+        let (shape, max_tokens) = plan(
+            Some(Effort::Max),
+            true,
+            Some(&capped(vec![Effort::Max], false)),
+            512,
+            33_280,
+        );
+        assert!(matches!(shape, Shape::Effort { .. }));
+        assert_eq!(max_tokens, 8192);
+        // A model without effort or thinking.
+        assert_eq!(
+            plan(
+                Some(Effort::Low),
+                false,
+                Some(&capped(vec![], false)),
+                512,
+                16_896
+            )
+            .1,
+            8192
+        );
+        // Budget thinking keeps its invariant within the cap.
+        let (shape, max_tokens) = plan(
+            Some(Effort::High),
+            true,
+            Some(&capped(vec![], true)),
+            512,
+            16_896,
+        );
+        let Shape::Budget { budget } = shape else {
+            panic!("expected budget thinking, got {shape:?}");
+        };
+        assert!(budget >= MIN_BUDGET && budget < max_tokens && max_tokens <= 8192);
+        // No known cap: unchanged.
+        assert_eq!(plan(None, false, None, 512, 16_896), (Shape::Plain, 16_896));
     }
 
     #[test]
