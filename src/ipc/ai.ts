@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { AI_PROTECTED_KEYS, type EffortLevel } from "../settings/schema";
 
 /*
@@ -88,6 +88,12 @@ export type SuggestRequest = {
   maxTokens?: number;
 };
 
+/** A streamed reply. `text` is the whole reply and authoritative over the deltas. */
+export type StreamReply = { text: string; stop: "end" | "length"; effortDropped: boolean };
+
+/** A message on `ai_stream`'s channel. */
+type StreamEvent = { type: "delta"; text: string };
+
 /** A level the backend sends (`default` is not one: it sends nothing). */
 export type Effort = Exclude<EffortLevel, "default">;
 
@@ -121,11 +127,69 @@ function mockSuggest(request: SuggestRequest): Promise<{ text: string }> {
   });
 }
 
+/** The browser mock's streamed answer, sent in about 12 chunks. */
+const MOCK_STREAM = [
+  "This is the **browser mock**",
+  " streaming a reply.",
+  "\n\nIt arrives in",
+  " chunks, about",
+  " 40 ms apart:",
+  "\n\n- one\n",
+  "- two\n",
+  "- three\n\n",
+  "```sh\n",
+  "git status\n",
+  "```\n",
+  "\nDone.",
+];
+
+function mockStream(request: SuggestRequest, onDelta: (text: string) => void): Promise<StreamReply> {
+  return new Promise((resolve, reject) => {
+    let at = 0;
+    const timer = setInterval(() => {
+      if (at < MOCK_STREAM.length) {
+        onDelta(MOCK_STREAM[at++]);
+        return;
+      }
+      clearInterval(timer);
+      mockPending.delete(request.requestId);
+      resolve({ text: MOCK_STREAM.join("").trim(), stop: "end", effortDropped: false });
+    }, 40);
+    mockPending.set(request.requestId, () => {
+      clearInterval(timer);
+      reject({ kind: "cancelled", message: "Cancelled" } satisfies AiError);
+    });
+  });
+}
+
 /* ---- Commands ---- */
 
 export function aiSuggest(request: SuggestRequest): Promise<{ text: string }> {
   if (!isTauri()) return mockSuggest(request);
   return invoke<{ text: string }>("ai_suggest", request);
+}
+
+/**
+ * One streamed completion: `onDelta` gets reply text as it arrives (append
+ * it). The resolved `text` is the whole reply and authoritative; deltas
+ * that arrive after the promise settled are dropped. Cancel with
+ * `aiCancel(requestId)`.
+ */
+export async function aiStream(request: SuggestRequest, onDelta: (text: string) => void): Promise<StreamReply> {
+  let settled = false;
+  const forward = (text: string) => {
+    if (!settled) onDelta(text);
+  };
+  try {
+    if (!isTauri()) return await mockStream(request, forward);
+    const onEvent = new Channel<StreamEvent>();
+    onEvent.onmessage = (event) => {
+      if (event.type === "delta") forward(event.text);
+    };
+    return await invoke<StreamReply>("ai_stream", { ...request, onEvent });
+  } finally {
+    settled = true;
+  }
 }
 
 export async function aiCancel(requestId: string): Promise<void> {
