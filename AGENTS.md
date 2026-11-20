@@ -7,6 +7,7 @@ Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with eac
 
 ## General coding guidelines
 - When given tasks directly (rather than pointed to an issue) that require modification of the codebase, first create a proper issue and/or project on Linear for the task.
+- Mark tasks as done when you finish.
 - Prefer trusted, actively maintained open-source libraries over rolling your own when a library solves the problem well. Before adding a dependency, check recent releases and adoption. Don't add a dependency for something a few lines of code handle, and don't reimplement what an existing dependency already does.
 
 ## Testing
