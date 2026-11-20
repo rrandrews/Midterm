@@ -103,6 +103,7 @@ pub fn run() {
         .menu(menu::build)
         .register_asynchronous_uri_scheme_protocol(plugins::protocol::SCHEME, plugins::protocol::handle)
         .setup(|app| {
+            ai::keys::log_store();
             quit_guard::install(app.handle());
             for window in app.webview_windows().values() {
                 traffic_lights::apply(&window.as_ref().window());
