@@ -47,7 +47,7 @@
 }
 
 /* `terminalBackground: "solid"`: a flat background instead of the pane gradient. */
-.pane-terminal:has(.terminal-host.is-solid) {
+.pane:has(.terminal-host.is-solid) {
   background: var(--terminal-solid);
 }
 

@@ -3,6 +3,7 @@ import { createPane, setDefaultPaneData } from "../state/layout";
 import type { PaneData, PaneNode } from "../state/types";
 import { activePlugin, enabledPlugins, paneSpec } from "./registry";
 import type { PanePlugin } from "./types";
+import { CLASSIC_TERMINAL } from "../terminal/kinds";
 
 /*
  * Pane-level questions answered by plugins, for the app's actions: which
@@ -10,10 +11,25 @@ import type { PanePlugin } from "./types";
  * which kinds can show a file.
  */
 
-/** The kind new tabs and splits open: the `defaultPaneKind` setting if that plugin is enabled, else the terminal. */
+/** Enabled, loaded plugins flagged as terminals (offered as the default terminal). */
+export function terminalPlugins(): PanePlugin[] {
+  return enabledPlugins().filter((plugin) => plugin.terminal === true);
+}
+
+/** The kind new terminals open in: the `defaultTerminal` setting if that plugin is an active terminal, else the classic terminal. */
+export function defaultTerminalKind(): string {
+  const kind = getSettings().defaultTerminal;
+  return activePlugin(kind)?.terminal ? kind : CLASSIC_TERMINAL;
+}
+
+/**
+ * The kind new tabs and splits open: the `defaultPaneKind` setting if it
+ * names an active plugin that is not a terminal, else the default terminal.
+ */
 export function defaultKind(): string {
   const kind = getSettings().defaultPaneKind;
-  return activePlugin(kind) ? kind : "terminal";
+  const plugin = activePlugin(kind);
+  return plugin && !plugin.terminal ? kind : defaultTerminalKind();
 }
 
 function safely<T>(kind: string, what: string, run: () => T): T | undefined {

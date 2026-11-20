@@ -61,10 +61,11 @@ function fileSkillsOf(info: InstalledPlugin): { skills: Skill[]; problems: strin
 /** Problems with what a module exported, before it is registered. */
 export function checkPluginExport(plugin: unknown, expectedId: string): string[] {
   if (typeof plugin !== "object" || plugin === null) return ["the module's default export is not a plugin object"];
-  const { id, name, pane, settings } = plugin as Record<string, unknown>;
+  const { id, name, pane, settings, terminal } = plugin as Record<string, unknown>;
   const problems: string[] = [];
   if (id !== expectedId) problems.push(`the plugin's id "${String(id)}" does not match the manifest's "${expectedId}"`);
   if (typeof name !== "string" || !name) problems.push("the plugin has no name");
+  if (terminal !== undefined && typeof terminal !== "boolean") problems.push("`terminal` must be true or false");
   if (typeof pane !== "object" || pane === null) problems.push("the plugin has no pane");
   else {
     const { component, mount } = pane as Record<string, unknown>;

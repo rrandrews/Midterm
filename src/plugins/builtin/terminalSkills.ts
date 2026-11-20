@@ -1,6 +1,7 @@
 import { activePaneId, livePane } from "../../actions";
 import { selectAllPanes, useAppStore } from "../../state/store";
 import { blockOutput, canRun, runFromBlocks } from "../../terminal/blockMode";
+import { isSessionKind } from "../../terminal/kinds";
 import { peekSession } from "../../terminal/sessions";
 import type { Skill } from "../types";
 
@@ -9,9 +10,9 @@ const OUTPUT_LIMIT = 4000;
 /** The terminal the agent means: the one named, else the pane it works with, else the active pane, else the first terminal. */
 function terminalPane(paneId: unknown, contextPane?: string): string {
   const candidates = [paneId, contextPane, activePaneId()].filter((id): id is string => typeof id === "string");
-  for (const id of candidates) if (livePane(id)?.data.kind === "terminal") return id;
+  for (const id of candidates) if (isSessionKind(livePane(id)?.data.kind)) return id;
   if (typeof paneId === "string") throw new Error(`No terminal pane "${paneId}"`);
-  const first = selectAllPanes(useAppStore.getState()).find((pane) => pane.data.kind === "terminal");
+  const first = selectAllPanes(useAppStore.getState()).find((pane) => isSessionKind(pane.data.kind));
   if (!first) throw new Error("There is no terminal");
   return first.id;
 }

@@ -16,7 +16,15 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const API_VERSION: u64 = 1;
 /// Pane kinds of built-in plugins (and the app's own name): an imported
 /// plugin cannot take these ids.
-pub const RESERVED_IDS: &[&str] = &["terminal", "explorer", "editor", "viewer", "theme-editor", "midterm"];
+pub const RESERVED_IDS: &[&str] = &[
+    "terminal",
+    "block-terminal",
+    "explorer",
+    "editor",
+    "viewer",
+    "theme-editor",
+    "midterm",
+];
 /// A manifest larger than this is refused (bytes).
 const MANIFEST_LIMIT: u64 = 1024 * 1024;
 

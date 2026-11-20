@@ -6,19 +6,19 @@ import { getSettings } from "../settings/settings";
 import { appliedTheme } from "../theme/apply";
 
 /*
- * The terminal plugin's settings and pane data. Settings are saved under
- * `settings.plugins.terminal.settings` and declared here as fields, which
- * the settings dialog renders.
+ * The terminals' settings and pane data. Settings are shared by the classic
+ * and block terminals (they belong to the shell session, not the view),
+ * saved under `settings.plugins.terminal.settings` and declared here as
+ * fields, which the settings dialog renders.
  */
 
 export type CursorStyle = "block" | "bar" | "underline";
+/** How a terminal pane renders: the classic terminal or the block terminal. */
 export type TerminalMode = "classic" | "blocks";
 export type BellMode = "off" | "visual" | "sound";
 export type TerminalBackground = "transparent" | "solid";
 
 export type TerminalSettings = {
-  /** How new terminal panes render. */
-  terminalMode: TerminalMode;
   cursorStyle: CursorStyle;
   cursorBlink: boolean;
   /** Lines of scrollback per terminal. */
@@ -40,17 +40,6 @@ export type TerminalSettings = {
 export const SCROLLBACK_RANGE = { min: 0, max: 1_000_000 } as const;
 
 export const TERMINAL_FIELDS: SettingField[] = [
-  {
-    key: "terminalMode",
-    type: "select",
-    label: "New terminals open in",
-    hint: "Each pane can be switched from its menu",
-    options: [
-      { value: "classic", label: "Classic" },
-      { value: "blocks", label: "Blocks" },
-    ],
-    default: "classic",
-  },
   { key: "cursorStyle", type: "select", label: "Cursor style", options: ["block", "bar", "underline"], default: "block" },
   { key: "cursorBlink", type: "toggle", label: "Cursor blinks", default: true },
   {
@@ -145,6 +134,4 @@ export function terminalConfig(): TerminalConfig {
 export type TerminalData = PaneData & {
   /** Last working directory the shell reported (OSC 7). New shells for this pane start there. */
   cwd?: string;
-  /** Blocks or classic rendering; the `terminalMode` setting when unset. */
-  terminalMode?: TerminalMode;
 };

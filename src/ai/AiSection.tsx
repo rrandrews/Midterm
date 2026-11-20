@@ -194,7 +194,7 @@ export function AiSection() {
       </div>
 
       <SectionHeading>Suggestions</SectionHeading>
-      <Row label="Suggest next commands" hint="In blocks mode, at an empty prompt of the focused terminal.">
+      <Row label="Suggest next commands" hint="In the block terminal, at an empty prompt of the focused terminal.">
         <Toggle label="Suggest next commands" checked={ai.suggestions} onChange={(suggestions) => updateAi({ suggestions })} />
       </Row>
       <Row label="Context size" hint="Finished commands (with their output) sent with each request.">

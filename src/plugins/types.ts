@@ -93,8 +93,17 @@ export type PaneSpec = {
   validateData?(raw: Record<string, unknown>): Omit<PaneData, "kind"> | null;
   /** Data for a new pane, opened beside `from` (e.g. to inherit its directory). */
   createData?(from?: PaneNode): Omit<PaneData, "kind">;
-  /** Data when a pane of another kind is changed to this one (editor ↔ viewer keep `path`). */
-  convertData?(previous: PaneData): Omit<PaneData, "kind">;
+  /**
+   * Data when a pane of another kind is changed to this one (editor ↔ viewer
+   * keep `path`); `undefined` starts fresh, as without it (`createData`).
+   */
+  convertData?(previous: PaneData): Omit<PaneData, "kind"> | undefined;
+  /**
+   * Whether changing a pane of this kind to `kind` keeps what it is running
+   * (classic ↔ block terminal keep the shell), so the change does not ask
+   * like closing it would.
+   */
+  keepsStateOnChangeTo?(kind: string): boolean;
   /**
    * Whether the pane has unsaved work right now. `openFile` only gives a
    * pane another file when this says no; a plugin with `closeBlockers` but
@@ -183,8 +192,14 @@ export type PanePlugin = {
   version?: string;
   description?: string;
   icon?: IconSpec;
-  /** Cannot be disabled (the terminal). */
+  /** Cannot be disabled (the classic terminal). */
   required?: boolean;
+  /**
+   * A terminal: offered as Settings → General → Default terminal, and used
+   * for new terminals when chosen there. Its panes should start in
+   * `data.cwd` when set and implement `pane.directory`.
+   */
+  terminal?: boolean;
   pane: PaneSpec;
   commands?: Command[];
   settings?: PluginSettings;

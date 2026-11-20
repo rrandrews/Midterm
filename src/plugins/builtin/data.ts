@@ -12,7 +12,6 @@ const nonEmpty = (value: unknown): value is string => typeof value === "string" 
 export function validateTerminalData(raw: Record<string, unknown>): Fields {
   const data: Fields = {};
   if (nonEmpty(raw.cwd)) data.cwd = raw.cwd;
-  if (raw.terminalMode === "classic" || raw.terminalMode === "blocks") data.terminalMode = raw.terminalMode;
   if (raw.aiSuggestions === false) data.aiSuggestions = false;
   return data;
 }
@@ -36,6 +35,7 @@ export function validateFileData(raw: Record<string, unknown>): Fields {
 
 export const BUILTIN_VALIDATORS: Record<string, (raw: Record<string, unknown>) => Fields> = {
   terminal: validateTerminalData,
+  "block-terminal": validateTerminalData,
   explorer: validateExplorerData,
   editor: validateFileData,
   viewer: validateFileData,

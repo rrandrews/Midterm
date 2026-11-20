@@ -1,5 +1,6 @@
 import { type JsonFile, openJsonFile } from "../ipc/jsonFile";
-import { restoreState, snapshotState } from "./persist";
+import { getSettings } from "../settings/settings";
+import { SCHEMA_VERSION, restoreState, snapshotState } from "./persist";
 import { useAppStore } from "./store";
 
 /*
@@ -21,12 +22,22 @@ export async function flushSavedState(): Promise<void> {
   await flushPending?.();
 }
 
-/** Loads the saved state into the store. Never throws: a bad file means a fresh start. */
+/** Whether the restored file was of an older version, so saving writes it back at once. */
+let migrated = false;
+
+/**
+ * Loads the saved state into the store. Never throws: a bad file means a
+ * fresh start. Needs the settings loaded: an old file is migrated with them.
+ */
 export async function restoreSavedState(): Promise<void> {
   try {
     file = await openJsonFile(FILE);
-    const restored = restoreState(await file.get(KEY));
-    if (restored) useAppStore.setState(restored);
+    const saved = await file.get(KEY);
+    const restored = restoreState(saved, { legacyBlocksDefault: getSettings().defaultTerminal === "block-terminal" });
+    if (restored) {
+      useAppStore.setState(restored);
+      migrated = (saved as { version?: unknown }).version !== SCHEMA_VERSION;
+    }
   } catch (error) {
     console.error("Could not restore the saved state:", error);
   }
@@ -65,6 +76,12 @@ export function startSaving(): () => void {
     clearTimeout(timer);
     timer = setTimeout(() => void save(), SAVE_DELAY_MS);
   });
+  // A migrated file is written back now, so a later settings change cannot
+  // re-interpret it.
+  if (migrated) {
+    migrated = false;
+    void save();
+  }
   // Last chance when the page goes away (window closing, reload).
   const flush = () => void flushPending?.();
   window.addEventListener("pagehide", flush);

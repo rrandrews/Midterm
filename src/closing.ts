@@ -54,16 +54,27 @@ export async function closePane(paneId = activePaneId()): Promise<void> {
   if (await mayClose([paneId], "Close this pane?", "Close pane")) closePaneNow(paneId);
 }
 
+/** Whether the plugin of kind `from` keeps its pane's state when changed to `to` (classic ↔ block terminal). */
+function keepsState(from: string, to: string): boolean {
+  try {
+    return getPlugin(from)?.plugin.pane.keepsStateOnChangeTo?.(to) === true;
+  } catch (error) {
+    console.error(`keepsStateOnChangeTo of the ${from} plugin failed:`, error);
+    return false;
+  }
+}
+
 /**
  * Changing a pane's kind ends what its plugin was running (a terminal's
- * shell, an editor's unsaved changes), so it asks like closing.
+ * shell, an editor's unsaved changes), so it asks like closing, unless the
+ * plugin says the new kind keeps it.
  */
 export async function changePaneKind(paneId: string, kind: PaneKind): Promise<void> {
   const tab = findTabOfPane(store(), paneId);
   const current = tab && findPane(tab.layout, paneId)?.data.kind;
   if (current === kind) return;
   const title = "Change the pane’s type?";
-  if (!(await mayClose([paneId], title, "Change type"))) return;
+  if (!(current && keepsState(current, kind)) && !(await mayClose([paneId], title, "Change type"))) return;
   setPaneKind(paneId, kind);
 }
 

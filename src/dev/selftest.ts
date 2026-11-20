@@ -442,6 +442,9 @@ async function aiChecks(checks: Check[], stubPort: string): Promise<void> {
     return;
   }
   if (requestedMode(paneId) !== "blocks") toggleBlocks(paneId);
+  // Switching to the block terminal keeps the pane's shell.
+  await sleep(50);
+  checks.push({ name: "terminal: switching to the block terminal keeps the session", ok: peekSession(paneId) === session });
   await waitFor(() => canRun(session), 8000);
   const before = session.blocks.snapshot().blocks.length;
   session.runCommand("export MIDTERM_SELFTEST_PASSWORD=hunter2-selftest; true");

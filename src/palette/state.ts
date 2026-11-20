@@ -3,7 +3,7 @@ import { activePaneId, addPaneBeside, openFile, selectTab, selectWorkspace } fro
 import { registerCommands, runCommand } from "../commands/registry";
 import { createPane } from "../state/layout";
 import { useAppStore } from "../state/store";
-import { queueStartupInput } from "../terminal/sessions";
+import { commandTerminalKind, queueStartupInput } from "../terminal/sessions";
 import type { PaletteAction, PaletteMode } from "./items";
 import { activeDirectory } from "./sources";
 
@@ -63,7 +63,7 @@ export function closePalette({ chosen = false } = {}): void {
 export function runInNewTerminal(command: string): void {
   const from = activePaneId();
   if (!from) return;
-  const pane = createPane("terminal", { cwd: activeDirectory() });
+  const pane = createPane(commandTerminalKind(), { cwd: activeDirectory() });
   addPaneBeside(from, pane);
   queueStartupInput(pane.id, `${command}\r`);
 }

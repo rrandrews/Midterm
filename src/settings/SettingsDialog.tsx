@@ -14,6 +14,7 @@ import { confirm } from "../components/ui/ConfirmDialog";
 import { refocusPane } from "../layout/dock";
 import { create } from "zustand";
 import { allPlugins, enabledPlugins, usePluginsVersion } from "../plugins/registry";
+import { CLASSIC_TERMINAL } from "../terminal/kinds";
 import { CommitField, FIELD, Row, Select } from "./controls";
 import { PluginSection, PluginsSection } from "./PluginSettings";
 import { ACCENT_PRESETS, FONT_SIZE_RANGE, isHexColor } from "./schema";
@@ -50,6 +51,15 @@ function General() {
   const update = settings.updateSettings;
   usePluginsVersion();
   const kinds = enabledPlugins();
+  const terminals = kinds.filter((plugin) => plugin.terminal);
+  const others = kinds.filter((plugin) => !plugin.terminal);
+  const defaultTerminal = terminals.some((plugin) => plugin.id === settings.defaultTerminal)
+    ? settings.defaultTerminal
+    : CLASSIC_TERMINAL;
+  // A terminal kind in `defaultPaneKind` means "the default terminal" (stored as the classic id).
+  const defaultPane = others.some((plugin) => plugin.id === settings.defaultPaneKind)
+    ? settings.defaultPaneKind
+    : CLASSIC_TERMINAL;
   const custom = !ACCENT_PRESETS.some((preset) => preset.toLowerCase() === settings.accent.toLowerCase());
   return (
     <>
@@ -99,12 +109,24 @@ function General() {
           }}
         />
       </Row>
+      <Row label="Default terminal" hint="New terminals open in it; a pane can be switched from its menu">
+        <Select
+          label="Default terminal"
+          value={defaultTerminal}
+          options={terminals.map((plugin) => plugin.id)}
+          labels={Object.fromEntries(terminals.map((plugin) => [plugin.id, plugin.name]))}
+          onChange={(value) => update({ defaultTerminal: value })}
+        />
+      </Row>
       <Row label="New tabs and splits open" hint="Any pane can be changed to another type from its menu">
         <Select
           label="Default pane type"
-          value={kinds.some((plugin) => plugin.id === settings.defaultPaneKind) ? settings.defaultPaneKind : "terminal"}
-          options={kinds.map((plugin) => plugin.id)}
-          labels={Object.fromEntries(kinds.map((plugin) => [plugin.id, plugin.name]))}
+          value={defaultPane}
+          options={[CLASSIC_TERMINAL, ...others.map((plugin) => plugin.id)]}
+          labels={{
+            [CLASSIC_TERMINAL]: "Default terminal",
+            ...Object.fromEntries(others.map((plugin) => [plugin.id, plugin.name])),
+          }}
           onChange={(defaultPaneKind) => update({ defaultPaneKind })}
         />
       </Row>
