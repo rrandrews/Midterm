@@ -302,6 +302,8 @@ pub struct MessageStream<'k> {
     text: Text,
     stop_reason: Option<String>,
     stop_details: Value,
+    /// `message_stop` arrived.
+    stopped: bool,
 }
 
 impl<'k> MessageStream<'k> {
@@ -312,6 +314,7 @@ impl<'k> MessageStream<'k> {
             text: Text::default(),
             stop_reason: None,
             stop_details: Value::Null,
+            stopped: false,
         }
     }
 
@@ -320,6 +323,9 @@ impl<'k> MessageStream<'k> {
         let stop = self.stop_reason.as_deref().unwrap_or("");
         if stop == "refusal" {
             return Err(refusal(&self.stop_details));
+        }
+        if self.stop_reason.is_none() && !self.stopped {
+            return Err(stream::cut_short());
         }
         if self.text.is_empty() {
             let message = if stop == "max_tokens" {
@@ -359,7 +365,10 @@ impl StreamState for MessageStream<'_> {
                     self.stop_details = details.clone();
                 }
             }
-            "message_stop" => return Ok(Flow::Done),
+            "message_stop" => {
+                self.stopped = true;
+                return Ok(Flow::Done);
+            }
             "error" => {
                 let message = data["error"]["message"].as_str().unwrap_or("");
                 return Err(stream::provider_error(message, self.key));
@@ -916,6 +925,16 @@ mod tests {
     }
 
     #[test]
+    fn stream_cut_short_is_an_error() {
+        let mut frames = start();
+        frames.push(text_delta(1, "half"));
+        let (deltas, out) = run(&frames);
+        assert_eq!(deltas, vec!["half"]);
+        assert_eq!(out.unwrap_err().kind, ErrorKind::Network);
+        assert_eq!(run(&[text_delta(0, "a"), message_stop()]).1.unwrap().0, "a");
+    }
+
+    #[test]
     fn stream_error_event() {
         let (deltas, out) = run(&[
             text_delta(0, "a"),
@@ -981,7 +1000,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.text, "ls -la");
-        assert_eq!(*seen.lock().unwrap(), vec!["ls", " -la"]);
+        // TCP may merge writes into one chunk: compare the joined text.
+        assert_eq!(seen.lock().unwrap().concat(), "ls -la");
         let sent = &server.requests()[0];
         assert_eq!(sent.json()["stream"], true);
         assert_eq!(sent.header("x-api-key"), Some("sk-ant"));

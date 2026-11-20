@@ -262,20 +262,21 @@ pub async fn stream(
         http::retry_without_effort(req.effort.is_some(), EFFORT_WORDS, send).await;
     let mut response = response.map_err(|f| f.into_error(key))?;
     if !http::is_event_stream(&response) {
-        let json = tokio::time::timeout(req.timeout, http::json(response, key, req.timeout))
-            .await
-            .map_err(|_| {
-                AiError::new(
-                    ErrorKind::Timeout,
-                    format!("no answer within {} s", req.timeout.as_secs()),
-                )
-            })?
-            .map_err(|f| f.into_error(key))?;
+        let body = http::read_body(&mut response, req.timeout).await?;
+        let body = String::from_utf8_lossy(&body);
+        let json: Value = serde_json::from_str(&body).map_err(|_| http::not_json(&body, key))?;
         let text = parse_reply(&json)?;
+        let stop = match json
+            .pointer("/choices/0/finish_reason")
+            .and_then(Value::as_str)
+        {
+            Some("length") => Stop::Length,
+            _ => Stop::End,
+        };
         emit(&text);
         return Ok(Streamed {
             text,
-            stop: Stop::End,
+            stop,
             effort_dropped,
         });
     }
@@ -373,6 +374,8 @@ pub struct ChatStream<'k> {
     text: Text,
     refusal: String,
     finish: Option<String>,
+    /// `[DONE]` arrived.
+    done: bool,
 }
 
 impl<'k> ChatStream<'k> {
@@ -384,6 +387,7 @@ impl<'k> ChatStream<'k> {
             text: Text::default(),
             refusal: String::new(),
             finish: None,
+            done: false,
         }
     }
 
@@ -400,6 +404,11 @@ impl<'k> ChatStream<'k> {
                 ErrorKind::Refused,
                 "the provider's content filter withheld the reply",
             ));
+        }
+        // Complete once there is a finish reason or `[DONE]` (some servers
+        // omit one of them).
+        if self.finish.is_none() && !self.done {
+            return Err(stream::cut_short());
         }
         if self.text.is_empty() {
             let message = if finish == "length" {
@@ -422,6 +431,7 @@ impl StreamState for ChatStream<'_> {
     fn event(&mut self, event: &SseEvent) -> Result<Flow, AiError> {
         let data = event.data.trim();
         if data == "[DONE]" {
+            self.done = true;
             return Ok(Flow::Done);
         }
         let Ok(chunk) = serde_json::from_str::<Value>(data) else {
@@ -917,6 +927,7 @@ mod tests {
             ),
             ": keep-alive\n\n".into(),
             delta("c"),
+            DONE.into(),
         ]);
         assert_eq!(deltas, vec!["ab", "c"]);
         assert_eq!(out.unwrap().0, "abc");
@@ -944,7 +955,7 @@ mod tests {
         assert_eq!(deltas, vec!["ls", " -la"]);
         assert_eq!(out.unwrap().0, "ls -la");
         // A prefix of `<think>` that turns out not to be one is passed on.
-        let (deltas, out) = run(&[delta("<th"), delta("ings>")]);
+        let (deltas, out) = run(&[delta("<th"), delta("ings>"), finish("stop")]);
         assert_eq!(deltas, vec!["<things>"]);
         assert_eq!(out.unwrap().0, "<things>");
         // A held prefix at the end of the stream is not lost.
@@ -1002,6 +1013,16 @@ mod tests {
     }
 
     #[test]
+    fn stream_cut_short_is_an_error() {
+        let (deltas, out) = run(&[delta("half a rep")]);
+        assert_eq!(deltas, vec!["half a rep"]);
+        assert_eq!(out.unwrap_err().kind, ErrorKind::Network);
+        // Either a finish reason or `[DONE]` is enough.
+        assert_eq!(run(&[delta("a"), finish("stop")]).1.unwrap().0, "a");
+        assert_eq!(run(&[delta("a"), DONE.into()]).1.unwrap().0, "a");
+    }
+
+    #[test]
     fn stream_error_chunk() {
         let (deltas, out) = run(&[
             delta("a"),
@@ -1049,7 +1070,8 @@ mod tests {
         assert_eq!(out.text, "Hello");
         assert_eq!(out.stop, Stop::End);
         assert!(!out.effort_dropped);
-        assert_eq!(*seen.lock().unwrap(), vec!["Hel", "lo"]);
+        // TCP may merge writes into one chunk: compare the joined text.
+        assert_eq!(seen.lock().unwrap().concat(), "Hello");
         let sent = server.requests()[0].json();
         assert_eq!(sent["stream"], true);
     }
@@ -1073,7 +1095,36 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out.text, "whole reply");
+        assert_eq!(out.stop, Stop::End);
         assert_eq!(*seen.lock().unwrap(), vec!["whole reply"]);
+        // A reply cut short by the token limit says so.
+        let server = stub::serve(vec![Canned::json(200, reply(json!("cut"), "length"))]).await;
+        let out = stream(
+            &stub::client(),
+            Flavor::Custom,
+            &server.url,
+            None,
+            &req(),
+            &|_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.stop, Stop::Length);
+        // Not JSON either.
+        let mut garbage = Canned::json(200, json!(null));
+        garbage.body = "<html>oops</html>".into();
+        let server = stub::serve(vec![garbage]).await;
+        let e = stream(
+            &stub::client(),
+            Flavor::Custom,
+            &server.url,
+            None,
+            &req(),
+            &|_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(e.message.contains("not JSON"), "{}", e.message);
     }
 
     #[tokio::test]

@@ -83,6 +83,15 @@ impl Text {
     }
 }
 
+/// A stream that ended (the connection closed cleanly) before the
+/// provider said the reply was complete: the text may be cut short.
+pub fn cut_short() -> AiError {
+    AiError::new(
+        ErrorKind::Network,
+        "the connection closed before the reply was complete",
+    )
+}
+
 /// An error a provider reported inside a stream: `http`, with `key`
 /// redacted before the message is shortened.
 pub fn provider_error(message: &str, key: Option<&str>) -> AiError {

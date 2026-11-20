@@ -234,20 +234,26 @@ event without a closing blank line still counts at the end).
   `http` (message redacted, then truncated); `finish_reason: "length"` →
   `stop: "length"` with text, `empty` with the token-limit hint without.
   A response that is not `text/event-stream` (a server that ignores
-  `stream`) is read whole, parsed like a non-streaming reply and emitted as
-  one delta.
+  `stream`) is read whole (each chunk within the idle timeout), parsed like
+  a non-streaming reply, emitted as one delta, and keeps its `length` stop.
+  The reply is complete once a finish reason or `[DONE]` arrived.
 - **Anthropic**: `content_block_delta` with `text_delta` → text, across
   blocks; `thinking_delta`, `signature_delta`, `ping` and unknown events
   are ignored; `message_stop` ends it. `message_delta.delta.stop_reason`:
   `refusal` → `refused` (with `stop_details.explanation`), `max_tokens` → as
-  `length` above. `event: error` → `http` with `error.message`.
+  `length` above. `event: error` → `http` with `error.message`. The reply
+  is complete once a stop reason or `message_stop` arrived.
+- **Cut short**: a body that ends cleanly before the reply was complete is
+  `network` ("the connection closed before the reply was complete"), not a
+  partial success.
 - **CLIs**: the whole reply as one delta at the end (incremental Claude Code
   output is a follow-up).
 - **Timeouts**: the effort-scaled request timeout (60/120/180 s) limits the
   wait for the headers and for each chunk; 600 s caps the whole stream.
   Either expiry is `timeout`.
-- **Cancel**: `ai_cancel(requestId)` drops the stream; no delta is sent
-  after it.
+- **Cancel**: `ai_cancel(requestId)` drops the stream. Each delta is sent
+  through the request's `Gate`, which cancel (or a replacement) closes under
+  the gate's lock, so no delta is sent once `ai_cancel` has returned.
 
 ### Reasoning effort
 
@@ -433,7 +439,7 @@ Every command rejects with `{ kind, message }`:
 |---|---|
 | `noKey` | No key stored for a provider that needs one. |
 | `auth` | HTTP 401/403, or a CLI that exited with a login/API-key message. |
-| `network` | No HTTP answer (DNS, connection refused, TLS). |
+| `network` | No HTTP answer (DNS, connection refused, TLS), or a stream that closed before the reply was complete. |
 | `http` | Any other non-2xx status; the message has the status and the provider's error message. Also an error reported inside a stream. |
 | `refused` | Anthropic `stop_reason: "refusal"`, OpenAI `message.refusal`, `finish_reason: "content_filter"`. |
 | `empty` | The model returned no text (with a hint when the token limit was hit). |
@@ -464,8 +470,12 @@ think block split across deltas, refusal, content filter, length with and
 without text, empty, error chunks and events, thinking and pings ignored,
 several text blocks), the JSON fallback, retry without effort before the
 stream (no delta from the first attempt, level memoized), 401 before the
-stream, cancel mid-stream (no later delta), a stalled stream and stalled
-headers (`timeout`), and extra JSON that tries to set `stream`. The credential store itself is not
+stream, a stream cut short (`network`), the JSON
+fallback's `length` stop, cancel mid-stream (no later delta) and the gate
+closing on cancel and replacement, a stalled stream and stalled headers
+(`timeout`), and extra JSON that tries to set `stream`. Socket tests compare
+the joined deltas (TCP may merge writes); exact per-chunk grouping is tested
+on the accumulators. The credential store itself is not
 exercised by tests. CLI tests use
 fake executables (flags, empty working directory, stdin) and check that
 cancel kills the process group. Pure helpers (PATH markers, merge, lookup,

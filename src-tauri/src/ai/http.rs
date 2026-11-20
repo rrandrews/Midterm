@@ -106,12 +106,15 @@ pub async fn json(
         .text()
         .await
         .map_err(|e| Failure::Other(transport_error(&e, timeout)))?;
-    serde_json::from_str(&body).map_err(|_| {
-        Failure::Other(AiError::other(format!(
-            "the provider sent a response that is not JSON: {}",
-            truncate(&redact(&body, key), 200)
-        )))
-    })
+    serde_json::from_str(&body).map_err(|_| Failure::Other(not_json(&body, key)))
+}
+
+/// The error for a 2xx body that is not JSON, with `key` redacted.
+pub fn not_json(body: &str, key: Option<&str>) -> AiError {
+    AiError::other(format!(
+        "the provider sent a response that is not JSON: {}",
+        truncate(&redact(body, key), 200)
+    ))
 }
 
 /// Sends `request` with effort first (when `with_effort`), and once more
@@ -167,6 +170,18 @@ pub async fn next_chunk(
         Ok(Err(e)) => Err(transport_error(&e, STREAM_TIMEOUT)),
         Ok(Ok(chunk)) => Ok(chunk.map(|bytes| bytes.to_vec())),
     }
+}
+
+/// The rest of a streamed request's body, each chunk within `idle`.
+pub async fn read_body(
+    response: &mut reqwest::Response,
+    idle: Duration,
+) -> Result<Vec<u8>, AiError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = next_chunk(response, idle).await? {
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Whether a response is an SSE stream (a server may ignore `stream: true`

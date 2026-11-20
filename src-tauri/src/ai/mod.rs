@@ -21,7 +21,7 @@ mod stub;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -123,11 +123,47 @@ const EARLY_CANCELS: usize = 64;
 /// is ignored instead of being kept as an early cancel.
 const STARTED_IDS: usize = 256;
 
+/// Lets a request's side effects (streamed deltas) through until the
+/// request is cancelled or replaced. Closing takes the same lock as
+/// [`Gate::pass`], so once `ai_cancel` has returned nothing more passes.
+#[derive(Default)]
+pub struct Gate(Mutex<bool>);
+
+impl Gate {
+    /// Runs `f` unless the gate is closed, holding the gate meanwhile.
+    pub fn pass(&self, f: impl FnOnce()) {
+        let closed = self.0.lock().unwrap();
+        if !*closed {
+            f();
+        }
+    }
+
+    fn close(&self) {
+        *self.0.lock().unwrap() = true;
+    }
+}
+
+/// A registered request: its generation, what cancels it, and its gate.
+struct Running {
+    generation: u64,
+    tx: oneshot::Sender<()>,
+    gate: Option<Arc<Gate>>,
+}
+
+impl Running {
+    fn stop(self) {
+        if let Some(gate) = &self.gate {
+            gate.close();
+        }
+        let _ = self.tx.send(());
+    }
+}
+
 #[derive(Default)]
 struct Requests {
     next: u64,
-    /// Request id → (generation, cancel sender).
-    running: HashMap<String, (u64, oneshot::Sender<()>)>,
+    /// Request id → the running request.
+    running: HashMap<String, Running>,
     /// Ids cancelled before their request registered (the two commands race).
     early: VecDeque<String>,
     /// Ids of recently started requests.
@@ -234,11 +270,25 @@ impl AiManager {
         id: &str,
         work: impl Future<Output = Result<T, AiError>>,
     ) -> Result<T, AiError> {
+        self.cancellable_gated(id, None, work).await
+    }
+
+    /// [`cancellable`](Self::cancellable), also closing `gate` when the
+    /// request is cancelled or replaced.
+    pub async fn cancellable_gated<T>(
+        &self,
+        id: &str,
+        gate: Option<Arc<Gate>>,
+        work: impl Future<Output = Result<T, AiError>>,
+    ) -> Result<T, AiError> {
         let (tx, rx) = oneshot::channel();
         let generation = {
             let mut requests = self.requests.lock().unwrap();
             if let Some(at) = requests.early.iter().position(|e| e == id) {
                 requests.early.remove(at);
+                if let Some(gate) = &gate {
+                    gate.close();
+                }
                 return Err(AiError::cancelled());
             }
             requests.next += 1;
@@ -250,7 +300,14 @@ impl AiManager {
                 requests.started.push_back(id.to_string());
             }
             // A reused id replaces (and so cancels) the older request.
-            requests.running.insert(id.to_string(), (generation, tx));
+            let entry = Running {
+                generation,
+                tx,
+                gate,
+            };
+            if let Some(older) = requests.running.insert(id.to_string(), entry) {
+                older.stop();
+            }
             generation
         };
         let mut rx = rx;
@@ -268,7 +325,7 @@ impl AiManager {
         let ours = requests
             .running
             .get(id)
-            .is_some_and(|(g, _)| *g == generation);
+            .is_some_and(|r| r.generation == generation);
         if ours {
             requests.running.remove(id);
             result
@@ -279,8 +336,8 @@ impl AiManager {
 
     pub fn cancel(&self, id: &str) {
         let mut requests = self.requests.lock().unwrap();
-        if let Some((_, tx)) = requests.running.remove(id) {
-            let _ = tx.send(());
+        if let Some(running) = requests.running.remove(id) {
+            running.stop();
         } else if !requests.started.iter().any(|s| s == id)
             && !requests.early.iter().any(|e| e == id)
         {
@@ -779,13 +836,20 @@ mod tests {
                 let mut requests = manager.requests.lock().unwrap();
                 requests.next += 1;
                 let generation = requests.next;
-                requests.running.insert("same".into(), (generation, tx));
+                requests.running.insert(
+                    "same".into(),
+                    Running {
+                        generation,
+                        tx,
+                        gate: None,
+                    },
+                );
                 Ok(1)
             })
             .await;
         assert_eq!(r.unwrap_err().kind, ErrorKind::Cancelled);
         let requests = manager.requests.lock().unwrap();
-        assert_eq!(requests.running.get("same").map(|(g, _)| *g), Some(2));
+        assert_eq!(requests.running.get("same").map(|r| r.generation), Some(2));
     }
 
     #[tokio::test]
@@ -989,7 +1053,8 @@ mod tests {
         assert_eq!(out.text, "ab");
         assert!(out.effort_dropped);
         // Nothing from the rejected attempt.
-        assert_eq!(*seen.lock().unwrap(), vec!["a", "b"]);
+        // TCP may merge writes into one chunk: compare the joined text.
+        assert_eq!(seen.lock().unwrap().concat(), "ab");
         manager.stream(&target, "", "p", None, &emit).await.unwrap();
         let sent = server.requests();
         assert_eq!(sent.len(), 3);
@@ -1033,6 +1098,37 @@ mod tests {
             "a delta after cancel"
         );
         assert!(manager.requests.lock().unwrap().running.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gate_closes_on_cancel_and_replacement() {
+        let manager = AiManager::default();
+        let gate = Arc::new(Gate::default());
+        let passed = Mutex::new(Vec::new());
+        let r = manager
+            .cancellable_gated("g", Some(gate.clone()), async {
+                gate.pass(|| passed.lock().unwrap().push(1));
+                manager.cancel("g");
+                // The work is still running (cancel wins at the next poll),
+                // but nothing more gets through.
+                gate.pass(|| passed.lock().unwrap().push(2));
+                Ok(())
+            })
+            .await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Cancelled);
+        assert_eq!(*passed.lock().unwrap(), vec![1]);
+
+        // A replacement closes the older request's gate.
+        let older = Arc::new(Gate::default());
+        let r = manager
+            .cancellable_gated("h", Some(older.clone()), async {
+                manager.cancellable("h", async { Ok(()) }).await.unwrap();
+                older.pass(|| passed.lock().unwrap().push(3));
+                Ok(())
+            })
+            .await;
+        assert_eq!(r.unwrap_err().kind, ErrorKind::Cancelled);
+        assert_eq!(*passed.lock().unwrap(), vec![1]);
     }
 
     #[tokio::test]

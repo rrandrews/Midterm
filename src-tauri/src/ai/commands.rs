@@ -3,6 +3,8 @@
 //!
 //! There is deliberately no command that returns a stored key.
 
+use std::sync::Arc;
+
 use serde::Serialize;
 use tauri::State;
 
@@ -10,7 +12,7 @@ use super::cli::CliStatus;
 use super::error::{AiError, truncate};
 use super::keys;
 use super::provider::{ProviderConfig, Target};
-use super::{AiManager, EffortOptions, Stop};
+use super::{AiManager, EffortOptions, Gate, Stop};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,14 +84,21 @@ pub async fn ai_stream(
     max_tokens: Option<u32>,
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<StreamReply, AiError> {
+    // Closed by `ai_cancel` under the gate's lock: no delta after it.
+    let gate = Arc::new(Gate::default());
+    let open = gate.clone();
     let emit = move |text: &str| {
-        // The webview may have gone away; the result still settles.
-        let _ = on_event.send(StreamEvent::Delta {
-            text: text.to_string(),
+        open.pass(|| {
+            // The webview may have gone away; the result still settles.
+            let _ = on_event.send(StreamEvent::Delta {
+                text: text.to_string(),
+            });
         });
     };
     let work = manager.stream(&target, &system, &prompt, max_tokens, &emit);
-    let streamed = manager.cancellable(&request_id, work).await?;
+    let streamed = manager
+        .cancellable_gated(&request_id, Some(gate), work)
+        .await?;
     Ok(StreamReply {
         text: streamed.text,
         stop: streamed.stop,
