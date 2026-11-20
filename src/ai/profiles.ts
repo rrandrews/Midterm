@@ -23,7 +23,11 @@ export const FEATURES: readonly { id: AiFeature; label: string; hint: string }[]
   { id: "suggestions", label: "Next-command suggestions", hint: "Ghost text at an empty prompt of the block terminal." },
   { id: "cmd", label: "/cmd", hint: "Writes a command for a task described in the blocks editor." },
   { id: "explain", label: "Explain and fix", hint: "Explains a block's output, and fixes a failed command into the blocks editor." },
+  { id: "agent", label: "Agent", hint: "Works with your panes through plugin skills (/agent, AI: Ask the agent…, the Agent pane). API models only." },
 ];
+
+/** Why the agent cannot use `profile`: a CLI runs its own tool loop and cannot call Midterm's skills. */
+export const AGENT_CLI_PROBLEM = "The agent needs an API model. Choose another model for Agent in Settings → AI.";
 
 const featureLabel = (feature: AiFeature) => FEATURES.find((f) => f.id === feature)?.label ?? feature;
 
@@ -60,8 +64,7 @@ export function profileReady(profile: AiProfile): boolean {
 
 /** Whether `feature` resolves to a ready profile (its own switches aside). */
 export function featureReady(feature: AiFeature, settings: Settings = getSettings()): boolean {
-  const profile = profileFor(feature, settings);
-  return !!profile && profileReady(profile);
+  return featureProblem(feature, settings) === null;
 }
 
 /** Why `feature` cannot send requests, for hints; null when it can. */
@@ -69,7 +72,9 @@ export function featureProblem(feature: AiFeature, settings: Settings = getSetti
   const profile = profileFor(feature, settings);
   if (!profile) return settings.ai.profiles.length ? "No model chosen." : "Add a model first.";
   const problem = profileProblem(profile);
-  return problem ? `${profile.name}: ${problem}.` : null;
+  if (problem) return `${profile.name}: ${problem}.`;
+  if (feature === "agent" && providerInfo(profile.provider)?.type === "cli") return AGENT_CLI_PROBLEM;
+  return null;
 }
 
 /** The target a request for `profile` goes to; extra JSON only for API providers. */
@@ -85,7 +90,7 @@ export function targetOf(profile: AiProfile): AiTarget | null {
 /** The target for `feature`, or null when it has no ready profile. */
 export function targetFor(feature: AiFeature, settings: Settings = getSettings()): AiTarget | null {
   const profile = profileFor(feature, settings);
-  return profile && profileReady(profile) ? targetOf(profile) : null;
+  return profile && featureReady(feature, settings) ? targetOf(profile) : null;
 }
 
 /** Features that use `id`, through an override or as the default. */

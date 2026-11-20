@@ -4,6 +4,7 @@
 @import "./explorer.css";
 @import "./blocks.css";
 @import "./editor.css";
+@import "./agent.css";
 
 /*
  * Design tokens. These defaults are Midterm Dark's resolved values; the active

@@ -1,4 +1,5 @@
 import { closeOtherTabs, closeTab, closeTabsToTheRight } from "../../closing";
+import { openAgentInTab } from "../../ai/agent/actions";
 import {
   DndContext,
   type DragEndEvent,
@@ -116,6 +117,7 @@ function TabItem({ tab, active, index, count }: TabItemProps) {
       <ContextMenuContent aria-label={`Tab ${tab.title}`}>
         <MenuItem onSelect={() => setRenaming(true)}>Rename tab</MenuItem>
         <MenuItem onSelect={() => newTab()}>New tab</MenuItem>
+        <MenuItem onSelect={() => openAgentInTab(tab.id)}>Open the agent</MenuItem>
         <MenuSeparator />
         <MenuItem onSelect={() => void closeTab(tab.id)}>Close tab</MenuItem>
         <MenuItem disabled={count <= 1} onSelect={() => void closeOtherTabs(tab.id)}>

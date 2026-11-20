@@ -10,7 +10,7 @@ import {
   startEditorRequest,
   useEditorRequests,
 } from "../../ai/editorRequests";
-import { parseSlash, slashCompletion, writeCommand } from "../../ai/slash";
+import { type ParsedSlash, parseSlash, slashCompletion, slashHandler, writeCommand } from "../../ai/slash";
 import { runFromBlocks } from "../../terminal/blockMode";
 import { globalHistory, historyEntries, loadGlobalHistory, suggestion } from "../../terminal/history";
 import type { TerminalSession } from "../../terminal/session";
@@ -27,7 +27,9 @@ const MAX_ROWS = 12;
  * the AI suggestion. A line starting with a registered slash command
  * (src/ai/slash.ts) is handled here instead of going to the shell: `/cmd
  * <task>` asks the model for a command and puts it in the editor, below the
- * request, ready to edit or run. Requests like that (`/cmd`, a block's Fix)
+ * request, ready to edit or run; `/agent <task>` hands the task to the
+ * agent, whose card (src/ai/agent/) the pane host shows over the pane.
+ * Requests like `/cmd` and a block's Fix
  * live in src/ai/editorRequests.ts; this shows them and applies their
  * answers. Shown only while the shell waits at a prompt (so it remounts at
  * every prompt).
@@ -144,8 +146,15 @@ export function BlockInput({
     // `set` is recreated every render; the request is what matters.
   }, [paneId, request, pending]);
 
-  /** Runs a slash command line; the line stays shown above the editor with its result. */
-  const runSlash = (line: string, args: string) => {
+  /** Runs a slash command line: `/cmd` stays shown above the editor with its result; others go to their handler (`/agent` opens the pane's agent card). */
+  const runSlash = (line: string, { command, args }: ParsedSlash) => {
+    if (command.name !== "cmd") {
+      const handler = slashHandler(command.name);
+      const problem = handler ? handler(paneId, args) : `/${command.name} is not available`;
+      if (problem) failEditorRequest(paneId, { line, restore: line, message: problem });
+      else setValue("");
+      return;
+    }
     if (!args) {
       failEditorRequest(paneId, { line, restore: line, message: "Say what the command should do: /cmd <what to do>" });
       return;
@@ -163,7 +172,7 @@ export function BlockInput({
     if (!value.trim()) return;
     const parsed = parseSlash(value);
     if (parsed) {
-      runSlash(value.trim(), parsed.args);
+      runSlash(value.trim(), parsed);
       setWalk({ index: -1, draft: "", entries: [] });
       return;
     }

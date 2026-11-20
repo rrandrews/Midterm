@@ -81,6 +81,8 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
  * frame, which plays like a slow animation after every split.
  */
 .pane {
+  /* The agent card (src/ai/agent/AgentCard.tsx) is docked inside it. */
+  position: relative;
   height: 100%;
   overflow: hidden;
   outline: none;

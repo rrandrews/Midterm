@@ -25,9 +25,19 @@ export type PalettePicker = {
   onCancel?: () => void;
 };
 
+/** A one-off text prompt (e.g. the agent's task), shown in the palette instead of its usual items. */
+export type PalettePrompt = {
+  placeholder: string;
+  /** Footer hint for ⏎, e.g. "↩ ask". */
+  hint?: string;
+  /** Called with the trimmed text when ⏎ is pressed on a non-empty input. */
+  onSubmit: (text: string) => void;
+};
+
 type PaletteState = {
   open: boolean;
   picker: PalettePicker | null;
+  prompt: PalettePrompt | null;
   mode: PaletteMode;
   /** Text the input starts with. */
   initialQuery: string;
@@ -38,24 +48,30 @@ type PaletteState = {
 export const usePalette = create<PaletteState>()(() => ({
   open: false,
   picker: null,
+  prompt: null,
   mode: "all",
   initialQuery: "",
   session: 0,
 }));
 
 export function openPalette(mode: PaletteMode = "all", initialQuery = ""): void {
-  usePalette.setState((state) => ({ open: true, mode, initialQuery, picker: null, session: state.session + 1 }));
+  usePalette.setState((state) => ({ open: true, mode, initialQuery, picker: null, prompt: null, session: state.session + 1 }));
 }
 
 /** Opens the palette as a picker over `picker.items`. */
 export function openPicker(picker: PalettePicker): void {
-  usePalette.setState((state) => ({ open: true, mode: "all", initialQuery: "", picker, session: state.session + 1 }));
+  usePalette.setState((state) => ({ open: true, mode: "all", initialQuery: "", picker, prompt: null, session: state.session + 1 }));
+}
+
+/** Opens the palette as a text prompt. */
+export function openPrompt(prompt: PalettePrompt): void {
+  usePalette.setState((state) => ({ open: true, mode: "all", initialQuery: "", picker: null, prompt, session: state.session + 1 }));
 }
 
 /** Closes the palette; an open picker is cancelled unless `chosen`. */
 export function closePalette({ chosen = false } = {}): void {
   const { picker, open } = usePalette.getState();
-  usePalette.setState({ open: false, picker: null });
+  usePalette.setState({ open: false, picker: null, prompt: null });
   if (open && picker && !chosen) picker.onCancel?.();
 }
 

@@ -7,7 +7,11 @@ import { getSettings, useSettings } from "../settings/settings";
 import { activeTerminal, requestedMode } from "../terminal/blockMode";
 import type { Block } from "../terminal/blocks";
 import { onSessionDisposed, peekSession } from "../terminal/sessions";
+import { registerPlugin } from "../plugins/registry";
 import { AiSection } from "./AiSection";
+import { agentNewConversation, askAgentAbout, openAgent, promptForAgent } from "./agent/actions";
+import { agentPlugin } from "./agent/plugin";
+import { registerSlashHandler } from "./slash";
 import { canFix, fixBlock } from "./blockAi";
 import { dropPaneNotes, explainBlock } from "./blockNotes";
 import { featureReady } from "./profiles";
@@ -81,6 +85,11 @@ export function installAi(): void {
   installed = true;
   installAiEngine();
   onSessionDisposed(dropPaneNotes);
+  registerPlugin(agentPlugin, { type: "builtin" });
+  registerSlashHandler("agent", (paneId, task) => {
+    if (!task) return "Say what the agent should do: /agent <task>";
+    askAgentAbout(paneId, task);
+  });
   registerSettingsSection({ id: "ai", label: "AI", order: 700, component: AiSection });
   registerCommands([
     { id: "ai.toggleSuggestions", title: "AI: Toggle suggestions", category: "AI", run: toggleSuggestions },
@@ -106,6 +115,9 @@ export function installAi(): void {
       category: "AI",
       run: () => onLastBlock(fixBlock),
     },
+    { id: "ai.askAgent", title: "AI: Ask the agent…", category: "AI", run: promptForAgent },
+    { id: "ai.openAgent", title: "AI: Open the agent", category: "AI", run: () => openAgent() },
+    { id: "ai.agentNewConversation", title: "AI: New agent conversation", category: "AI", run: agentNewConversation },
     { id: "ai.openSettings", title: "AI: Settings…", category: "AI", run: () => openSettings("ai") },
   ]);
 }

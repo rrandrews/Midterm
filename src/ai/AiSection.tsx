@@ -70,6 +70,10 @@ export function AiSection() {
         Suggestions, /cmd, and Explain and fix send the current terminal’s own recent commands (never other terminals’), their output (cut to its start and end), the
         directory, git branch, shell and OS to the model you choose. Values that look like secrets are replaced with [redacted] first. Nothing is sent
         until you add a model, and a suggested or fixed command is only ever placed in the input editor, never run.
+        <span className="mt-1.5 block">
+          The agent sends your requests and whatever its tools read (recent commands and output, directory listings, open files) to its model, redacted the
+          same way. Tools that run commands or change files ask you first.
+        </span>
       </div>
 
       <SectionHeading>Suggestions</SectionHeading>

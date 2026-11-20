@@ -18,7 +18,28 @@ export type SlashCommand = {
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "cmd", usage: "/cmd <what to do>", description: "AI writes a command for it" },
+  { name: "agent", usage: "/agent <task>", description: "the agent does it, working with this terminal" },
 ];
+
+/**
+ * What a slash command other than `/cmd` does, registered from `installAi`
+ * so this module stays free of the agent's dependencies. Returns an error
+ * message to show (e.g. a missing task), or nothing.
+ */
+export type SlashHandler = (paneId: string, args: string) => string | void;
+
+const handlers = new Map<string, SlashHandler>();
+
+export function registerSlashHandler(name: string, handler: SlashHandler): () => void {
+  handlers.set(name, handler);
+  return () => {
+    if (handlers.get(name) === handler) handlers.delete(name);
+  };
+}
+
+export function slashHandler(name: string): SlashHandler | undefined {
+  return handlers.get(name);
+}
 
 export type ParsedSlash = { command: SlashCommand; args: string };
 

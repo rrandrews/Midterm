@@ -83,6 +83,17 @@ describe("readiness", () => {
     // `/cmd` does not depend on the suggestions switch.
     expect(featureReady("cmd")).toBe(true);
   });
+
+  it("refuses CLI profiles for the agent only", () => {
+    saveProfile(profile("cli", { provider: "claude-code", model: "" }));
+    expect(featureReady("cmd")).toBe(true);
+    expect(featureReady("agent")).toBe(false);
+    expect(featureProblem("agent")).toBe("The agent needs an API model. Choose another model for Agent in Settings → AI.");
+    expect(targetFor("agent")).toBeNull();
+    saveProfile(profile("api"));
+    setFeatureProfile("agent", "api");
+    expect(targetFor("agent")?.provider.id).toBe("openai");
+  });
 });
 
 describe("targets", () => {
@@ -120,10 +131,10 @@ describe("mutations", () => {
     deleteProfile("b");
     expect(getSettings().ai.features).toEqual({});
     expect(profileFor("cmd")?.id).toBe("a");
-    expect(deleteWarning("a")).toBe("Next-command suggestions, /cmd, Explain and fix will use c instead.");
+    expect(deleteWarning("a")).toBe("Next-command suggestions, /cmd, Explain and fix, Agent will use c instead.");
     deleteProfile("a");
     expect(getSettings().ai.defaultProfile).toBe("c");
-    expect(deleteWarning("c")).toBe("Next-command suggestions, /cmd, Explain and fix will have no model.");
+    expect(deleteWarning("c")).toBe("Next-command suggestions, /cmd, Explain and fix, Agent will have no model.");
     deleteProfile("c");
     expect(getSettings().ai.defaultProfile).toBe("");
   });

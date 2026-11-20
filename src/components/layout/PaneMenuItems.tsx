@@ -1,3 +1,4 @@
+import { openAgent, promptForAgent } from "../../ai/agent/actions";
 import { movePaneToNewTab, movePaneToTab, splitPane, toggleMaximizePane } from "../../actions";
 import { changePaneKind, closePane } from "../../closing";
 import { shortcutLabel } from "../../commands/registry";
@@ -43,6 +44,17 @@ export function PaneMenuItems({ paneId }: { paneId: string }) {
               {option.name}
             </MenuItem>
           ))}
+        </MenuSubContent>
+      </MenuSub>
+      <MenuSub>
+        <MenuSubTrigger>Agent</MenuSubTrigger>
+        <MenuSubContent>
+          <MenuItem shortcut={shortcutLabel("ai.askAgent")} onSelect={() => promptForAgent(paneId)}>
+            Ask the agent about this pane…
+          </MenuItem>
+          <MenuItem shortcut={shortcutLabel("ai.openAgent")} onSelect={() => openAgent(paneId)}>
+            Open the agent pane
+          </MenuItem>
         </MenuSubContent>
       </MenuSub>
       <MenuItem shortcut={shortcutLabel("pane.toggleMaximize")} disabled={alone} onSelect={() => toggleMaximizePane(paneId)}>

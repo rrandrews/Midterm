@@ -1,0 +1,242 @@
+/* The agent: its card docked over a pane and the Agent pane (src/ai/agent/). Tokens only. */
+
+.agent-card {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  max-height: min(55%, 420px);
+  border: 1px solid var(--color-line-strong);
+  border-radius: 6px;
+  background: var(--color-popover);
+  box-shadow: var(--shadow-menu);
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
+}
+.agent-card-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--color-line-menu);
+  font-size: var(--text-meta);
+  color: var(--color-fg-dim);
+}
+.agent-card-title {
+  color: var(--color-fg-mid);
+}
+.agent-card-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-card-state {
+  flex: none;
+}
+.agent-card-body {
+  padding: 6px 10px 8px;
+}
+
+.agent-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: var(--text-ui);
+}
+.agent-pane-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  /* Room for the pane's hover controls on the right. */
+  padding: 0 52px 0 12px;
+  border-bottom: 1px solid var(--color-line);
+  font-size: var(--text-meta);
+  color: var(--color-fg-dim);
+}
+.agent-pane-body {
+  flex: 1;
+  padding: 8px 12px;
+}
+.agent-empty {
+  flex: 1;
+  padding: 12px;
+  font-size: var(--text-meta);
+  color: var(--color-fg-dim);
+}
+.agent-input {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-top: 1px solid var(--color-line-input);
+}
+.agent-input textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 120px;
+  field-sizing: content;
+  resize: none;
+  background: transparent;
+  color: var(--color-fg-bright);
+  font-size: var(--text-input);
+  line-height: 1.45;
+  outline: none;
+}
+.agent-input textarea::placeholder {
+  color: var(--color-fg-faint);
+}
+
+.agent-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.agent-user {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-fg-bright) 6%, transparent);
+  color: var(--color-fg-bright);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-answer {
+  min-width: 0;
+}
+.agent-meta {
+  font-size: var(--text-meta);
+  color: var(--color-fg-dim);
+}
+.agent-note,
+.agent-error,
+.agent-problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.agent-error {
+  font-size: var(--text-meta);
+}
+.agent-problem {
+  padding: 8px 10px;
+  font-size: var(--text-meta);
+}
+.agent-problem-pane {
+  padding: 12px;
+}
+
+.agent-tool {
+  border: 1px solid var(--color-line-block);
+  border-radius: 5px;
+  font-size: var(--text-meta);
+}
+.agent-tool.is-asking {
+  border-color: color-mix(in srgb, var(--color-warn) 45%, transparent);
+}
+.agent-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 22px;
+  padding: 0 6px;
+  color: var(--color-fg-dim);
+  text-align: left;
+}
+.agent-tool-head:hover {
+  color: var(--color-fg-mid);
+}
+.agent-tool-name {
+  flex: none;
+  color: var(--color-fg-mid);
+}
+.agent-tool-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+}
+.agent-tool-status {
+  flex: none;
+  margin-left: auto;
+}
+.agent-tool[data-status="failed"] .agent-tool-status,
+.agent-tool[data-status="denied"] .agent-tool-status {
+  color: var(--color-err);
+}
+.agent-tool-detail {
+  padding: 2px 8px 6px 22px;
+}
+.agent-tool-label {
+  margin-top: 4px;
+  color: var(--color-fg-dim);
+}
+.agent-tool-detail pre,
+.agent-confirm-command {
+  max-height: 160px;
+  overflow: auto;
+  margin: 2px 0 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--color-field);
+  color: var(--color-fg-soft);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-confirm {
+  padding: 0 8px 6px 22px;
+}
+.agent-confirm-command {
+  color: var(--color-fg-bright);
+}
+.agent-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.agent-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: var(--color-raised);
+  color: var(--color-fg-soft);
+  font-size: var(--text-meta);
+}
+.agent-button:hover {
+  color: var(--color-fg-bright);
+}
+.agent-button.is-primary {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-fg);
+}
+.agent-card.is-collapsed {
+  left: auto;
+  width: min(360px, calc(100% - 16px));
+}
+.agent-card.is-collapsed .agent-card-header {
+  border-bottom: 0;
+}

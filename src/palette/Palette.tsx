@@ -1,6 +1,6 @@
 import fuzzysort from "fuzzysort";
 import { Command } from "cmdk";
-import { FileText, Layers, PanelsTopLeft, Play, Search, SquareChevronRight } from "lucide-react";
+import { FileText, Layers, MessageSquare, PanelsTopLeft, Play, Search, SquareChevronRight } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
 import { chordFromEvent, parseChord, sameChord } from "../commands/keys";
@@ -9,7 +9,7 @@ import { homeDirectory } from "../ipc/system";
 import { refocusPane } from "../layout/dock";
 import { useAppStore } from "../state/store";
 import { type PaletteItem, type PaletteSources, paletteItems } from "./items";
-import { type PalettePicker, closePalette, performPaletteAction, usePalette } from "./state";
+import { type PalettePicker, type PalettePrompt, closePalette, performPaletteAction, usePalette } from "./state";
 import { filesUnder, projectRoot, recentFilePaths } from "./sources";
 
 /*
@@ -254,11 +254,49 @@ function PickerBody({ picker }: { picker: PalettePicker }) {
   );
 }
 
+/** A one-off text prompt (`openPrompt`): ⏎ submits the text once the palette has closed. */
+function PromptBody({ prompt }: { prompt: PalettePrompt }) {
+  const [text, setText] = useState("");
+  const submit = () => {
+    const value = text.trim();
+    if (!value) return;
+    closePalette();
+    // After the dialog has closed and handed focus back, like a chosen item.
+    requestAnimationFrame(() => prompt.onSubmit(value));
+  };
+  return (
+    <div className="flex flex-col">
+      <div className="flex h-10 flex-none items-center gap-2 px-3 text-fg-dim">
+        <MessageSquare size={14} aria-hidden="true" />
+        <input
+          autoFocus
+          value={text}
+          aria-label={prompt.placeholder}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+          placeholder={prompt.placeholder}
+          className="h-full min-w-0 flex-1 bg-transparent text-input text-fg-bright outline-none placeholder:text-fg-faint"
+        />
+      </div>
+      <div className="flex h-7 flex-none items-center justify-end gap-3 border-t border-line px-3 text-micro text-fg-dim">
+        <span>{prompt.hint ?? "↩ submit"}</span>
+        <span>esc cancel</span>
+      </div>
+    </div>
+  );
+}
+
 /** Mounted once, in App. */
 export function Palette() {
   const open = usePalette((state) => state.open);
   const session = usePalette((state) => state.session);
   const picker = usePalette((state) => state.picker);
+  const prompt = usePalette((state) => state.prompt);
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && closePalette()}>
       <Dialog.Portal>
@@ -273,7 +311,13 @@ export function Palette() {
           className="fixed top-[52px] left-1/2 z-50 w-[min(600px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-lg bg-popover shadow-menu outline-none"
         >
           <Dialog.Title className="sr-only">Command palette</Dialog.Title>
-          {picker ? <PickerBody key={session} picker={picker} /> : <PaletteBody key={session} />}
+          {prompt ? (
+            <PromptBody key={session} prompt={prompt} />
+          ) : picker ? (
+            <PickerBody key={session} picker={picker} />
+          ) : (
+            <PaletteBody key={session} />
+          )}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

@@ -7,6 +7,7 @@ import type { PaneData, PaneNode } from "../state/types";
 import { livePane, updatePaneData } from "../actions";
 import { PaneMenuItems } from "../components/layout/PaneMenuItems";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuSeparator } from "../components/ui/Menu";
+import { AgentCard } from "../ai/agent/AgentCard";
 import { MenuItems } from "./MenuItems";
 import { PluginPlaceholder } from "./PluginPlaceholder";
 import { activePlugin, apiOf, getPlugin, isPluginEnabled, isStub, loadErrorOf, usePluginsVersion } from "./registry";
@@ -17,7 +18,9 @@ import type { MenuItemSpec, PaneContext, PanePlugin } from "./types";
  * component (or mounts it into an element), inside an error boundary of its
  * own. Tracks whether it is the active pane and gives it a right-click
  * menu: the plugin's items, then the items every pane has. A pane whose
- * plugin is missing or disabled shows a placeholder.
+ * plugin is missing or disabled shows a placeholder. The agent card of a
+ * one-off request (src/ai/agent/AgentCard.tsx) is docked over the bottom
+ * of the content, whatever the pane's kind.
  */
 
 /** The context handed to a plugin for one pane. */
@@ -88,6 +91,7 @@ export const PaneHost = memo(function PaneHost({ pane }: { pane: PaneNode }) {
           ) : (
             <PluginPlaceholder paneId={pane.id} kind={kind} problem={problem} />
           )}
+          <AgentCard paneId={pane.id} />
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent aria-label="Pane">
