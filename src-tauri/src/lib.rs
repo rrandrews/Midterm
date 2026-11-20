@@ -151,6 +151,7 @@ pub fn run() {
             ai::commands::ai_suggest,
             ai::commands::ai_cancel,
             ai::commands::ai_models,
+            ai::commands::ai_effort_options,
             ai::commands::ai_test,
             ai::commands::ai_key_set,
             ai::commands::ai_key_delete,

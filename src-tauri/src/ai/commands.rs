@@ -6,11 +6,12 @@
 use serde::Serialize;
 use tauri::State;
 
-use super::AiManager;
 use super::cli::CliStatus;
+use super::effort::EffortSetting;
 use super::error::{AiError, truncate};
 use super::keys;
 use super::provider::ProviderConfig;
+use super::{AiManager, EffortOptions};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,7 +35,8 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// One completion. `maxTokens` is the reply budget; room for thinking is
-/// added. Cancel with `ai_cancel(requestId)`.
+/// added. `effort` is the stored reasoning effort setting (absent: Midterm's
+/// pick). Cancel with `ai_cancel(requestId)`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn ai_suggest(
@@ -45,10 +47,11 @@ pub async fn ai_suggest(
     system: String,
     prompt: String,
     max_tokens: Option<u32>,
+    effort: Option<EffortSetting>,
 ) -> Result<Suggestion, AiError> {
-    let work = manager.complete(&provider, &model, &system, &prompt, max_tokens);
-    let text = manager.cancellable(&request_id, work).await?;
-    Ok(Suggestion { text })
+    let work = manager.complete(&provider, &model, &system, &prompt, max_tokens, effort);
+    let reply = manager.cancellable(&request_id, work).await?;
+    Ok(Suggestion { text: reply.text })
 }
 
 /// Cancels a running `ai_suggest`. Unknown or finished ids are ignored.
@@ -66,13 +69,27 @@ pub async fn ai_models(
     manager.models(&provider).await
 }
 
+/// The reasoning effort levels offered for `provider` and `model`, and what
+/// the stored `effort` setting would send.
+#[tauri::command]
+pub async fn ai_effort_options(
+    manager: State<'_, AiManager>,
+    provider: ProviderConfig,
+    model: String,
+    effort: Option<EffortSetting>,
+) -> Result<EffortOptions, AiError> {
+    manager.effort_options(&provider, &model, effort).await
+}
+
 /// Sends a tiny request. Failures are reported in the result, not as errors.
 #[tauri::command]
 pub async fn ai_test(
     manager: State<'_, AiManager>,
     provider: ProviderConfig,
     model: String,
+    effort: Option<EffortSetting>,
 ) -> Result<TestResult, AiError> {
+    let options = manager.effort_options(&provider, &model, effort).await.ok();
     let result = manager
         .complete(
             &provider,
@@ -80,13 +97,23 @@ pub async fn ai_test(
             "You are a connectivity check. Reply with the single word OK.",
             "Reply with OK.",
             Some(16),
+            effort,
         )
         .await;
     Ok(match result {
-        Ok(text) => TestResult {
-            ok: true,
-            message: format!("Replied: {}", truncate(&text, 80)),
-        },
+        Ok(reply) => {
+            let effort = match options.and_then(|o| o.effective) {
+                _ if reply.effort_dropped => {
+                    " (the effort setting was rejected and left out)".to_string()
+                }
+                Some(level) => format!(" at {} effort", level.as_str()),
+                None => String::new(),
+            };
+            TestResult {
+                ok: true,
+                message: format!("Replied{effort}: {}", truncate(&reply.text, 80)),
+            }
+        }
         Err(e) => TestResult {
             ok: false,
             message: e.message,
