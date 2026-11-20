@@ -370,11 +370,12 @@ export class TerminalSession {
     if (this.phase !== "idle") return;
     this.phase = "starting";
 
-    const { shell, shellArgs } = terminalSettings();
+    const { shell, shellArgs, sshIntegration } = terminalSettings();
     spawnPty({
       cwd: this.currentCwd,
       shell: shell || undefined,
       shellArgs,
+      sshIntegration,
       cols: this.term.cols,
       rows: this.term.rows,
       onData: (bytes) => this.receive(bytes),

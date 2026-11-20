@@ -38,6 +38,7 @@ pub fn pty_spawn(
     cwd: Option<String>,
     shell: Option<String>,
     shell_args: Option<Vec<String>>,
+    ssh_integration: Option<bool>,
     on_data: Channel<InvokeResponseBody>,
     on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
@@ -58,6 +59,7 @@ pub fn pty_spawn(
                     args: shell_args.unwrap_or_default(),
                 })
                 .as_ref(),
+            ssh_integration.unwrap_or(true),
         ),
         cols,
         rows,
