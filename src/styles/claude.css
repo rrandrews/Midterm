@@ -843,6 +843,35 @@
 .cc-notice.is-error .cc-notice-text {
   color: var(--color-err);
 }
+/* A side question (/btw): set off by a dashed rule, since it is not part of the conversation. */
+.cc-aside-body {
+  min-width: 0;
+  margin: 2px 0 4px;
+  padding: 2px 0 2px 10px;
+  border-left: 1px dashed var(--color-line-strong);
+}
+.cc-aside-question {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 3px;
+  color: var(--color-fg-soft);
+  overflow-wrap: anywhere;
+}
+.cc-aside-tag {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  color: var(--color-fg-faint);
+}
+.cc-aside-wait,
+.cc-aside-error {
+  font-size: var(--text-meta);
+  color: var(--color-fg-dim);
+}
+.cc-aside-error {
+  color: var(--color-warn);
+}
 .cc-turn-end {
   margin: 1px 0 4px;
   padding-left: var(--cc-rail);
@@ -1342,6 +1371,9 @@
   font-family: var(--font-mono);
   color: var(--color-fg-bright);
 }
+.cc-slash-name.is-option {
+  font-family: var(--font-sans);
+}
 .cc-slash-hint {
   flex: none;
   font-family: var(--font-mono);
@@ -1353,6 +1385,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--color-fg-dim);
+}
+.cc-slash-current {
+  margin-left: auto;
+  color: var(--color-accent);
+}
+.cc-slash-loading {
+  padding: 4px 8px;
+  font-size: var(--text-meta);
+  color: var(--color-fg-faint);
 }
 
 /* Menus opened from the composer bar. */
@@ -1437,6 +1478,10 @@
   border: 1px solid var(--color-line);
   border-radius: 6px;
   text-align: left;
+}
+.cc-starter > .cc-mono {
+  flex: none;
+  white-space: nowrap;
 }
 .cc-starter:hover {
   border-color: var(--color-line-strong);

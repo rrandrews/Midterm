@@ -14,9 +14,9 @@ import {
 } from "lucide-react";
 import { type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "../../components/ui/Menu";
+import { type CommandOption, commandList, findPaneCommand, hasFullList, isPaneCommand, type PaneCommand, rememberCommands } from "../commands";
 import type { EffortLevel, ImageAttachment, ModelInfo, PermissionMode, SlashCommand } from "../protocol";
-import { bypassAllowed, getDraft, getSession, interrupt, runningTasks, sendMessage, setDraft, setEffort, setModel, setPanel, setPermissionMode, useSession } from "../store";
-import type { ClaudeSession } from "../types";
+import { bypassAllowed, getDraft, getSession, interrupt, runningTasks, sendMessage, setDraft, setEffort, setModel, setPanel, setPermissionMode, useSession, warmUp } from "../store";
 import { contextPercent, EFFORT_LABELS, FALLBACK_MODELS, levelOf, MODE_LABELS, modeCycle, modelLabel, nextMode } from "./format";
 import { allowByEnter } from "./PermissionPrompt";
 
@@ -28,20 +28,6 @@ import { allowByEnter } from "./PermissionPrompt";
  * messages. `/` at the start opens command completion above the box.
  */
 
-/** Built-in commands offered before the session reports its own. */
-const FALLBACK_COMMANDS: SlashCommand[] = [
-  { name: "init", description: "Initialize a CLAUDE.md file with codebase documentation", argumentHint: "" },
-  { name: "review", description: "Review a pull request", argumentHint: "" },
-  { name: "compact", description: "Clear history but keep a summary in context", argumentHint: "[instructions]" },
-  { name: "context", description: "Show current context usage", argumentHint: "" },
-  { name: "cost", description: "Show the total cost and duration of the current session", argumentHint: "" },
-  { name: "security-review", description: "Complete a security review of the pending changes", argumentHint: "" },
-];
-
-/** The commands the session offers (or the built-in fallback before it starts). */
-export function sessionCommands(session: Pick<ClaudeSession, "init"> | undefined): SlashCommand[] {
-  return session?.init?.commands.length ? session.init.commands : FALLBACK_COMMANDS;
-}
 
 const MODE_ICONS: Record<PermissionMode, typeof Shield> = {
   default: Shield,
@@ -73,7 +59,15 @@ export function insertIntoComposer(sessionKey: string, text: string): void {
   inserters.get(sessionKey)?.(text);
 }
 
-function rank(commands: SlashCommand[], query: string): SlashCommand[] {
+/** Options whose label or value starts with the query, then those that contain it. */
+function rankOptions(options: CommandOption[], query: string): CommandOption[] {
+  const q = query.trim().toLowerCase();
+  const has = (option: CommandOption, test: (text: string) => boolean) => test(option.label.toLowerCase()) || test(option.value.toLowerCase());
+  const starts = options.filter((option) => has(option, (text) => text.startsWith(q)));
+  return [...starts, ...options.filter((option) => !starts.includes(option) && has(option, (text) => text.includes(q)))];
+}
+
+function rank<T extends SlashCommand>(commands: T[], query: string): T[] {
   const q = query.toLowerCase();
   const starts = commands.filter((command) => command.name.toLowerCase().startsWith(q) || command.aliases?.some((alias) => alias.toLowerCase().startsWith(q)));
   const contains = q ? commands.filter((command) => !starts.includes(command) && command.name.toLowerCase().includes(q)) : [];
@@ -145,6 +139,8 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
   const mode = useSession(sessionKey, (session) => session?.permissionMode ?? "default");
   const canBypass = useSession(sessionKey, (session) => (session ? bypassAllowed(session) : false));
   const init = useSession(sessionKey, (session) => session?.init);
+  const cwd = useSession(sessionKey, (session) => session?.cwd ?? "");
+  const choice = useSession(sessionKey, (session) => `${session?.model ?? ""}|${session?.effort ?? ""}`);
   const agents = useSession(sessionKey, (session) => (session ? runningTasks(session) : 0));
   const percent = useSession(sessionKey, (session) => contextPercent(session?.contextTokens, session?.context?.maxTokens || session?.contextWindow));
   // The draft outlives the component (tab switches): read on mount, saved as it changes.
@@ -176,17 +172,65 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
     };
   }, [sessionKey, inputRef]);
 
+  // `/na…`: commands. `/model so…`: the argument's choices, for a pane command that has them.
   const slash = /^\/(\S*)$/.exec(text);
-  const matches = useMemo(() => (slash ? rank(sessionCommands({ init }), slash[1]).slice(0, 50) : []), [slash?.[1], init]);
-  const menuOpen = Boolean(slash) && !menuClosed && matches.length > 0;
-  const active = Math.min(selected, Math.max(0, matches.length - 1));
+  const argument = /^\/(\S+) ([^\n]*)$/.exec(text);
+  const optionsFor = argument ? findPaneCommand(`/${argument[1]}`)?.command : undefined;
+  const commands = useMemo(() => commandList({ init, cwd }), [init, cwd]);
+  const matches = useMemo(() => (slash ? rank(commands, slash[1]).slice(0, 300) : []), [slash?.[1], commands]);
+  const options = useMemo(() => {
+    const session = getSession(sessionKey);
+    return optionsFor?.options && session && argument ? rankOptions(optionsFor.options(session), argument[2]) : [];
+  }, [optionsFor, argument?.[2], sessionKey, init, choice]);
+  const count = slash ? matches.length : options.length;
+  const fullList = hasFullList({ init, cwd });
+  const menuOpen = !menuClosed && (slash ? matches.length > 0 : options.length > 0);
+  const active = Math.min(selected, Math.max(0, count - 1));
 
-  useEffect(() => setSelected(0), [slash?.[1]]);
+  useEffect(() => setSelected(0), [slash?.[1], argument?.[2]]);
+  // The CLI's own list (skills, plugin commands) comes from its process: start it when the menu opens.
+  useEffect(() => {
+    if (slash) warmUp(sessionKey);
+  }, [Boolean(slash), sessionKey]);
+  useEffect(() => {
+    if (init?.commands.length) rememberCommands(cwd, init.commands);
+  }, [init?.commands, cwd]);
   useEffect(() => {
     list.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
+  /** Runs a command the pane answers itself; `false` when `value` is not one. */
+  const runPaneCommand = (value: string): boolean => {
+    const found = findPaneCommand(value);
+    if (!found) return false;
+    // While a restored transcript loads, commands wait like messages (the text stays).
+    if (loading) return true;
+    const { command, args } = found;
+    if (command.options && !args.trim()) {
+      // Bare `/model`: list the choices.
+      setText(`/${command.name} `);
+      setMenuClosed(false);
+      return true;
+    }
+    runCommand(command, args, value);
+    return true;
+  };
+
+  const runCommand = (command: PaneCommand, args: string, typed: string) => {
+    setText("");
+    // Cleared now, not by the effect after render: a command that replaces the session (/clear) would carry it over.
+    setDraft(sessionKey, { text: "", images });
+    history.current = undefined;
+    void Promise.resolve(
+      command.run(sessionKey, args, {
+        send: (message) => send(message),
+        restore: () => setText((current) => (current === "" ? typed : current)),
+      }),
+    );
+  };
+
   const send = (value = text) => {
+    if (runPaneCommand(value)) return;
     // While a restored transcript loads nothing is sent: the draft stays (the placeholder says why).
     if ((!value.trim() && images.length === 0) || loading) return;
     const sent = images;
@@ -202,13 +246,21 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
     history.current = undefined;
   };
 
-  const pick = (command: SlashCommand, run: boolean) => {
+  const pick = (command: SlashCommand | PaneCommand, run: boolean) => {
     const value = `/${command.name}${command.argumentHint || !run ? " " : ""}`;
-    if (run && !command.argumentHint) send(value.trim());
+    if (isPaneCommand(command) && command.options) {
+      setText(`/${command.name} `);
+      setMenuClosed(false);
+    } else if (run && !command.argumentHint) send(value.trim());
     else {
       setText(value);
       setMenuClosed(true);
     }
+  };
+
+  const pickOption = (option: CommandOption) => {
+    if (!optionsFor || loading) return;
+    runCommand(optionsFor, option.value, `/${optionsFor.name} ${option.value}`);
   };
 
   const userTexts = () => (getSession(sessionKey)?.items ?? []).flatMap((item) => (item.kind === "user" && item.text ? [item.text] : []));
@@ -231,17 +283,19 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
     if (menuOpen) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        setSelected((active + (event.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length);
+        setSelected((active + (event.key === "ArrowDown" ? 1 : count - 1)) % count);
         return;
       }
       if (event.key === "Tab" && !event.shiftKey) {
         event.preventDefault();
-        pick(matches[active], false);
+        if (slash) pick(matches[active], false);
+        else setText(`/${argument?.[1]} ${options[active].value}`);
         return;
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        pick(matches[active], true);
+        if (slash) pick(matches[active], true);
+        else pickOption(options[active]);
         return;
       }
       if (event.key === "Escape") {
@@ -298,24 +352,44 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
     <div className="cc-composer-wrap">
       {menuOpen && (
         <div ref={list} className="cc-slash" role="listbox" aria-label="Commands">
-          {matches.map((command, index) => (
-            <div
-              key={`${command.name}:${index}`}
-              data-index={index}
-              role="option"
-              aria-selected={index === active}
-              className={`cc-slash-item${index === active ? " is-active" : ""}`}
-              onMouseEnter={() => setSelected(index)}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                pick(command, true);
-              }}
-            >
-              <span className="cc-slash-name">/{command.name}</span>
-              {command.argumentHint && <span className="cc-slash-hint">{command.argumentHint}</span>}
-              <span className="cc-slash-desc">{command.description}</span>
-            </div>
-          ))}
+          {slash
+            ? matches.map((command, index) => (
+                <div
+                  key={`${command.name}:${index}`}
+                  data-index={index}
+                  role="option"
+                  aria-selected={index === active}
+                  className={`cc-slash-item${index === active ? " is-active" : ""}`}
+                  onMouseEnter={() => setSelected(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    pick(command, true);
+                  }}
+                >
+                  <span className="cc-slash-name">/{command.name}</span>
+                  {command.argumentHint && <span className="cc-slash-hint">{command.argumentHint}</span>}
+                  <span className="cc-slash-desc">{command.description}</span>
+                </div>
+              ))
+            : options.map((option, index) => (
+                <div
+                  key={option.value}
+                  data-index={index}
+                  role="option"
+                  aria-selected={index === active}
+                  className={`cc-slash-item${index === active ? " is-active" : ""}`}
+                  onMouseEnter={() => setSelected(index)}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    pickOption(option);
+                  }}
+                >
+                  <span className="cc-slash-name is-option">{option.label}</span>
+                  {option.label.toLowerCase() !== option.value.toLowerCase() && <span className="cc-slash-hint">{option.value}</span>}
+                  {option.current && <span className="cc-slash-desc cc-slash-current">current</span>}
+                </div>
+              ))}
+          {slash && !fullList && status === "starting" && <div className="cc-slash-loading">Loading Claude Code's commands…</div>}
         </div>
       )}
       <div

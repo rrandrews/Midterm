@@ -151,13 +151,19 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
   ⇧⏎ new line, Esc interrupts, ⇧⇥ cycles the permission mode, ↑ in an empty
   box recalls the last message. `/` at the start opens command
   autocomplete above the box (name in mono, argument hint `fg-faint`,
-  description `fg-dim`; ↑↓ ⏎ ⇥). Pasted images attach as thumbnails. The
+  description `fg-dim`; ↑↓ ⏎ ⇥); see **Slash commands**. A command with
+  choices (`/model`, `/effort`) lists them after `/name ` (label in the UI
+  font, value `fg-faint`, "current" in `accent`). Pasted images attach as
+  thumbnails. The
   bar below: attach, commands, the mode chip (icon + label; bypass in
   `err`, plan in `info`, accept edits in `ok`), model chip (names of
   `init.models`), effort chip (gauge + level, "Auto" for the model default;
   the model's `supportedEffortLevels`, or low…max before init; hidden only
   when the model has `supportsEffort: false`), running agents chip, then the
   context percentage and Send / Stop (Stop is an `err` square).
+- **Side questions** (`/btw`): an aside in the rail, set off by a dashed
+  left rule: a `btw` tag (mono, `fg-faint`), the question, then the answer
+  (Markdown) or "Answering…"; hollow dot, pulsing while it waits.
 - **To-dos**: the latest TodoWrite, pinned above the composer as one line
   ("3/7 · Running the test suite") that expands to the checklist.
 - **Side panels**: a drawer on the right of the pane (320px, `popover`
@@ -210,6 +216,47 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
 - **Empty state**: the folder, a line of what Claude Code can do here, and
   three of the session's slash commands as starters.
 
+## Slash commands
+
+`src/claude/commands.ts` (`commands.test.ts`). The menu lists the pane's
+own commands, then the CLI's (`init.commands`, updated by
+`commands_changed`): built-ins such as `/doctor` and `/compact`, every
+skill and plugin command. Those are sent as messages. Names starting with
+`__` are the CLI's internal ones and are hidden.
+
+- **Before the first message**: opening the menu starts the session's
+  process (`warmUp`), so the CLI's list arrives in a second or two ("Loading
+  Claude Code's commands…" until then). The last list per folder is kept
+  (`rememberCommands`), so a new pane in that folder shows it at once.
+  A process started early has a session id but no transcript until the
+  first message, so the id is saved (`saveSessionId`) and resumed only
+  once a user message exists. Changing the folder before the first message
+  closes it.
+- **The pane's commands** (they win over the CLI's of the same name, to
+  keep chips and panels in step):
+  - `/btw <question>`: a side question (`session.sideQuestion`, the SDK
+    Query's untyped `askSideQuestion`, the same `side_question` control
+    request the VS Code extension uses). Answered from the conversation with
+    no tools, allowed during a turn, never added to the conversation.
+  - `/plan [prompt]` (plan mode, then the prompt), `/model [model]`,
+    `/effort [level|auto]`.
+  - Panels: `/context`, `/usage` (`/cost`), `/agents`, `/mcp` (Plugins →
+    MCP), `/plugin` (`/plugins`, `/marketplace`), `/config` (`/settings`,
+    `/permissions`, `/allowed-tools`, `/memory`), `/resume` (`/history`).
+  - `/clear` (`/new`, `/reset`): New session, asking first like the header.
+  - `/fork` (`/branch`): `sessions.fork` (the SDK's `forkSession`) copies
+    the conversation and the pane resumes the copy, titled "… (fork)"; the
+    original stays in History.
+  - `/status` (version, folder, session, model, effort, mode, account, MCP
+    servers), `/copy` (the last answer), `/export [file]` (the transcript
+    as Markdown, through a save dialog), `/bug` (`/feedback`, the GitHub
+    issues page), `/login` (`/logout`: says to run `claude /login` in a
+    terminal pane; sign-in is shared with the CLI).
+- **Voice**: not available. Claude Code's voice dictation lives in the
+  CLI's interactive UI, and the VS Code extension has its own (a native
+  audio module streaming to Anthropic's speech endpoint); neither is part
+  of the Agent SDK.
+
 ## Webview internals
 
 - **Reducer** (`reduce.ts`, pure, `reduce.test.ts`): `reduce(session, message, now)`.
@@ -246,7 +293,8 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
 - **Store** (`store.ts`): a pane holds its session through
   `acquirePaneSession(paneId, data)` (a `createPaneState`; disposing closes
   the process). New session / resume give the pane a new session key.
-  Messages are applied once per animation frame. The plugin sets
+  Messages are applied once per animation frame, or after 100 ms when
+  no frame comes (WebKit pauses frames in hidden windows). The plugin sets
   `setPaneDataWriter` so `sessionId`, `model`, `effort`, `permissionMode`
   and `cwd` are saved to the pane data. Mode, model and effort changes
   show at once but are saved only once the session acknowledged them

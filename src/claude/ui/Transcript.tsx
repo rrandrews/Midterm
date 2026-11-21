@@ -79,6 +79,28 @@ function Notice({ item }: { item: Item<"notice"> }) {
   );
 }
 
+/** A side question (`/btw`): its answer stays out of the conversation, so it is set apart from the rail's answers. */
+function Aside({ item }: { item: Item<"aside"> }) {
+  return (
+    <div className="cc-item cc-aside" data-dot={item.pending ? "running" : item.error ? "warn" : "hollow"} title="A side question: Claude does not see it in later turns">
+      <span className="cc-dot" aria-hidden="true" />
+      <div className="cc-aside-body">
+        <div className="cc-aside-question">
+          <span className="cc-aside-tag">btw</span>
+          <span>{item.question}</span>
+        </div>
+        {item.pending ? (
+          <div className="cc-aside-wait">Answering…</div>
+        ) : item.error ? (
+          <div className="cc-aside-error">{item.error}</div>
+        ) : (
+          item.answer && <Markdown text={item.answer} compact />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CommandOutput({ item }: { item: Item<"command"> }) {
   return (
     <div className="cc-item" data-dot="faint">
@@ -110,6 +132,8 @@ function RailItem({ sessionKey, item, compact, showThinking }: { sessionKey: str
       return <Notice item={item} />;
     case "command":
       return <CommandOutput item={item} />;
+    case "aside":
+      return <Aside item={item} />;
     default:
       return null;
   }

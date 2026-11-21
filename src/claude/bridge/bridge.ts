@@ -8,7 +8,7 @@ import { memoryFiles, readConfig, writeConfig } from "./config";
 import { BridgeFailure, toBridgeError } from "./errors";
 import { listMarketplaces, listPlugins, pluginArgs, runApproved, runMutation } from "./plugins";
 import type { ExecFile } from "./plugins";
-import { Sessions, childEnv, listPastSessions, pastSessionMessages } from "./session";
+import { Sessions, childEnv, forkPastSession, listPastSessions, pastSessionMessages } from "./session";
 
 export type BridgeDeps = {
   write: (line: BridgeLine) => void;
@@ -50,8 +50,10 @@ export function createBridge(deps: BridgeDeps) {
     "session.reloadPlugins": (p) => sessions.reloadPlugins(p.session),
     "session.capabilities": (p) => sessions.capabilities(p.session),
     "session.stopTask": async (p) => (await sessions.stopTask(p), {}),
+    "session.sideQuestion": (p) => sessions.sideQuestion(p),
     "sessions.list": (p) => listPastSessions(p),
     "sessions.messages": (p) => pastSessionMessages(p),
+    "sessions.fork": (p) => forkPastSession(p),
     "plugins.list": (p: BridgeParams<"plugins.list">) => listPlugins(cli(), p.cwd, !!p.available),
     "plugins.install": (p) => runApproved(cli(), p.cwd, pluginArgs.install(p.id, p.scope, p.acceptCommand)),
     "plugins.uninstall": mutate((p) => pluginArgs.uninstall(p.id, p.scope)),

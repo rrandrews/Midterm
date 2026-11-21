@@ -44,6 +44,11 @@ const coverChanges = (sessionKey: string, revision?: number) =>
 const patch = <K extends keyof PanelState>(key: K, id: string, value: PanelState[K][string]) =>
   usePanelState.setState((state) => ({ [key]: { ...state[key], [id]: value } }) as Partial<PanelState>);
 
+/** Picks the view the panel shows for a session (the /mcp and /plugin commands). */
+export function showPluginsView(sessionKey: string, view: View): void {
+  patch("view", sessionKey, view);
+}
+
 const SCOPES: { scope: PluginScope; label: string; hint: string }[] = [
   { scope: "user", label: "User", hint: "all your projects" },
   { scope: "project", label: "Project", hint: "shared with the repo" },

@@ -270,3 +270,94 @@ describe("restored transcripts", () => {
     expect(sent.map((request) => request.method).filter((method) => method !== "session.contextUsage")).toEqual(["sessions.messages", "session.start", "session.send"]);
   });
 });
+
+describe("a process started early (for the command list)", () => {
+  it("starts no second process and saves its id only once a message is sent", async () => {
+    const key = newPane();
+    handler = async (method) => (method === "session.start" ? INIT : {});
+    store.warmUp(key);
+    store.warmUp(key);
+    await vi.waitFor(() => expect(getSession(key)?.status).toBe("idle"));
+    expect(sent.filter((r) => r.method === "session.start")).toHaveLength(1);
+    expect(saved).toEqual([]);
+    await sendMessage(key, "hello");
+    expect(saved).toEqual([{ sessionId: "sess-1" }]);
+    expect(sent.filter((r) => r.method === "session.start")).toHaveLength(1);
+  });
+
+  it("is replaced by a fresh session when the folder changes before the first message", async () => {
+    const paneId = `pane-${++pane}`;
+    acquirePaneSession(paneId, { cwd: "/repo" });
+    const key = paneSessionKey(paneId) as string;
+    handler = async (method) => (method === "session.start" ? INIT : {});
+    store.warmUp(key);
+    await vi.waitFor(() => expect(getSession(key)?.status).toBe("idle"));
+    store.setCwd(key, "/other");
+    expect(sent.some((r) => r.method === "session.close" && r.params.session === key)).toBe(true);
+    const next = paneSessionKey(paneId) as string;
+    expect(next).not.toBe(key);
+    expect(getSession(next)).toMatchObject({ cwd: "/other", status: "new", sessionId: undefined });
+    await sendMessage(next, "hi");
+    const starts = sent.filter((r) => r.method === "session.start");
+    expect(starts[1].params).toMatchObject({ session: next, cwd: "/other", resume: undefined });
+  });
+
+  it("is not resumed after it ends before any message", async () => {
+    const key = newPane();
+    handler = async (method) => (method === "session.start" ? INIT : {});
+    store.warmUp(key);
+    await vi.waitFor(() => expect(getSession(key)?.status).toBe("idle"));
+    const listener = [...onSessionEvent.mock.calls].reverse().find((call) => call[0] === key)?.[1] as (event: unknown) => void;
+    listener({ event: "sessionEnded", session: key, error: "gone" });
+    expect(getSession(key)?.sessionId).toBe("sess-1");
+    await sendMessage(key, "hi");
+    const starts = sent.filter((r) => r.method === "session.start");
+    expect(starts[1].params.resume).toBeUndefined();
+  });
+});
+
+describe("side questions", () => {
+  it("show the question, then its answer, outside the conversation", async () => {
+    const key = newPane();
+    const answer = deferred<unknown>();
+    handler = async (method) => (method === "session.start" ? INIT : method === "session.sideQuestion" ? answer.promise : {});
+    const asking = store.askAside(key, "  what is this repo?  ");
+    await vi.waitFor(() => expect(sent.some((r) => r.method === "session.sideQuestion")).toBe(true));
+    expect(getSession(key)?.items).toEqual([expect.objectContaining({ kind: "aside", question: "what is this repo?", pending: true })]);
+    answer.resolve({ answer: "A terminal.", synthetic: false });
+    await asking;
+    expect(getSession(key)?.items).toEqual([expect.objectContaining({ kind: "aside", pending: false, answer: "A terminal." })]);
+    expect(saved).toEqual([]);
+  });
+
+  it("say so when there is no answer", async () => {
+    const key = newPane();
+    handler = async (method) => (method === "session.start" ? INIT : method === "session.sideQuestion" ? { answer: null, synthetic: false } : {});
+    await store.askAside(key, "why?");
+    expect(getSession(key)?.items[0]).toMatchObject({ kind: "aside", pending: false, error: expect.stringContaining("No answer") });
+  });
+});
+
+describe("fork", () => {
+  it("resumes a copy of the conversation in the pane", async () => {
+    const paneId = `pane-${++pane}`;
+    acquirePaneSession(paneId, { cwd: "/repo", sessionId: "sess-1" });
+    const key = paneSessionKey(paneId) as string;
+    handler = async (method) => (method === "sessions.fork" ? { sessionId: "sess-2" } : method === "sessions.messages" ? [] : {});
+    await vi.waitFor(() => expect(getSession(key)?.loadingTranscript).toBeUndefined());
+    updateSession(key, (s) => ({ items: [...s.items, { kind: "user", id: "u1", text: "hi" }], title: "Hi" }));
+    saved.length = 0;
+    expect(await store.forkConversation(key)).toBe(true);
+    expect(sent.find((r) => r.method === "sessions.fork")?.params).toEqual({ cwd: "/repo", sessionId: "sess-1", title: "Hi (fork)" });
+    const next = paneSessionKey(paneId) as string;
+    expect(next).not.toBe(key);
+    expect(getSession(next)).toMatchObject({ sessionId: "sess-2", title: "Hi (fork)" });
+    expect(saved).toEqual([{ sessionId: "sess-2" }]);
+  });
+
+  it("needs a conversation first", async () => {
+    const key = newPane();
+    expect(await store.forkConversation(key)).toBe(false);
+    expect(sent).toEqual([]);
+  });
+});

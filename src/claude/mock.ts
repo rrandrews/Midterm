@@ -1201,6 +1201,9 @@ export function openMockBridge(onLine: (line: string) => void): { send(line: str
 
   const capabilities = () => ({ commands: COMMANDS, models: MODELS, agents: AGENTS });
 
+  /** Fork id → the session it copies. */
+  const forks = new Map<string, string>();
+
   async function handle(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case "hello":
@@ -1310,6 +1313,19 @@ export function openMockBridge(onLine: (line: string) => void): { send(line: str
         getSession(p.session).tasks.get(p.taskId)?.stop();
         return {};
       }
+      case "session.sideQuestion": {
+        const p = params as BridgeParams<"session.sideQuestion">;
+        getSession(p.session);
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        return { answer: `A side answer to “${p.question.trim()}”. It is not added to the conversation, so the next turn will not see it.`, synthetic: false };
+      }
+      case "sessions.fork": {
+        // The copy reads as its source.
+        const p = params as BridgeParams<"sessions.fork">;
+        const id = crypto.randomUUID();
+        forks.set(id, forks.get(p.sessionId) ?? p.sessionId);
+        return { sessionId: id };
+      }
       case "session.reloadPlugins": {
         getSession((params as BridgeParams<"session.reloadPlugins">).session);
         const result: ReloadPluginsResult = {
@@ -1328,7 +1344,7 @@ export function openMockBridge(onLine: (line: string) => void): { send(line: str
         const r = mockRequest(method, params);
         if (r !== undefined) return r;
         const p = params as BridgeParams<"sessions.messages">;
-        return pastTranscript(p.sessionId, p.cwd);
+        return pastTranscript(forks.get(p.sessionId) ?? p.sessionId, p.cwd);
       }
       default: {
         if (method.startsWith("session.")) throw new BridgeFail("Unknown method", "invalid");

@@ -4,7 +4,7 @@ import { pluginSettings } from "../plugins/settings";
 import { CLAUDE_KIND, onBridgeEvent, onSessionEvent, request } from "./client";
 import type { BridgeEvent, EffortLevel, ImageAttachment, PermissionMode, PermissionResult, SDKMessage } from "./protocol";
 import { createSession, endSession, fromSessionMessages, reduce } from "./reduce";
-import type { ClaudeSession, SidePanel } from "./types";
+import type { ClaudeSession, SidePanel, TranscriptItem } from "./types";
 
 /*
  * Claude Code sessions, one per pane (keyed by a session key), and the
@@ -78,6 +78,23 @@ function persist(key: string, patch: Partial<ClaudePaneData>): void {
   if (session) writePaneData(session.paneId, patch);
 }
 
+/** The SDK session id last saved in each session's pane data. */
+const savedIds = new Map<string, string | undefined>();
+/**
+ * Sessions with a conversation on disk: restored or resumed ones, and new
+ * ones once a message has gone out. A process started early (to list
+ * commands) has an id before that, but the CLI writes no transcript until
+ * the first message, so that id can be neither saved nor resumed.
+ */
+const resumable = new Set<string>();
+
+function saveSessionId(key: string): void {
+  const session = getSession(key);
+  if (!session?.sessionId || !resumable.has(key) || savedIds.get(key) === session.sessionId) return;
+  savedIds.set(key, session.sessionId);
+  persist(key, { sessionId: session.sessionId });
+}
+
 let generation = 0;
 const newKey = (paneId: string) => `${paneId}~${++generation}`;
 
@@ -104,6 +121,8 @@ const paneSessions = createPaneState<PaneSession>({
   dispose: (held) => {
     void closeProcess(held.key);
     drafts.delete(held.key);
+    savedIds.delete(held.key);
+    resumable.delete(held.key);
     settingStates.delete(held.key);
     useClaudeStore.setState((state) => {
       const { [held.key]: _gone, ...sessions } = state.sessions;
@@ -119,6 +138,8 @@ export function acquirePaneSession(paneId: string, data: ClaudePaneData): () => 
     const key = newKey(paneId);
     const session = createSession({ key, paneId, cwd: data.cwd, sessionId: data.sessionId, model: data.model, effort: data.effort, permissionMode: data.permissionMode });
     useClaudeStore.setState((state) => ({ sessions: { ...state.sessions, [key]: session }, panes: { ...state.panes, [paneId]: key } }));
+    savedIds.set(key, data.sessionId);
+    if (data.sessionId) resumable.add(key);
     // A restored pane shows the transcript it will resume.
     if (data.sessionId) void loadTranscript(key, data.sessionId);
     return { paneId, key };
@@ -144,6 +165,10 @@ function replaceSession(key: string, seed: { sessionId?: string }): string | und
   const draft = drafts.get(key);
   drafts.delete(key);
   settingStates.delete(key);
+  savedIds.delete(key);
+  resumable.delete(key);
+  savedIds.set(next, seed.sessionId);
+  if (seed.sessionId) resumable.add(next);
   if (draft) drafts.set(next, draft);
   useClaudeStore.setState((state) => {
     const { [key]: _gone, ...sessions } = state.sessions;
@@ -194,7 +219,6 @@ function flush(key: string): void {
   if (!entry || entry.queue.length === 0) return;
   const messages = entry.queue.splice(0);
   let ended = false;
-  const before = getSession(key);
   updateSession(key, (session) => {
     let next = session;
     const now = Date.now();
@@ -204,9 +228,8 @@ function flush(key: string): void {
     }
     return next;
   });
-  const session = getSession(key);
   // Saved only when it changed. Settings the CLI reports (mode, model) are never saved: only the user's choices are.
-  if (session?.sessionId && session.sessionId !== before?.sessionId) persist(key, { sessionId: session.sessionId });
+  saveSessionId(key);
   if (ended) void refreshContext(key, "summary");
 }
 
@@ -286,7 +309,8 @@ function ensureProcess(key: string): Promise<boolean> {
   entry.started = request("session.start", {
     session: key,
     cwd: session.cwd,
-    resume: session.sessionId,
+    // Not the id of a process started early that ended before any message: it has no transcript to resume.
+    resume: resumable.has(key) ? session.sessionId : undefined,
     model: session.model,
     effort: session.effort ?? undefined,
     permissionMode,
@@ -294,15 +318,13 @@ function ensureProcess(key: string): Promise<boolean> {
   }).then(
     (init) => {
       if (live.get(key) !== entry) return false;
-      const knownId = getSession(key)?.sessionId;
       updateSession(key, (current) => ({
         init,
         sessionId: init.sessionId ?? current.sessionId,
         permissionMode: init.permissionMode ?? current.permissionMode,
         status: current.status === "starting" ? "idle" : current.status,
       }));
-      const sessionId = getSession(key)?.sessionId;
-      if (sessionId && sessionId !== knownId) persist(key, { sessionId });
+      saveSessionId(key);
       void refreshContext(key, "summary");
       return true;
     },
@@ -327,7 +349,7 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function addNotice(key: string, text: string, tone: "info" | "warn" | "error" = "error"): void {
+export function addNotice(key: string, text: string, tone: "info" | "warn" | "error" = "error"): void {
   updateSession(key, (session) => ({ items: [...session.items, { kind: "notice", id: `local:${Date.now()}:${Math.random()}`, tone, text }] }));
 }
 
@@ -366,6 +388,8 @@ export async function sendMessage(key: string, text: string, images?: ImageAttac
   if (!queued) updateSession(key, (current) => ({ status: "running", turnStartedAt: current.turnStartedAt ?? Date.now() }));
   try {
     await request("session.send", { session: key, text, images: images?.length ? images : undefined, uuid });
+    resumable.add(key);
+    saveSessionId(key);
   } catch (error) {
     updateSession(key, (current) => ({ status: current.status === "running" && !queued ? "idle" : current.status, turnStartedAt: undefined }));
     addNotice(key, `Could not send: ${messageOf(error)}`);
@@ -531,11 +555,12 @@ export async function newSession(key: string): Promise<void> {
 }
 
 /** Replaces the pane's session with a past one (SDK session id), loading its transcript. */
-export async function resumeSession(key: string, sessionId: string): Promise<void> {
+export async function resumeSession(key: string, sessionId: string): Promise<string | undefined> {
   const next = replaceSession(key, { sessionId });
-  if (!next) return;
+  if (!next) return undefined;
   persist(next, { sessionId });
   await loadTranscript(next, sessionId);
+  return next;
 }
 
 /** Transcripts being loaded, by session key (a send waits for its session's). */
@@ -575,10 +600,85 @@ async function readTranscript(key: string, sessionId: string): Promise<void> {
 /** Changes the folder (only before the first message). */
 export function setCwd(key: string, cwd: string): void {
   const session = getSession(key);
-  if (!session || session.items.length > 0 || live.has(key)) return;
+  if (!session || session.items.length > 0) return;
   cwd = cwd.replace(/(.)\/+$/, "$1");
-  updateSession(key, { cwd });
-  persist(key, { cwd });
+  if (cwd === session.cwd) return;
+  // A process started early (for the command list) runs in the old folder: a fresh session (key) replaces it,
+  // so the old process's last events cannot reach the next one.
+  const target = live.has(key) ? replaceSession(key, {}) : key;
+  if (!target) return;
+  updateSession(target, { cwd });
+  persist(target, { cwd });
+}
+
+/**
+ * Starts the session's process ahead of the first message, so the command
+ * menu can list everything the CLI offers (skills, plugin commands). Not
+ * while a restored transcript loads: the process must start after it.
+ */
+export function warmUp(key: string): void {
+  const session = getSession(key);
+  if (!session || live.has(key) || session.loadingTranscript || loads.has(key) || session.status === "error") return;
+  void ensureProcess(key);
+}
+
+/**
+ * A side question (`/btw`): answered from the conversation so far without
+ * joining it. Shown as an aside in the transcript. Works during a turn.
+ */
+export async function askAside(key: string, question: string): Promise<void> {
+  const session = getSession(key);
+  if (!session || !question.trim() || session.loadingTranscript || loads.has(key)) return;
+  const id = `aside:${crypto.randomUUID()}`;
+  const patch = (change: Partial<Extract<TranscriptItem, { kind: "aside" }>>) =>
+    updateSession(key, (current) => ({ items: current.items.map((item) => (item.id === id && item.kind === "aside" ? { ...item, ...change } : item)) }));
+  updateSession(key, (current) => ({ items: [...current.items, { kind: "aside", id, question: question.trim(), pending: true }] }));
+  if (!(await ensureProcess(key))) {
+    patch({ pending: false, error: "Claude Code is not running." });
+    return;
+  }
+  try {
+    const { answer } = await request("session.sideQuestion", { session: key, question: question.trim() });
+    patch({ pending: false, answer: answer ?? undefined, error: answer ? undefined : "No answer. Try again, or ask in the conversation." });
+  } catch (error) {
+    patch({ pending: false, error: messageOf(error) });
+  }
+}
+
+/**
+ * Continues in a copy of this conversation (`/fork`): the original stays as
+ * it was, in History. Needs a saved conversation.
+ */
+export async function forkConversation(key: string): Promise<boolean> {
+  const session = getSession(key);
+  if (!session) return false;
+  if (!session.sessionId || !session.items.some((item) => item.kind === "user")) {
+    addNotice(key, "Nothing to fork yet: send a message first.", "info");
+    return false;
+  }
+  // Switching to the copy ends this process: not while it has work (checked again once the copy exists).
+  const busy = () => {
+    const work = sessionWork(key);
+    if (work) addNotice(key, "Wait for the turn and background agents to finish, or stop them, before forking.", "info");
+    return work !== undefined;
+  };
+  if (busy()) return false;
+  try {
+    const title = session.title ? `${session.title} (fork)` : undefined;
+    const { sessionId } = await request("sessions.fork", { cwd: session.cwd, sessionId: session.sessionId, title });
+    // The pane moved on (new session, another resume) while the copy was made: leave it.
+    if (paneSessionKey(session.paneId) !== key || busy()) return false;
+    const next = replaceSession(key, { sessionId });
+    if (!next) return false;
+    persist(next, { sessionId });
+    if (title) updateSession(next, { title });
+    await loadTranscript(next, sessionId);
+    if (getSession(next)) addNotice(next, "Forked: this is a copy of the conversation. The original is in History.", "info");
+    return true;
+  } catch (error) {
+    addNotice(key, `Could not fork: ${messageOf(error)}`);
+    return false;
+  }
 }
 
 /** Fetches `session.contextUsage` into `context` (no-op without a process). `summary` keeps the last full breakdown's details. */

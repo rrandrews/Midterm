@@ -8,12 +8,15 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
  * back to the web API.
  */
 
-export async function copyText(text: string): Promise<void> {
+/** Copies text; `false` (logged) when the clipboard refused it. */
+export async function copyText(text: string): Promise<boolean> {
   try {
     if (isTauri()) await writeText(text);
     else await navigator.clipboard.writeText(text);
+    return true;
   } catch (error) {
     console.error("Copying to the clipboard failed:", error);
+    return false;
   }
 }
 

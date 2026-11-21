@@ -3,7 +3,7 @@
  * mode. The SDK spawns the user's own `claude` (pathToClaudeCodeExecutable),
  * so settings, plugins, hooks and MCP servers are the real ones.
  */
-import { getSessionMessages, listSessions, query } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, getSessionMessages, listSessions, query } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentInfo, CanUseTool, Options, PermissionMode, PermissionResult, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeEvent, BridgeParams, BridgeResult, PermissionRequest, SessionInit, SessionKey } from "../protocol";
 import { BridgeFailure } from "./errors";
@@ -276,10 +276,30 @@ export class Sessions {
   async stopTask(p: BridgeParams<"session.stopTask">): Promise<void> {
     await this.get(p.session).q.stopTask(p.taskId);
   }
+
+  /**
+   * A side question (`/btw`): answered from the conversation so far by a
+   * one-off call with no tools, and not added to the conversation. Works
+   * while a turn runs. `askSideQuestion` is on the SDK's Query object (the
+   * VS Code extension's `/btw` uses it) but not in its public typings.
+   */
+  async sideQuestion(p: BridgeParams<"session.sideQuestion">): Promise<BridgeResult<"session.sideQuestion">> {
+    const q = this.get(p.session).q as Query & { askSideQuestion?: SideQuestion };
+    if (typeof q.askSideQuestion !== "function") throw new BridgeFailure("This version of the Agent SDK cannot ask side questions.", "other");
+    const answer = await q.askSideQuestion(p.question);
+    return { answer: answer?.response ?? null, synthetic: answer?.synthetic === true };
+  }
 }
+
+type SideQuestion = (question: string) => Promise<{ response: string; synthetic?: boolean } | null>;
 
 export function listPastSessions(p: BridgeParams<"sessions.list">): Promise<BridgeResult<"sessions.list">> {
   return listSessions({ dir: p.cwd, ...(p.limit ? { limit: p.limit } : {}) });
+}
+
+/** Copies a past session into a new one (`/fork`); the original is left as it was. */
+export function forkPastSession(p: BridgeParams<"sessions.fork">): Promise<BridgeResult<"sessions.fork">> {
+  return forkSession(p.sessionId, { dir: p.cwd, ...(p.title ? { title: p.title } : {}) });
 }
 
 export function pastSessionMessages(p: BridgeParams<"sessions.messages">): Promise<BridgeResult<"sessions.messages">> {

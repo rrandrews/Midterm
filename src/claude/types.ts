@@ -35,6 +35,8 @@ export type TranscriptItem =
   | { kind: "tool"; id: string; toolUseId: string }
   /** Status lines: compaction, API retries, hook output, errors, interrupts… */
   | { kind: "notice"; id: string; tone: "info" | "warn" | "error"; text: string }
+  /** A side question (`/btw`) and its answer: shown here, never part of the conversation. */
+  | { kind: "aside"; id: string; question: string; pending: boolean; answer?: string; error?: string }
   /** The output of a local slash command (/cost, /context, …). */
   | { kind: "command"; id: string; text: string }
   /** The end of a turn. */

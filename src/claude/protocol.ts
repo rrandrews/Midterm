@@ -166,11 +166,19 @@ export type BridgeMethods = {
   "session.capabilities": [{ session: SessionKey }, { commands: SlashCommand[]; models: ModelInfo[]; agents: AgentInfo[] }];
   /** Stops a background task or subagent (`task_id` from task events). */
   "session.stopTask": [{ session: SessionKey; taskId: string }, {}];
+  /**
+   * A side question (`/btw`): answered from the conversation so far, with no
+   * tools, and not added to it. Allowed while a turn runs. `answer` is null
+   * when Claude gave none; `synthetic` when the answer is a canned notice.
+   */
+  "session.sideQuestion": [{ session: SessionKey; question: string }, { answer: string | null; synthetic: boolean }];
 
   /** Past sessions of a folder, newest first. */
   "sessions.list": [{ cwd: string; limit?: number }, SDKSessionInfo[]];
   /** A past session's messages, for showing its transcript when resuming. */
   "sessions.messages": [{ cwd: string; sessionId: string }, SessionMessage[]];
+  /** Copies a past session into a new one (`/fork`) and returns its id. */
+  "sessions.fork": [{ cwd: string; sessionId: string; title?: string }, { sessionId: string }];
 
   /** Through `claude plugin list --available --json`. `available` only when asked (it is large). */
   "plugins.list": [{ cwd: string; available?: boolean }, { installed: InstalledPlugin[]; available: AvailablePlugin[] }];

@@ -8,7 +8,8 @@ import { startNewSession } from "./actions";
 import { acquirePaneSession, interrupt, setCwd, setPanel, useClaudeStore, useSession, type ClaudePaneData } from "../store";
 import type { TranscriptItem } from "../types";
 import { ClaudeMark } from "./ClaudeMark";
-import { Composer, insertIntoComposer, sessionCommands } from "./Composer";
+import { commandList } from "../commands";
+import { Composer, insertIntoComposer } from "./Composer";
 import { ContextStrip } from "./ContextStrip";
 import { formatElapsed } from "./format";
 import { Header } from "./Header";
@@ -34,7 +35,7 @@ const STARTERS = ["init", "review", "security-review", "context", "compact"];
 function EmptyState({ sessionKey }: { sessionKey: string }) {
   const cwd = useSession(sessionKey, (session) => session?.cwd ?? "");
   const init = useSession(sessionKey, (session) => session?.init);
-  const commands = sessionCommands({ init });
+  const commands = commandList({ init, cwd });
   const starters = [...STARTERS.flatMap((name) => commands.filter((command) => command.name === name)), ...commands].filter((command, index, all) => all.indexOf(command) === index).slice(0, 3);
   return (
     <div className="cc-empty">
