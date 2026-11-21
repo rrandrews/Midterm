@@ -260,7 +260,7 @@ A plugin is a folder with a manifest and an ES module:
 - Paths are plain relative paths (no `./`, `..` or absolute paths) and must
   exist.
 - The id may not be a built-in one (`terminal`, `block-terminal`,
-  `explorer`, `editor`, `viewer`, `theme-editor`, `agent`, `midterm`;
+  `explorer`, `editor`, `viewer`, `theme-editor`, `agent`, `claude-code`, `midterm`;
   `RESERVED_IDS` in `src-tauri/src/plugins/manifest.rs`).
 - `apiVersion` must be `1`.
 - The module's default export is the `PanePlugin`. Its `id` must match the

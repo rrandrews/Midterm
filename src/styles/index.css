@@ -5,6 +5,8 @@
 @import "./blocks.css";
 @import "./editor.css";
 @import "./agent.css";
+@import "./claude.css";
+@import "./claude-panels.css";
 
 /*
  * Design tokens. These defaults are Midterm Dark's resolved values; the active
