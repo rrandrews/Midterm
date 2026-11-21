@@ -31,6 +31,24 @@ describe("config", () => {
     });
   });
 
+  it("writes only over the expected baseline, and refuses a changed file", async () => {
+    const first = await writeConfig(cwd, "project", '{"a":1}', { exists: false, text: "" });
+    expect(first.text).toBe('{"a":1}');
+    // Someone else wrote meanwhile: a save against the old baseline is refused and leaves the file alone.
+    await expect(writeConfig(cwd, "project", '{"b":2}', { exists: false, text: "" })).rejects.toMatchObject({ code: "conflict" });
+    expect(readFileSync(first.path, "utf8")).toBe('{"a":1}');
+    // Without a baseline it overwrites on purpose.
+    await writeConfig(cwd, "project", '{"c":3}');
+    expect(readFileSync(first.path, "utf8")).toBe('{"c":3}');
+  });
+
+  it("serializes concurrent saves of one file, so only one of two from the same baseline wins", async () => {
+    const base = { exists: false, text: "" };
+    const results = await Promise.allSettled([writeConfig(cwd, "local", '{"x":1}', base), writeConfig(cwd, "local", '{"y":2}', base)]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(readFileSync(join(cwd, ".claude", "settings.local.json"), "utf8")).toBe('{"x":1}');
+  });
+
   it("writes atomically, creating directories, and reads back", async () => {
     const text = '{\n  "model": "opus"\n}\n';
     const w = await writeConfig(cwd, "local", text);

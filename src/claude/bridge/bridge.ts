@@ -38,7 +38,7 @@ export function createBridge(deps: BridgeDeps) {
     "session.send": (p) => (sessions.send(p), {}),
     "session.interrupt": async (p) => (await sessions.interrupt(p.session), {}),
     "session.close": (p) => (sessions.close(p.session), {}),
-    "session.permission": (p) => (sessions.permission(p), {}),
+    "session.permission": (p) => ({ settled: sessions.permission(p) }),
     "session.setPermissionMode": async (p) => (await sessions.setPermissionMode(p), {}),
     "session.setModel": async (p) => (await sessions.setModel(p), {}),
     "session.setEffort": async (p) => (await sessions.setEffort(p), {}),
@@ -63,7 +63,7 @@ export function createBridge(deps: BridgeDeps) {
     "marketplaces.remove": mutate((p) => pluginArgs.marketplaceRemove(p.name)),
     "marketplaces.update": mutate((p) => pluginArgs.marketplaceUpdate(p.name)),
     "config.read": (p) => readConfig(p.cwd, p.scope),
-    "config.write": (p) => writeConfig(p.cwd, p.scope, p.text),
+    "config.write": (p) => writeConfig(p.cwd, p.scope, p.text, p.expected),
     "config.memoryFiles": (p) => memoryFiles(p.cwd),
   };
 

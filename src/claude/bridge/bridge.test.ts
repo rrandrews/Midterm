@@ -281,7 +281,7 @@ describe("permissions", () => {
       request: { requestId: "r1", toolName: "Bash", input: { command: "echo hi" }, toolUseId: "tu", agentId: "ag", title: "T", defaultToNo: true, suppressAlwaysAllowRule: true },
     });
     const result = { behavior: "allow", updatedInput: { command: "echo yo" } };
-    await call("session.permission", { session: "a", requestId: "r1", result });
+    expect((await call("session.permission", { session: "a", requestId: "r1", result })).result).toEqual({ settled: true });
     expect(await p).toEqual(result);
   });
 
@@ -293,8 +293,8 @@ describe("permissions", () => {
     ac.abort();
     expect(await p).toMatchObject({ behavior: "deny" });
     expect(events("permissionCancelled")).toEqual([{ event: "permissionCancelled", session: "a", requestId: "r2" }]);
-    // a late answer is harmless
-    expect((await call("session.permission", { session: "a", requestId: "r2", result: { behavior: "allow" } })).result).toEqual({});
+    // a late answer is harmless, and says it did nothing
+    expect((await call("session.permission", { session: "a", requestId: "r2", result: { behavior: "allow" } })).result).toEqual({ settled: false });
   });
 
   it("denies pending prompts when the session closes", async () => {

@@ -36,7 +36,21 @@ export async function readConfig(cwd: string, scope: ConfigScope): Promise<Confi
   }
 }
 
-export async function writeConfig(cwd: string, scope: ConfigScope, text: string): Promise<ConfigFile> {
+/** Writes per file path, one at a time, so a baseline check and its write cannot interleave with another save. */
+const writing = new Map<string, Promise<unknown>>();
+
+export function writeConfig(cwd: string, scope: ConfigScope, text: string, expected?: { exists: boolean; text: string }): Promise<ConfigFile> {
+  const path = settingsPath(cwd, scope);
+  const previous = writing.get(path) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(() => writeNow(cwd, scope, text, expected));
+  writing.set(path, next);
+  void next.finally(() => {
+    if (writing.get(path) === next) writing.delete(path);
+  }).catch(() => {});
+  return next;
+}
+
+async function writeNow(cwd: string, scope: ConfigScope, text: string, expected?: { exists: boolean; text: string }): Promise<ConfigFile> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -47,6 +61,12 @@ export async function writeConfig(cwd: string, scope: ConfigScope, text: string)
     throw new BridgeFailure("Settings must be a JSON object", "invalid");
   }
   const path = settingsPath(cwd, scope);
+  if (expected) {
+    const current = await readConfig(cwd, scope);
+    if (current.exists !== expected.exists || current.text !== expected.text) {
+      throw new BridgeFailure("The file changed since it was loaded.", "conflict");
+    }
+  }
   await mkdir(dirname(path), { recursive: true });
   // Replace what a symlink points at, not the link; keep the existing file's mode.
   let target = path;

@@ -215,10 +215,12 @@ export class Sessions {
     this.get(p.session).input.push(buildUserMessage(p));
   }
 
-  permission(p: BridgeParams<"session.permission">): void {
+  /** Whether the prompt was still waiting; false when it was cancelled or answered meanwhile. */
+  permission(p: BridgeParams<"session.permission">): boolean {
     const settle = this.get(p.session).pending.get(p.requestId);
-    // Already settled (cancelled meanwhile): nothing to answer.
-    settle?.(p.result);
+    if (!settle) return false;
+    settle(p.result);
+    return true;
   }
 
   async interrupt(key: SessionKey): Promise<void> {

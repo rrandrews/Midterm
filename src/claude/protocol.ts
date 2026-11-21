@@ -147,7 +147,8 @@ export type BridgeMethods = {
   /** Ends the session and its process. Safe for an unknown key. */
   "session.close": [{ session: SessionKey }, {}];
   /** Answers a `permission` event. */
-  "session.permission": [{ session: SessionKey; requestId: string; result: PermissionResult }, {}];
+  /** `settled: false` when the prompt was already gone (cancelled or answered): the answer did nothing. */
+  "session.permission": [{ session: SessionKey; requestId: string; result: PermissionResult }, { settled: boolean }];
   "session.setPermissionMode": [{ session: SessionKey; mode: PermissionMode }, {}];
   /** `undefined` model: the default. */
   "session.setModel": [{ session: SessionKey; model?: string }, {}];
@@ -192,8 +193,14 @@ export type BridgeMethods = {
 
   /** A settings file of `scope` (user: `$CLAUDE_CONFIG_DIR` or `~/.claude`). */
   "config.read": [{ cwd: string; scope: ConfigScope }, ConfigFile];
-  /** Writes it atomically (creating `.claude/` as needed). Refuses text that is not a JSON object. */
-  "config.write": [{ cwd: string; scope: ConfigScope; text: string }, ConfigFile];
+  /**
+   * Writes it atomically (creating `.claude/` as needed). Refuses text that
+   * is not a JSON object. With `expected` (the file as the editor loaded it),
+   * the write happens only if the file still matches, else it fails with code
+   * "conflict"; writes to one file are serialized, so the check and the write
+   * are one step. Leave `expected` out to overwrite on purpose.
+   */
+  "config.write": [{ cwd: string; scope: ConfigScope; text: string; expected?: { exists: boolean; text: string } }, ConfigFile];
   /** The CLAUDE.md files Claude Code would load for `cwd`, existing or not. */
   "config.memoryFiles": [{ cwd: string }, MemoryFile[]];
 };
@@ -203,7 +210,7 @@ export type BridgeParams<M extends BridgeMethod> = BridgeMethods[M][0];
 export type BridgeResult<M extends BridgeMethod> = BridgeMethods[M][1];
 
 export type BridgeRequest<M extends BridgeMethod = BridgeMethod> = { id: number; method: M; params: BridgeParams<M> };
-export type BridgeError = { message: string; code?: "notFound" | "auth" | "busy" | "invalid" | "closed" | "other" };
+export type BridgeError = { message: string; code?: "notFound" | "auth" | "busy" | "invalid" | "closed" | "conflict" | "other" };
 export type BridgeResponse = { id: number; result: unknown } | { id: number; error: BridgeError };
 
 /** A tool-use permission prompt (the SDK's `canUseTool`), and also AskUserQuestion and ExitPlanMode. */
