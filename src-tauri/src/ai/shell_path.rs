@@ -70,10 +70,16 @@ fn login_shell() -> PathBuf {
         })
 }
 
+/// The command that prints PATH between the markers. The braces matter:
+/// in `$PATH__MIDTERM…` the shell would read one long, unset variable name.
+fn probe_script() -> String {
+    format!("printf '%s' \"{BEGIN}${{PATH}}{END}\"")
+}
+
 /// Runs `$SHELL -l -i -c` to print PATH between markers. `None` if the
 /// shell fails, hangs or prints no markers.
 async fn probe() -> Option<String> {
-    let script = format!("printf '%s' \"{BEGIN}$PATH{END}\"");
+    let script = probe_script();
     let output = process::run(Run {
         program: login_shell(),
         args: vec!["-l".into(), "-i".into(), "-c".into(), script.into()],
@@ -157,6 +163,21 @@ mod tests {
         assert_eq!(
             extract_marked(&format!("{BEGIN}{END}")).as_deref(),
             Some("")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_script_prints_path_between_markers() {
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &probe_script()])
+            .env("PATH", "/a/bin:/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            extract_marked(&stdout).as_deref(),
+            Some("/a/bin:/usr/bin:/bin")
         );
     }
 

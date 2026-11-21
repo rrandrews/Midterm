@@ -351,7 +351,8 @@ the provider's full ladder and relies on the retry above.
 Found through **the login shell's PATH**. An app started from Finder
 inherits launchd's minimal PATH, so `shell_path.rs` runs `$SHELL -l -i -c`
 once (zsh on macOS if `SHELL` is unset; 10 s timeout, `TERM=dumb`, stdin
-`/dev/null`) with a command that prints `$PATH` between two unique markers.
+`/dev/null`) with a command that prints `${PATH}` between two unique markers (the braces
+matter: written `$PATH__MARKER`, the shell would read one unset variable).
 Start-up files can print anything, OSC sequences from shell integration
 included, so the value is cut from between the last marker pair. The
 result, followed by the app's own PATH and `/opt/homebrew/bin`,
