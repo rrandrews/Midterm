@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SDKMessage, SessionMessage } from "./protocol";
-import { createSession, formatTokens, fromSessionMessages, parsePartialJson, reduce, RESULT_LIMIT } from "./reduce";
+import { createSession, endSession, formatTokens, fromSessionMessages, parsePartialJson, reduce, RESULT_LIMIT } from "./reduce";
 import type { ClaudeSession } from "./types";
 
 const SESSION = "6a1c2a8e-3f4b-4f7e-9d1a-0c9b2e5d7f10";
@@ -152,6 +152,13 @@ describe("assistant messages without streaming", () => {
 
 describe("task list tools", () => {
   const call = (id: string, name: string, input: Record<string, unknown>, parent: string | null = null) => assistant(`msg_${id}`, { type: "tool_use", id, name, input }, parent);
+
+  it("add a task TaskGet returns that is not known yet, and update a known one", () => {
+    let session = run([call("g1", "TaskGet", { taskId: "7" }), toolResult("g1", "Task #7", { structured: { task: { id: "7", subject: "Ship it", status: "in_progress" } } })]);
+    expect(session.todos).toEqual([{ id: "7", content: "Ship it", status: "in_progress", activeForm: undefined }]);
+    session = run([call("g2", "TaskGet", { taskId: "7" }), toolResult("g2", "Task #7", { structured: { task: { id: "7", subject: "Ship it", status: "completed" } } })], session);
+    expect(session.todos).toEqual([{ id: "7", content: "Ship it", status: "completed", activeForm: undefined }]);
+  });
 
   it("build the to-dos from TaskCreate and TaskUpdate", () => {
     const session = run([
@@ -348,6 +355,12 @@ describe("system messages", () => {
     }
   });
 
+  it("adopts the new conversation's id and drops the old title on a reset", () => {
+    const session = run([msg({ type: "conversation_reset", trigger: "clear", new_conversation_id: "conv-2" })], { ...fresh(), sessionId: "conv-1", title: "Old work" });
+    expect(session.sessionId).toBe("conv-2");
+    expect(session.title).toBeUndefined();
+  });
+
   it("takes the session id, model, mode and MCP servers from init", () => {
     const session = run([
       msg({ type: "system", subtype: "init", session_id: "sess-1", model: "claude-opus-5-5", permissionMode: "acceptEdits", mcp_servers: [{ name: "linear", status: "connected" }], cwd: "/repo", tools: [], slash_commands: [] }),
@@ -399,6 +412,22 @@ describe("unknown messages", () => {
       msg({ type: "system", subtype: "something_new" }),
     ], before);
     expect(after).toBe(before);
+  });
+});
+
+describe("endSession", () => {
+  it("stops background tasks and the calls they kept open", () => {
+    const session = endSession(
+      {
+        ...fresh(),
+        tasks: { a: { id: "a", toolUseId: "toolu_a", description: "x", status: "running", startedAt: 0 }, b: { id: "b", description: "y", status: "completed", startedAt: 0, endedAt: 5 } },
+        tools: { toolu_a: { id: "toolu_a", name: "Agent", input: {}, status: "running", parentToolUseId: null, startedAt: 0 } },
+      },
+      NOW,
+    );
+    expect(session.tasks.a).toMatchObject({ status: "stopped", endedAt: NOW });
+    expect(session.tasks.b).toMatchObject({ status: "completed", endedAt: 5 });
+    expect(session.tools.toolu_a.status).toBe("cancelled");
   });
 });
 

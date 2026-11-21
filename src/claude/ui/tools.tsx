@@ -194,21 +194,39 @@ export function ToolBody({ tool, cwd, home }: { tool: ToolCall; cwd: string; hom
           <ResultRow tool={tool} render={(result) => <Output text={result} mono={false} />} />
         </>
       );
+    // The task tools: their own view when there is data for it, else what they answered (errors, replayed lists).
     case "TaskCreate":
-      return (
+      return text(input.description) && !tool.isError ? (
         <div className="cc-card-pad">
           <div className="text-fg-soft">{text(input.subject)}</div>
-          {text(input.description) && <div className="cc-dim cc-prose">{text(input.description)}</div>}
+          <div className="cc-dim cc-prose">{text(input.description)}</div>
         </div>
+      ) : (
+        <ResultRow tool={tool} />
       );
     case "TaskList": {
-      const tasks = Array.isArray(structured.tasks) ? structured.tasks.map(rec) : [];
-      return (
+      const tasks = taskListOf(tool);
+      return tasks.length > 0 ? (
         <div className="cc-card-pad">
           <Todos input={{ todos: tasks.map((task) => ({ content: `#${text(task.id) ?? "?"} ${text(task.subject) ?? ""}`, status: task.status })) }} />
         </div>
+      ) : (
+        <ResultRow tool={tool} />
       );
     }
+    case "TaskGet": {
+      const task = taskOf(tool);
+      return task ? (
+        <div className="cc-card-pad">
+          <Todos input={{ todos: [{ content: `#${text(task.id) ?? "?"} ${text(task.subject) ?? ""}`, status: task.status }] }} />
+          {text(task.description) && <div className="cc-dim cc-prose">{text(task.description)}</div>}
+        </div>
+      ) : (
+        <ResultRow tool={tool} />
+      );
+    }
+    case "TaskUpdate":
+      return <ResultRow tool={tool} />;
     case "ExitPlanMode":
       return (
         <div className="cc-card-pad">
@@ -284,6 +302,18 @@ export function opensExpanded(tool: ToolCall): boolean {
   return (tool.name === "Edit" || tool.name === "MultiEdit" || tool.name === "Write") && tool.status !== "streaming" && hasBody(tool);
 }
 
+/** TaskList's tasks, when its structured result has them. */
+function taskListOf(tool: ToolCall): Record<string, unknown>[] {
+  const tasks = rec(tool.structured).tasks;
+  return Array.isArray(tasks) ? tasks.map(rec) : [];
+}
+
+/** TaskGet's task, when its structured result has one. */
+function taskOf(tool: ToolCall): Record<string, unknown> | undefined {
+  const task = rec(tool.structured).task;
+  return task && typeof task === "object" ? rec(task) : undefined;
+}
+
 /** Whether a call has anything to show when expanded. Task updates say it all on their row. */
 export function hasBody(tool: ToolCall): boolean {
   if (tool.isError && tool.result) return true;
@@ -292,13 +322,15 @@ export function hasBody(tool: ToolCall): boolean {
     case "MultiEdit":
     case "Write":
       return Boolean(toolDiff(tool)?.length);
+    // A task update says it all on its row (its errors are above).
     case "TaskUpdate":
-    case "TaskGet":
       return false;
+    case "TaskGet":
+      return Boolean(taskOf(tool) || tool.result?.trim());
     case "TaskCreate":
-      return Boolean(text(tool.input.description));
+      return Boolean(text(tool.input.description) || tool.result?.trim());
     case "TaskList":
-      return Array.isArray(rec(tool.structured).tasks) && (rec(tool.structured).tasks as unknown[]).length > 0;
+      return taskListOf(tool).length > 0 || Boolean(tool.result?.trim());
     default:
       return Object.keys(tool.input).length > 0 || Boolean(tool.result);
   }

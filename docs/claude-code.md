@@ -234,7 +234,8 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
   main-thread API message. Status `compacting`, `compact_boundary`,
   `api_retry` (coalesced), `local_command_output`, `informational`, failed
   hooks and errors become notice/command items. Unknown messages are
-  ignored. `conversation_reset` clears the transcript for every trigger.
+  ignored. `conversation_reset` clears the transcript and title for every trigger
+  and adopts `new_conversation_id` as the session id.
   After a resume the first result's cost is left out (the CLI's total
   includes earlier spend). Diffs (`diffTexts`) use jsdiff's
   `structuredPatch`, with a time limit and a changed-middle fallback.
@@ -251,11 +252,18 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
   show at once but are saved only once the session acknowledged them
   (`changeSetting`: one at a time, after a pending start; a refusal brings
   the old value back with a notice). `setModel` and `setEffort` change one
-  setting each. Only the user's choices are saved (chips, and a mode picked
+  setting each. A refusal goes back to the last acknowledged value (a
+  newer selection still waiting stays shown). A send waits for the
+  setting changes asked for before it; if a mode change among them was
+  refused it is not sent and goes back to the composer. A mode picked in a
+  permission prompt is applied once `session.permission` answers
+  `settled: true`. A process that ends stops its background tasks
+  (`endSession`), so close prompts don't count them. Only the user's choices are saved (chips, and a mode picked
   in a permission prompt): values the CLI reports (init, status) never are,
   so a restored pane keeps its saved model, effort and mode. Composer drafts (text and images) are
   kept per session key (`getDraft`/`setDraft`) across unmounts. While a
-  restored transcript loads (`loadingTranscript`) sends wait for it. A message sent while a turn runs is
+  restored transcript loads (`loadingTranscript`) the composer does not
+  send (the draft stays). A message sent while a turn runs is
   shown queued until the CLI folds it in (`user_message_uuids`).
   `allowBypass` comes from the `allowBypassPermissions` setting at start
   (`bypassAllowed(session)`).

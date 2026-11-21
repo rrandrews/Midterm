@@ -187,8 +187,16 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
   }, [active]);
 
   const send = (value = text) => {
-    if (!value.trim() && images.length === 0) return;
-    void sendMessage(sessionKey, value, images);
+    // While a restored transcript loads nothing is sent: the draft stays (the placeholder says why).
+    if ((!value.trim() && images.length === 0) || loading) return;
+    const sent = images;
+    void sendMessage(sessionKey, value, sent).then((ok) => {
+      // Not sent (a mode change it waited for was refused): back in the box, unless something new was typed.
+      if (ok) return;
+      if (!getDraft(sessionKey)) setDraft(sessionKey, { text: value, images: sent });
+      setText((current) => (current === "" ? value : current));
+      setImages((current) => (current.length === 0 ? sent : current));
+    });
     setText("");
     setImages([]);
     history.current = undefined;
@@ -284,7 +292,7 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
 
   const ModeIcon = MODE_ICONS[mode];
   const allowedModes = modeCycle(canBypass);
-  const canSend = text.trim() !== "" || images.length > 0;
+  const canSend = (text.trim() !== "" || images.length > 0) && !loading;
 
   return (
     <div className="cc-composer-wrap">

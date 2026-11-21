@@ -93,3 +93,17 @@ describe("replayed edits", async () => {
     expect(opensExpanded(call("Write", { file_path: "/r/b.ts", content: "x\n" }))).toBe(true);
   });
 });
+
+describe("task tool bodies", async () => {
+  const { hasBody } = await import("./tools");
+  const call = (name: string, extra: Record<string, unknown> = {}) => ({ id: "t", name, input: {}, status: "done" as const, parentToolUseId: null, startedAt: 0, ...extra });
+  it("show their data, else a meaningful result, else nothing", () => {
+    expect(hasBody(call("TaskList", { structured: { tasks: [{ id: "1", subject: "a", status: "pending" }] } }))).toBe(true);
+    expect(hasBody(call("TaskList", { result: "#1 [pending] a" }))).toBe(true);
+    expect(hasBody(call("TaskList"))).toBe(false);
+    expect(hasBody(call("TaskGet", { structured: { task: { id: "1", subject: "a" } } }))).toBe(true);
+    expect(hasBody(call("TaskGet", { result: "Task not found", isError: true }))).toBe(true);
+    expect(hasBody(call("TaskUpdate", { result: "Updated task #1" }))).toBe(false);
+    expect(hasBody(call("TaskUpdate", { result: "No such task", isError: true }))).toBe(true);
+  });
+});

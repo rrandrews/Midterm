@@ -196,15 +196,25 @@ function readConfig(cwd: string, scope: ConfigScope): ConfigFile {
   return { scope, path, exists: text !== undefined, text: text ?? "" };
 }
 
-function writeConfig(cwd: string, scope: ConfigScope, text: string): ConfigFile {
+/** A failure with a bridge error code (the mock bridge passes `code` on when it carries one). */
+function failure(message: string, code: "conflict" | "invalid"): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+function writeConfig(cwd: string, scope: ConfigScope, text: string, expected?: { exists: boolean; text: string }): ConfigFile {
+  // Like the bridge: when the caller says what it loaded, refuse if the file changed since.
+  if (expected) {
+    const current = readConfig(cwd, scope);
+    if (current.exists !== expected.exists || current.text !== expected.text) throw failure("The file changed since it was read", "conflict");
+  }
   // The bridge's rule (src/claude/bridge/config.ts): JSON.parse, an object.
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch (error) {
-    throw new Error(error instanceof Error ? error.message : String(error));
+    throw failure(error instanceof Error ? error.message : String(error), "invalid");
   }
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Settings must be a JSON object");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw failure("Settings must be a JSON object", "invalid");
   configTexts.set(configPath(cwd, scope), text);
   return readConfig(cwd, scope);
 }
@@ -322,7 +332,7 @@ export function mockRequest(method: string, params: unknown): unknown | undefine
     }
     case "config.write": {
       const p = params as BridgeParams<"config.write">;
-      return writeConfig(p.cwd, p.scope, p.text);
+      return writeConfig(p.cwd, p.scope, p.text, p.expected);
     }
     case "config.memoryFiles":
       return memoryFiles((params as BridgeParams<"config.memoryFiles">).cwd);

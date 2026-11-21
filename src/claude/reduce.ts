@@ -228,7 +228,12 @@ function applyTaskTool(session: ClaudeSession, tool: ToolCall, text: string, str
       const task = isRec(output.task) ? output.task : undefined;
       const id = task && str(task.id);
       if (!task || !id) return session;
-      return update(id, (todo) => ({ ...todo, content: str(task.subject) ?? todo.content, status: isStatus(task.status) ? task.status : todo.status }));
+      if (!session.todos.some((todo) => todo.id === id)) {
+        // A task this view had not seen (made before a resume, or by another client): added.
+        const content = str(task.subject);
+        return content ? { ...session, todos: [...session.todos, { id, content, status: isStatus(task.status) ? task.status : "pending", activeForm: str(task.activeForm) }] } : session;
+      }
+      return update(id, (todo) => ({ ...todo, content: str(task.subject) ?? todo.content, status: isStatus(task.status) ? task.status : todo.status, activeForm: str(task.activeForm) ?? todo.activeForm }));
     }
     default:
       return session;
@@ -466,6 +471,20 @@ const onUser: Handler = (session, message, now) => {
 };
 
 /** Ends what is still streaming or running in every thread (a turn ended, or a transcript was loaded). */
+/**
+ * The process is gone: on top of `settleSession`, its background tasks stop
+ * (marked `stopped`), and so do the calls they kept open.
+ */
+export function endSession(session: ClaudeSession, now: number): ClaudeSession {
+  let tasks = session.tasks;
+  for (const task of Object.values(session.tasks)) {
+    if (task.status !== "running" && task.status !== "pending" && task.status !== "paused") continue;
+    if (tasks === session.tasks) tasks = { ...tasks };
+    tasks[task.id] = { ...task, status: "stopped", endedAt: task.endedAt ?? now };
+  }
+  return settleSession({ ...session, tasks }, now);
+}
+
 export function settleSession(session: ClaudeSession, now: number): ClaudeSession {
   const done = (items: TranscriptItem[]) =>
     items.some((item) => (item.kind === "assistant" || item.kind === "thinking") && item.streaming)
@@ -718,7 +737,15 @@ const RESET_NOTICES: Record<string, string> = {
 /** The CLI started a new conversation (whatever the trigger): the transcript starts over. */
 const onConversationReset: Handler = (session, message, now) => {
   const text = RESET_NOTICES[str(message.trigger) ?? ""] ?? "Conversation reset";
-  return notice({ ...session, items: [], subTranscripts: {}, tools: {}, todos: [], streams: undefined }, null, `reset:${str(message.uuid) ?? now}`, "info", text);
+  // A new conversation: its own id (saved by the store) and, from its first prompt, its own title.
+  const sessionId = str(message.new_conversation_id) ?? session.sessionId;
+  return notice(
+    { ...session, sessionId, title: undefined, items: [], subTranscripts: {}, tools: {}, todos: [], streams: undefined },
+    null,
+    `reset:${str(message.uuid) ?? now}`,
+    "info",
+    text,
+  );
 };
 
 /** Applies one SDK message to a session. */

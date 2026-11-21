@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 type Handler = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 let handler: Handler = async () => ({});
 const sent: { method: string; params: Record<string, unknown> }[] = [];
+const onSessionEvent = vi.hoisted(() => vi.fn((..._args: unknown[]) => () => {}));
 vi.mock("./client", () => ({
   CLAUDE_KIND: "claude-code",
   request: (method: string, params: Record<string, unknown>) => {
     sent.push({ method, params });
     return handler(method, params);
   },
-  onSessionEvent: () => () => {},
+  onSessionEvent: (...args: unknown[]) => onSessionEvent(...args),
   onBridgeEvent: () => () => {},
 }));
 vi.mock("../plugins/settings", () => ({ pluginSettings: () => ({}) }));
@@ -101,7 +102,8 @@ describe("a restored pane", () => {
     handler = async (method) =>
       method === "sessions.messages" ? [] : method === "session.start" ? { ...INIT, sessionId: "sess-old", permissionMode: "default", model: "claude-sonnet-5" } : {};
     const key = newPane({ sessionId: "sess-old", model: "haiku", effort: "high", permissionMode: "acceptEdits" });
-    await sendMessage(key, "hello");
+    await vi.waitFor(() => expect(getSession(key)?.loadingTranscript).toBeUndefined());
+    expect(await sendMessage(key, "hello")).toBe(true);
     const start = sent.find((request) => request.method === "session.start");
     expect(start?.params).toMatchObject({ resume: "sess-old", model: "haiku", effort: "high", permissionMode: "acceptEdits" });
     const session = getSession(key);
@@ -118,12 +120,104 @@ describe("a restored pane", () => {
     expect(getSession(key)?.model).toBe("haiku");
   });
 
-  it("saves a mode the user picked in a prompt", async () => {
-    const key = newPane();
-    updateSession(key, { permissions: [{ requestId: "r1", toolUseId: "t1", toolName: "ExitPlanMode", input: {} } as never] });
-    await answerPermission(key, "r1", { behavior: "allow", updatedInput: {}, updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
+  it("saves a mode the user picked in a prompt once the answer took", async () => {
+    const approve = { behavior: "allow" as const, updatedInput: {}, updatedPermissions: [{ type: "setMode" as const, mode: "acceptEdits" as const, destination: "session" as const }] };
+    const prompt = { requestId: "r1", toolUseId: "t1", toolName: "ExitPlanMode", input: {} } as never;
+    const key = newPane({ permissionMode: "plan" });
+    // Already answered elsewhere (settled: false): nothing changes.
+    handler = async () => ({ settled: false });
+    updateSession(key, { permissions: [prompt] });
+    await answerPermission(key, "r1", approve);
+    expect(getSession(key)?.permissionMode).toBe("plan");
+    // Refused: nothing changes either.
+    handler = async () => {
+      throw new Error("Bridge gone");
+    };
+    updateSession(key, { permissions: [prompt] });
+    await answerPermission(key, "r1", approve);
+    expect(getSession(key)?.permissionMode).toBe("plan");
+    expect(saved).toEqual([]);
+    handler = async () => ({ settled: true });
+    updateSession(key, { permissions: [prompt] });
+    const answering = answerPermission(key, "r1", approve);
+    expect(getSession(key)?.permissionMode).toBe("plan");
+    await answering;
     expect(getSession(key)?.permissionMode).toBe("acceptEdits");
     expect(saved).toEqual([{ permissionMode: "acceptEdits" }]);
+  });
+});
+
+describe("sends and setting changes", () => {
+  it("go out after the mode change asked for before them", async () => {
+    const key = newPane();
+    handler = async (method) => (method === "session.start" ? INIT : {});
+    await sendMessage(key, "first");
+    const mode = deferred<unknown>();
+    handler = async (method) => (method === "session.setPermissionMode" ? mode.promise : {});
+    sent.length = 0;
+    void setPermissionMode(key, "acceptEdits");
+    const sending = sendMessage(key, "under the new mode");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent.map((request) => request.method)).toEqual(["session.setPermissionMode"]);
+    mode.resolve({});
+    expect(await sending).toBe(true);
+    expect(sent.map((request) => request.method)).toEqual(["session.setPermissionMode", "session.send"]);
+  });
+
+  it("are not sent (and come back to the composer) when that mode change is refused", async () => {
+    const key = newPane();
+    handler = async (method) => (method === "session.start" ? INIT : {});
+    await sendMessage(key, "first");
+    handler = async (method) => {
+      if (method === "session.setPermissionMode") throw new Error("Not allowed");
+      return {};
+    };
+    sent.length = 0;
+    void setPermissionMode(key, "acceptEdits");
+    expect(await sendMessage(key, "held back")).toBe(false);
+    expect(sent.map((request) => request.method)).toEqual(["session.setPermissionMode"]);
+    const session = getSession(key);
+    expect(session?.permissionMode).toBe("default");
+    expect(session?.items.some((item) => item.kind === "user" && item.text === "held back")).toBe(false);
+    // Later sends are fine again.
+    expect(await sendMessage(key, "now")).toBe(true);
+  });
+
+  it("roll back to the acknowledged value, not a refused one", async () => {
+    const key = newPane({ model: "sonnet" });
+    handler = async (method) => (method === "session.start" ? INIT : {});
+    await sendMessage(key, "first");
+    const answers: Record<string, ReturnType<typeof deferred<unknown>>> = { opus: deferred(), haiku: deferred() };
+    handler = async (method, params) => (method === "session.setModel" ? answers[params.model as string].promise : {});
+    const toOpus = setModel(key, "opus");
+    const toHaiku = setModel(key, "haiku");
+    expect(getSession(key)?.model).toBe("haiku");
+    // The older selection is refused: the newer one stays shown.
+    answers.opus.reject(new Error("No opus"));
+    expect(await toOpus).toBe(false);
+    expect(getSession(key)?.model).toBe("haiku");
+    // The newer one is refused too: back to what the session has, not to the refused opus.
+    answers.haiku.reject(new Error("No haiku"));
+    expect(await toHaiku).toBe(false);
+    expect(getSession(key)?.model).toBe("sonnet");
+  });
+});
+
+describe("a process that ends", () => {
+  it("stops its background tasks", async () => {
+    const key = newPane();
+    updateSession(key, { tasks: { a: { id: "a", description: "x", status: "running", startedAt: 0 } } });
+    expect(sessionWork(key)).toBe("Claude Code (1 agent running)");
+    let emit: ((event: unknown) => void) | undefined;
+    onSessionEvent.mockImplementationOnce((...args: unknown[]) => {
+      emit = args[1] as (event: unknown) => void;
+      return () => {};
+    });
+    handler = async (method) => (method === "session.start" ? INIT : {});
+    await sendMessage(key, "go");
+    emit?.({ event: "sessionEnded", error: "Crashed" });
+    expect(getSession(key)?.tasks.a.status).toBe("stopped");
+    expect(sessionWork(key)).toBeUndefined();
   });
 });
 
@@ -156,18 +250,19 @@ describe("sessionWork", () => {
 });
 
 describe("restored transcripts", () => {
-  it("are in place before a send starts the process", async () => {
+  it("are in place before a send can start the process", async () => {
     const messages = deferred<unknown>();
     handler = async (method) => (method === "sessions.messages" ? messages.promise : method === "session.start" ? INIT : {});
     const key = newPane({ sessionId: "sess-old" });
     expect(getSession(key)?.loadingTranscript).toBe(true);
-    const sending = sendMessage(key, "and now?");
-    await Promise.resolve();
+    // Not sent while loading (the composer keeps the draft).
+    expect(await sendMessage(key, "too soon")).toBe(false);
     expect(sent.map((request) => request.method)).toEqual(["sessions.messages"]);
     messages.resolve([
       { type: "user", uuid: "u1", session_id: "sess-old", message: { role: "user", content: "earlier" }, parent_tool_use_id: null, parent_agent_id: null },
     ]);
-    await sending;
+    await vi.waitFor(() => expect(getSession(key)?.loadingTranscript).toBeUndefined());
+    expect(await sendMessage(key, "and now?")).toBe(true);
     const session = getSession(key);
     expect(session?.loadingTranscript).toBeUndefined();
     expect(session?.items.filter((item) => item.kind === "user").map((item) => (item as { text: string }).text)).toEqual(["earlier", "and now?"]);

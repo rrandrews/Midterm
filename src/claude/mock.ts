@@ -1355,7 +1355,9 @@ export function openMockBridge(onLine: (line: string) => void): { send(line: str
       handle(request.method, request.params).then(
         (result) => later(delay, () => write({ id, result })),
         (error: unknown) => {
-          const fail = error instanceof BridgeFail ? error : new BridgeFail(error instanceof Error ? error.message : String(error), "other");
+          // mockData's errors carry their own code ("conflict", "invalid"): passed through like the bridge's.
+          const fail =
+            error instanceof BridgeFail ? error : new BridgeFail(error instanceof Error ? error.message : String(error), (error as { code?: BridgeError["code"] } | null)?.code ?? "other");
           later(delay, () => write({ id, error: { message: fail.message, code: fail.code } }));
         },
       );

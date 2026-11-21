@@ -7,7 +7,7 @@ import { Combobox } from "../../../components/ui/Combobox";
 import { create as createPath, stat, writeTextFile } from "../../../ipc/fs";
 import { homeDirectory } from "../../../ipc/system";
 import { CommitField, FIELD } from "../../../settings/controls";
-import { request } from "../../client";
+import { BridgeRequestError, request } from "../../client";
 import type { ConfigFile, ConfigScope, MemoryFile } from "../../protocol";
 import { getSession, useSession } from "../../store";
 import { tildePath } from "./format";
@@ -182,21 +182,54 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
     }
   };
 
-  /** Writes the draft, unless the file changed on disk since it was read (then asks, unless `overwrite`). */
+  /** Marks the draft at `path` as conflicting with `onDisk`, keeping its current text. */
+  const markConflict = (target: string, onDisk: ConfigFile) =>
+    useConfigState.setState((state) => {
+      const current = state.drafts[target];
+      return current ? { drafts: { ...state.drafts, [target]: { ...current, conflict: onDisk } } } : {};
+    });
+
+  /**
+   * Writes the draft. A normal save sends the file as it was read
+   * (`expected`); the bridge refuses with "conflict" when the file changed
+   * since, and the Reload / Overwrite bar shows. `overwrite` writes without
+   * the check. The draft may change while the write is on its way (more
+   * typing, another pane sharing it): the written file becomes the baseline,
+   * and the draft is clean only if its text is still what was sent.
+   */
   const save = async (overwrite = false) => {
-    if (!draft || !path || parsed.error) return;
+    if (!path || parsed.error) return;
+    const start = useConfigState.getState().drafts[path];
+    if (!start) return;
+    const submitted = start.text;
+    const baseline = start.file;
     setSaving(true);
     setError(undefined);
     try {
-      const onDisk = await request("config.read", { cwd, scope });
-      if (!overwrite && !unchanged(onDisk, draft.file)) {
-        setDraft(path, { ...draft, conflict: onDisk });
-        return;
+      if (!overwrite) {
+        // An early, friendlier hint; the bridge's `expected` check is what guards the write.
+        const onDisk = await request("config.read", { cwd, scope });
+        if (!unchanged(onDisk, baseline)) {
+          markConflict(path, onDisk);
+          return;
+        }
       }
-      const file = await request("config.write", { cwd, scope, text: draft.text });
-      setDraft(path, { file, text: file.text });
+      const file = await request("config.write", {
+        cwd,
+        scope,
+        text: submitted,
+        ...(overwrite ? {} : { expected: { exists: baseline.exists, text: baseline.text } }),
+      });
+      useConfigState.setState((state) => {
+        const current = state.drafts[path];
+        const text = current && current.text !== submitted ? current.text : file.text;
+        return { drafts: { ...state.drafts, [path]: { file, text } } };
+      });
     } catch (failure) {
-      setError(errorText(failure));
+      if (failure instanceof BridgeRequestError && failure.code === "conflict") {
+        const onDisk = await request("config.read", { cwd, scope }).catch(() => undefined);
+        markConflict(path, onDisk ?? { ...baseline, text: "" });
+      } else setError(errorText(failure));
     } finally {
       setSaving(false);
     }
@@ -209,12 +242,21 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
       // A file that does not exist yet is created ("{}"), unless something created it meanwhile.
       const onDisk = await request("config.read", { cwd, scope });
       if (!onDisk.exists) {
-        const file = await request("config.write", { cwd, scope, text: "{}\n" });
-        if (!isDirty(draft)) setDraft(file.path, { file, text: file.text });
+        const file = await request("config.write", { cwd, scope, text: "{}\n", expected: { exists: false, text: "" } });
+        // The created file is the new baseline; edits not saved yet stay as they are.
+        useConfigState.setState((state) => {
+          const current = state.drafts[file.path];
+          const text = current && isDirty(current) ? current.text : file.text;
+          return { drafts: { ...state.drafts, [file.path]: { file, text } } };
+        });
         openFile(file.path, { fromPaneId: paneId });
       } else openFile(onDisk.path, { fromPaneId: paneId });
     } catch (failure) {
-      setError(errorText(failure));
+      if (failure instanceof BridgeRequestError && failure.code === "conflict") {
+        // Created meanwhile: open what is there.
+        const onDisk = await request("config.read", { cwd, scope }).catch(() => undefined);
+        if (onDisk) openFile(onDisk.path, { fromPaneId: paneId });
+      } else setError(errorText(failure));
     }
   };
 

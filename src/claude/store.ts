@@ -3,7 +3,7 @@ import { createPaneState } from "../plugins/paneState";
 import { pluginSettings } from "../plugins/settings";
 import { CLAUDE_KIND, onBridgeEvent, onSessionEvent, request } from "./client";
 import type { BridgeEvent, EffortLevel, ImageAttachment, PermissionMode, PermissionResult, SDKMessage } from "./protocol";
-import { createSession, fromSessionMessages, reduce, settleSession } from "./reduce";
+import { createSession, endSession, fromSessionMessages, reduce } from "./reduce";
 import type { ClaudeSession, SidePanel } from "./types";
 
 /*
@@ -104,6 +104,7 @@ const paneSessions = createPaneState<PaneSession>({
   dispose: (held) => {
     void closeProcess(held.key);
     drafts.delete(held.key);
+    settingStates.delete(held.key);
     useClaudeStore.setState((state) => {
       const { [held.key]: _gone, ...sessions } = state.sessions;
       const { [held.paneId]: _pane, ...panes } = state.panes;
@@ -142,6 +143,7 @@ function replaceSession(key: string, seed: { sessionId?: string }): string | und
   // What was being typed stays in the composer.
   const draft = drafts.get(key);
   drafts.delete(key);
+  settingStates.delete(key);
   if (draft) drafts.set(next, draft);
   useClaudeStore.setState((state) => {
     const { [key]: _gone, ...sessions } = state.sessions;
@@ -231,7 +233,7 @@ function ended(key: string, error: string | undefined): void {
     live.delete(key);
   }
   updateSession(key, (session) => ({
-    ...settleSession(session, Date.now()),
+    ...endSession(session, Date.now()),
     status: error ? "error" : "new",
     error,
     permissions: [],
@@ -319,19 +321,30 @@ function titleOf(text: string): string {
 
 /* ---- Session lifecycle ---- */
 
-/** Sends a message, starting (or resuming) the session's process first if needed. While a turn runs it is queued. */
-export async function sendMessage(key: string, text: string, images?: ImageAttachment[]): Promise<void> {
-  // A restored transcript first: the process starts (and its events arrive) only after it is in place.
-  await loads.get(key);
+/**
+ * Sends a message, starting (or resuming) the session's process first if
+ * needed. While a turn runs it is queued. It goes out after the setting
+ * changes asked for before it, so it runs under the mode the chip shows.
+ * `false` when it was not sent and the composer should keep it: a mode
+ * change it waited for was refused, or the transcript is still loading.
+ */
+export async function sendMessage(key: string, text: string, images?: ImageAttachment[]): Promise<boolean> {
   const session = getSession(key);
-  if (!session || (!text.trim() && !images?.length)) return;
+  // The composer does not send while a restored transcript loads (the process would start under it).
+  if (!session || session.loadingTranscript || loads.has(key)) return false;
+  if (!text.trim() && !images?.length) return true;
   const uuid = crypto.randomUUID();
   const queued = session.status === "running";
   updateSession(key, (current) => ({
     items: [...current.items, { kind: "user", id: uuid, text, images: images?.length ? images : undefined, queued: queued || undefined }],
     title: current.title ?? (text.trim().startsWith("/") ? undefined : titleOf(text)),
   }));
-  if (!(await ensureProcess(key))) return;
+  if (!(await ensureProcess(key))) return true;
+  if (!(await settingsSettled(key))) {
+    updateSession(key, (current) => ({ items: current.items.filter((item) => item.id !== uuid) }));
+    addNotice(key, "Not sent: the permission mode could not be changed. Check the mode and send again.", "warn");
+    return false;
+  }
   if (!queued) updateSession(key, (current) => ({ status: "running", turnStartedAt: current.turnStartedAt ?? Date.now() }));
   try {
     await request("session.send", { session: key, text, images: images?.length ? images : undefined, uuid });
@@ -339,6 +352,7 @@ export async function sendMessage(key: string, text: string, images?: ImageAttac
     updateSession(key, (current) => ({ status: current.status === "running" && !queued ? "idle" : current.status, turnStartedAt: undefined }));
     addNotice(key, `Could not send: ${messageOf(error)}`);
   }
+  return true;
 }
 
 /** Interrupts the running turn (Esc). */
@@ -356,13 +370,19 @@ export async function answerPermission(key: string, requestId: string, result: P
       tools: tool && result.behavior === "deny" ? { ...session.tools, [tool.id]: { ...tool, status: "denied" } } : session.tools,
     };
   });
-  // A mode the user picked in the prompt (plan approval) is theirs: saved like the mode chip's.
+  // A mode the user picked in the prompt (plan approval) is theirs, once the answer took: then shown and saved like the mode chip's.
   const mode = result.behavior === "allow" ? result.updatedPermissions?.find((update) => update.type === "setMode" && update.destination === "session") : undefined;
-  if (mode?.type === "setMode") {
-    updateSession(key, { permissionMode: mode.mode });
-    persist(key, { permissionMode: mode.mode });
+  try {
+    const { settled } = await request("session.permission", { session: key, requestId, result });
+    if (settled && mode?.type === "setMode") {
+      updateSession(key, { permissionMode: mode.mode });
+      const state = settingStates.get(key);
+      if (state?.pending.permissionMode) state.acked.permissionMode = mode.mode;
+      persist(key, { permissionMode: mode.mode });
+    }
+  } catch (error) {
+    addNotice(key, `Could not answer the prompt: ${messageOf(error)}`);
   }
-  await request("session.permission", { session: key, requestId, result }).catch((error) => addNotice(key, `Could not answer the prompt: ${messageOf(error)}`));
 }
 
 /** Whether the plugin setting offers the bypass permissions mode (for sessions started from now on). */
@@ -378,59 +398,111 @@ export function bypassAllowed(session: ClaudeSession): boolean {
 type Setting = "permissionMode" | "model" | "effort";
 type SettingValue<K extends Setting> = ClaudeSession[K];
 
-/* Setting changes of a session, one at a time (and after its start). */
-const settingChains = new Map<string, Promise<void>>();
+/** A session's setting changes in flight. */
+type SettingState = {
+  /** Applied one at a time (and after a pending start). */
+  chain: Promise<void>;
+  /** Per setting with changes in flight: the last value the session accepted (what a refusal goes back to). */
+  acked: Partial<Record<Setting, unknown>>;
+  /** Per setting: the newest selection (a refusal of an older one leaves it shown). */
+  latest: Partial<Record<Setting, number>>;
+  pending: Partial<Record<Setting, number>>;
+  /** Refused mode changes so far: a send waiting on them does not go out under the wrong mode. */
+  modeRefusals: number;
+};
+
+const settingStates = new Map<string, SettingState>();
+let selection = 0;
+
+function settingState(key: string): SettingState {
+  let state = settingStates.get(key);
+  if (!state) {
+    state = { chain: Promise.resolve(), acked: {}, latest: {}, pending: {}, modeRefusals: 0 };
+    settingStates.set(key, state);
+  }
+  return state;
+}
 
 /**
  * Changes a session setting: shown at once, saved to the pane once the
  * session acknowledged it (or right away when no process runs: it is
- * applied at the next start). A change while the process starts waits for
- * the start. On failure the previous value comes back, with a notice.
+ * applied at the next start). Changes go one at a time, after a pending
+ * start. A refusal brings back the last acknowledged value (unless a newer
+ * selection is waiting), with a notice. Resolves to whether it took.
  */
-function changeSetting<K extends Setting>(key: string, field: K, value: SettingValue<K>, send: () => Promise<unknown>, what: string): Promise<void> {
+function changeSetting<K extends Setting>(key: string, field: K, value: SettingValue<K>, send: () => Promise<unknown>, what: string): Promise<boolean> {
   const session = getSession(key);
-  if (!session) return Promise.resolve();
-  const previous = session[field];
+  if (!session) return Promise.resolve(false);
+  const state = settingState(key);
+  // Nothing in flight: what is shown is what the session has.
+  if (!state.pending[field]) state.acked[field] = session[field];
+  state.pending[field] = (state.pending[field] ?? 0) + 1;
+  const mine = ++selection;
+  state.latest[field] = mine;
   updateSession(key, { [field]: value } as Partial<ClaudeSession>);
   const save = () => persist(key, { [field]: value ?? undefined } as Partial<ClaudePaneData>);
-  const task = async () => {
+  const newest = () => state.latest[field] === mine;
+  const task = async (): Promise<boolean> => {
     await live.get(key)?.started;
-    if (!getSession(key)) return;
+    if (!getSession(key)) return false;
     if (!hasProcess(key)) {
+      state.acked[field] = value;
       save();
-      return;
+      return true;
     }
     try {
       await send();
+      state.acked[field] = value;
       // The start's init may have reported the old value meanwhile.
-      updateSession(key, { [field]: value } as Partial<ClaudeSession>);
+      if (newest()) updateSession(key, { [field]: value } as Partial<ClaudeSession>);
       save();
+      return true;
     } catch (error) {
-      updateSession(key, (current) => (current[field] === value ? ({ [field]: previous } as Partial<ClaudeSession>) : {}));
+      if (field === "permissionMode") state.modeRefusals++;
+      if (newest()) updateSession(key, { [field]: state.acked[field] } as Partial<ClaudeSession>);
       addNotice(key, `Could not change ${what}: ${messageOf(error)}`);
+      return false;
+    } finally {
+      state.pending[field] = (state.pending[field] ?? 1) - 1;
     }
   };
-  const next = (settingChains.get(key) ?? Promise.resolve()).then(task, task);
-  settingChains.set(key, next);
-  return next;
+  const result = state.chain.then(task, task);
+  state.chain = result.then(
+    () => {},
+    () => {},
+  );
+  return result;
 }
 
-export function setPermissionMode(key: string, mode: PermissionMode): Promise<void> {
+/** Waits for the setting changes asked for so far; `false` when a mode change among them was refused. */
+async function settingsSettled(key: string): Promise<boolean> {
+  const state = settingStates.get(key);
+  if (!state) return true;
+  const refusals = state.modeRefusals;
+  let chain: Promise<void> | undefined;
+  while (chain !== state.chain) {
+    chain = state.chain;
+    await chain;
+  }
+  return state.modeRefusals === refusals;
+}
+
+export function setPermissionMode(key: string, mode: PermissionMode): Promise<boolean> {
   const session = getSession(key);
-  if (!session || (mode === "bypassPermissions" && !bypassAllowed(session))) return Promise.resolve();
+  if (!session || (mode === "bypassPermissions" && !bypassAllowed(session))) return Promise.resolve(false);
   return changeSetting(key, "permissionMode", mode, () => request("session.setPermissionMode", { session: key, mode }), "the mode");
 }
 
 /** Changes the model (`undefined`: the default). Only the model: the effort is `setEffort`'s. */
-export function setModel(key: string, model: string | undefined): Promise<void> {
-  if (!getSession(key) || getSession(key)?.model === model) return Promise.resolve();
+export function setModel(key: string, model: string | undefined): Promise<boolean> {
+  if (!getSession(key) || getSession(key)?.model === model) return Promise.resolve(true);
   return changeSetting(key, "model", model, () => request("session.setModel", { session: key, model }), "the model");
 }
 
 /** Changes the effort (`null`: the model's default). Only the effort. */
-export function setEffort(key: string, effort: EffortLevel | null): Promise<void> {
+export function setEffort(key: string, effort: EffortLevel | null): Promise<boolean> {
   const session = getSession(key);
-  if (!session || (session.effort ?? null) === effort) return Promise.resolve();
+  if (!session || (session.effort ?? null) === effort) return Promise.resolve(true);
   return changeSetting(key, "effort", effort, () => request("session.setEffort", { session: key, effort }), "the effort");
 }
 

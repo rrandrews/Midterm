@@ -28,10 +28,19 @@ type PanelState = {
   available: Record<string, AvailablePlugin[]>;
   marketplaces: Record<string, Marketplace[]>;
   view: Record<string, View>;
-  needsReload: Record<string, boolean>;
+  /** Plugin changes that reached each session (a counter), and the last one a reload covered. */
+  changes: Record<string, number>;
+  reloaded: Record<string, number>;
   reloading: Record<string, boolean>;
 };
-const usePanelState = create<PanelState>(() => ({ installed: {}, available: {}, marketplaces: {}, view: {}, needsReload: {}, reloading: {} }));
+const usePanelState = create<PanelState>(() => ({ installed: {}, available: {}, marketplaces: {}, view: {}, changes: {}, reloaded: {}, reloading: {} }));
+const needsReload = (state: PanelState, sessionKey: string) => (state.changes[sessionKey] ?? 0) > (state.reloaded[sessionKey] ?? 0);
+/** Marks the changes up to `revision` (default: all so far) as covered for a session. */
+const coverChanges = (sessionKey: string, revision?: number) =>
+  usePanelState.setState((state) => {
+    const upTo = revision ?? state.changes[sessionKey] ?? 0;
+    return { reloaded: { ...state.reloaded, [sessionKey]: Math.max(state.reloaded[sessionKey] ?? 0, upTo) } };
+  });
 const patch = <K extends keyof PanelState>(key: K, id: string, value: PanelState[K][string]) =>
   usePanelState.setState((state) => ({ [key]: { ...state[key], [id]: value } }) as Partial<PanelState>);
 
@@ -66,6 +75,9 @@ function placeOf(plugin: InstalledPlugin, cwd: string): { kind: "here" } | { kin
 function shortVersion(version: string): string {
   return version.replace(/^v/, "").replace(/[0-9a-f]{8,}/g, (hash) => (/[a-f]/.test(hash) ? hash.slice(0, 7) : hash));
 }
+
+/** One installation (the same plugin can be installed in several scopes and projects). */
+const installationKey = (plugin: InstalledPlugin) => [plugin.id, plugin.scope, plugin.projectPath ?? "", plugin.installPath ?? ""].join("\u0000");
 
 async function loadInstalled(cwd: string): Promise<void> {
   const result = await request("plugins.list", { cwd });
@@ -146,16 +158,18 @@ function markChanged(scope: PluginScope | "all", cwd: string): void {
     .filter((session) => scope === "all" || scope === "user" || trimSlash(session.cwd) === trimSlash(cwd))
     .map((session) => session.key);
   if (affected.length === 0) return;
-  usePanelState.setState((state) => ({ needsReload: { ...state.needsReload, ...Object.fromEntries(affected.map((key) => [key, true])) } }));
+  usePanelState.setState((state) => ({ changes: { ...state.changes, ...Object.fromEntries(affected.map((key) => [key, (state.changes[key] ?? 0) + 1])) } }));
 }
 
 /** Whether a session has plugin changes it has not reloaded (for a hint outside this panel). */
 export function usePluginReloadNeeded(sessionKey: string): boolean {
-  return usePanelState((state) => state.needsReload[sessionKey] ?? false);
+  return usePanelState((state) => needsReload(state, sessionKey));
 }
 
 /** Reloads plugins from disk into a running session, then its commands, models and agents. */
 async function reloadPlugins(sessionKey: string): Promise<void> {
+  // A change that arrives while this reload runs is not covered by it: the bar stays for it.
+  const revision = usePanelState.getState().changes[sessionKey] ?? 0;
   patch("reloading", sessionKey, true);
   try {
     const reloaded = await request("session.reloadPlugins", { session: sessionKey });
@@ -165,7 +179,7 @@ async function reloadPlugins(sessionKey: string): Promise<void> {
       ...(init ? { init: { ...init, commands: capabilities.commands, models: capabilities.models, agents: capabilities.agents } } : {}),
       ...(reloaded.mcpServers ? { mcpServers: reloaded.mcpServers } : {}),
     });
-    patch("needsReload", sessionKey, false);
+    coverChanges(sessionKey, revision);
   } finally {
     patch("reloading", sessionKey, false);
   }
@@ -228,7 +242,7 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
   );
 
   const act = async (plugin: InstalledPlugin, method: "plugins.enable" | "plugins.disable" | "plugins.uninstall", what: string) => {
-    const key = `${plugin.id}:${plugin.scope}`;
+    const key = installationKey(plugin);
     const ok = await commands.run(key, what, async () => {
       await request(method, { cwd, id: plugin.id, scope: plugin.scope });
       await loadInstalled(cwd);
@@ -237,7 +251,7 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
   };
 
   const update = async (plugin: InstalledPlugin, acceptCommand?: string) => {
-    const key = `${plugin.id}:${plugin.scope}`;
+    const key = installationKey(plugin);
     drop(key);
     let asked: CommandConfirm | undefined;
     const ok = await commands.run(key, "Updating", async () => {
@@ -275,12 +289,13 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
       ) : (
         <ul className="cp-list">
           {sorted.map((plugin) => {
-            const key = `${plugin.id}:${plugin.scope}`;
+            const key = installationKey(plugin);
             const { name, marketplace } = splitId(plugin.id);
             const busy = commands.busy[key];
             const place = placeOf(plugin, cwd);
             const here = place.kind === "here";
-            const on = here && plugin.enabled;
+            // Read-only rows show what the CLI reports; only this folder's rows can change.
+            const on = plugin.enabled;
             const lockedWhy =
               place.kind === "other"
                 ? `Installed for another project (${place.path}). Open a session there to change it.`
@@ -288,7 +303,7 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
                   ? `The ${plugin.scope} scope is not managed by Claude Code’s plugin commands.`
                   : undefined;
             return (
-              <li key={`${key}:${place.kind === "other" ? place.path : ""}`} className={`cp-row cp-row-plugin${on ? "" : " cp-row-off"}`}>
+              <li key={key} className={`cp-row cp-row-plugin${on ? "" : " cp-row-off"}`}>
                 <div className="cp-row-main">
                   <div className="cp-row-title">
                     <span className="cp-row-name" title={plugin.id}>
@@ -754,7 +769,7 @@ function ReloadButton({ sessionKey }: { sessionKey: string }) {
 }
 
 function ReloadBar({ sessionKey }: { sessionKey: string }) {
-  const needed = usePanelState((state) => state.needsReload[sessionKey] ?? false);
+  const needed = usePanelState((state) => needsReload(state, sessionKey));
   const busy = usePanelState((state) => state.reloading[sessionKey] ?? false);
   const live = useSession(sessionKey, (session) => session?.status === "idle" || session?.status === "running");
   const [error, setError] = useState<string>();
@@ -765,7 +780,7 @@ function ReloadBar({ sessionKey }: { sessionKey: string }) {
       <div className="cp-reload-text">
         {error ? <span className="cp-err">{error}</span> : "Plugins changed. This session still has the old set."}
       </div>
-      <IconButton label="Dismiss" onClick={() => patch("needsReload", sessionKey, false)}>
+      <IconButton label="Dismiss" onClick={() => coverChanges(sessionKey)}>
         <X size={12} />
       </IconButton>
       <Button
