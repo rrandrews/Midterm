@@ -156,6 +156,54 @@
   white-space: nowrap;
 }
 
+/* ⌃R history search: a compact panel above the editor; the textarea keeps focus. */
+.blocks-search {
+  margin-bottom: 6px;
+  font-family: var(--terminal-font, var(--font-mono));
+  font-size: var(--text-meta);
+}
+.blocks-search-query {
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+.blocks-search-caret {
+  display: inline-block;
+  width: 1px;
+  height: 1em;
+  vertical-align: text-bottom;
+  background: var(--color-accent);
+}
+.blocks-search-list {
+  --search-row: 18px;
+  margin-top: 2px;
+  overflow-y: auto;
+  border: 1px solid var(--color-line-menu);
+  border-radius: 4px;
+}
+.blocks-search-row {
+  height: var(--search-row);
+  padding: 0 6px;
+  overflow: hidden;
+  line-height: var(--search-row);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-fg-soft);
+  cursor: pointer;
+}
+.blocks-search-row:hover {
+  background: var(--color-hover);
+}
+.blocks-search-row[aria-selected="true"] {
+  background: var(--color-raised);
+  color: var(--color-fg-bright);
+}
+.blocks-search-hit {
+  background: transparent;
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
 /* The ghost text sits behind a transparent textarea with identical metrics. */
 .blocks-input-field {
   position: relative;

@@ -635,6 +635,14 @@ so).
   take the selection. ⌃P/⌃N act like ↑/↓, ⌃E at the end with a ghost
   suggestion accepts it. macOS handles ⌃A/⌃F/⌃B/⌃T/⌃D/⌥ keys natively.
   A pending `/cmd` request blocks all of these. App shortcuts still run first (capture phase).
+- ⌃R opens a reverse history search above the editor
+  (`HistorySearch.tsx`, filtering in `terminal/historySearch.ts`) over the
+  same entries as ↑/↓, newest first. The query starts as the editor's
+  text; typing filters by substring (smart case: case-sensitive only if
+  the query has an uppercase letter). ⌃R/↑ go to an older match, ⌃S/↓ to
+  a newer one, ⏎/⇥ or a click put it in the editor without running it,
+  Esc/⌃G/⌃C close and leave the editor as it was. The textarea keeps focus
+  throughout; the panel takes the keys with a capture listener on it.
   Paste from the menu goes into the editor.
 - Running a command sends it to the shell as if typed
   (`session.runCommand`). A multi-line one has to arrive as one command
