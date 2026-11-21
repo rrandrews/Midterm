@@ -12,8 +12,8 @@
 #
 # Hooks:
 #   _midterm_prompt_command  before each prompt (first in PROMPT_COMMAND):
-#                            OSC 133;D;<status> (only after a C), OSC 7,
-#                            OSC 133;A
+#                            OSC 133;D;<status> (only after a C), OSC 6973
+#                            (PATH, only when changed), OSC 7, OSC 133;A
 #   _midterm_prompt_end      last in PROMPT_COMMAND: moves OSC 133;B to the
 #                            end of PS1 and arms _midterm_debug_trap
 #   _midterm_debug_trap      DEBUG trap: OSC 133;C before the first command
@@ -112,6 +112,15 @@ _midterm_report_cwd() {
   builtin printf '\033]7;file://%s%s\007' "${HOSTNAME-}" "$_midterm_encoded"
 }
 
+# OSC 6973 (Midterm's own): tells the terminal the shell's PATH, for command
+# completion, when it differs from the last one reported.
+_midterm_report_path() {
+  [[ -n ${_midterm_reported_path+set} && $PATH == "$_midterm_reported_path" ]] && builtin return
+  _midterm_reported_path=$PATH
+  _midterm_urlencode "$PATH"
+  builtin printf '\033]6973;path=%s;aid=%s\007' "$_midterm_encoded" "$_midterm_aid"
+}
+
 # OSC 133 state: _midterm_ran is set once a C has been emitted for the
 # current command line (so the next prompt emits D), _midterm_armed from the
 # end of PROMPT_COMMAND until the first command of the next command line.
@@ -130,6 +139,7 @@ _midterm_prompt_command() {
     _midterm_ran=
     builtin printf '\033]133;D;%s;aid=%s\007' "$ret" "$_midterm_aid"
   fi
+  _midterm_report_path
   _midterm_report_cwd
   builtin printf '\033]133;A;aid=%s\007' "$_midterm_aid"
   # Pass the status on to the user's hooks, except under errexit, where a

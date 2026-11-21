@@ -15,6 +15,7 @@ import { runFromBlocks } from "../../terminal/blockMode";
 import { applyEdit, emptyKill, isKillKey, type KillBuffer, lineEdit } from "../../terminal/lineEdit";
 import { globalHistory, historyEntries, loadGlobalHistory, suggestion } from "../../terminal/history";
 import type { TerminalSession } from "../../terminal/session";
+import { useCompletion } from "./useCompletion";
 
 /** Lines the editor grows to before it scrolls. */
 const MAX_ROWS = 12;
@@ -132,15 +133,17 @@ export function BlockInput({
   // A slash command's ghost also shows what it takes (`/cmd <what to do>`); ⇥ accepts only the name.
   const ghost = source === "slash" && slashHint ? slashHint.usage.slice(value.length) : (suggested?.slice(value.length) ?? "");
 
-  const set = (next: string) => {
+  const set = (next: string, caret = next.length) => {
     setValue(next);
     requestAnimationFrame(() => {
       const input = inputRef.current;
       if (!input) return;
-      input.selectionStart = input.selectionEnd = next.length;
-      setCaretAtEnd(true);
+      input.selectionStart = input.selectionEnd = caret;
+      setCaretAtEnd(caret === next.length);
     });
   };
+  // ⇥ completion; not at a nested shell's prompt, whose files are elsewhere.
+  const completion = useCompletion({ session, inputRef, enabled: scope === "", apply: (edit) => set(edit.value, edit.caret) });
 
   const accept = () => {
     if (suggested) set(suggested);
@@ -228,12 +231,13 @@ export function BlockInput({
       }
       return;
     }
+    if (completion.onKeyDown(event, accept)) return;
     if (event.key === "Enter" && plain && !event.shiftKey) {
       event.preventDefault();
       // A held ⏎ must not run what /cmd just put in the editor.
       if (!event.repeat) run();
     } else if (event.key === "Tab" && plain && !event.shiftKey) {
-      // There is no completion here; Tab never leaves the editor.
+      // Nothing to complete (or an empty or slash command line): the suggestion. Tab never leaves the editor.
       event.preventDefault();
       accept();
     } else if (event.key === "ArrowRight" && plain && !event.shiftKey && suggested && collapsed && selectionEnd === value.length) {
@@ -292,6 +296,7 @@ export function BlockInput({
           {request.status === "error" && <span className="truncate text-err/80">{request.message}</span>}
         </div>
       )}
+      {completion.list}
       <div className="blocks-input-field">
         <div className="blocks-input-ghost" aria-hidden="true">
           <span className="invisible">{value}</span>
@@ -313,6 +318,7 @@ export function BlockInput({
           onChange={(event) => {
             if (busy) return;
             setValue(event.target.value);
+            completion.onEdit(event.target.value, event.target.selectionEnd);
             if (!event.target.value && request) clearEditorRequest(paneId);
             if (event.target.value) typed(paneId);
             else atPrompt(paneId);

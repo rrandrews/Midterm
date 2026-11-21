@@ -1,5 +1,6 @@
 //! Tauri commands: thin adapters between the webview and the file system
-//! and git helpers of this module. `src/ipc/fs.ts` is the only caller.
+//! and git helpers of this module. `src/ipc/fs.ts` is the only caller
+//! (`src/ipc/complete.ts` for the two completion commands).
 //!
 //! The file system and git commands are `async` and do their work on
 //! Tauri's blocking pool: a large directory, a big repository or a slow
@@ -18,6 +19,7 @@ use std::path::PathBuf;
 use tauri::ipc::{Channel, Response};
 use tauri::{State, Window};
 
+use super::complete::{self, CompletionEntry};
 use super::find::{self, FoundFiles};
 use super::file::{self, FileVersion, TextFile, WriteExpect, WriteResult};
 use super::git::{self, GitStatus};
@@ -99,6 +101,23 @@ pub async fn fs_write_text(
 #[tauri::command]
 pub async fn fs_file_version(path: String) -> Result<Option<FileVersion>, String> {
     blocking(move || file::version(&PathBuf::from(path))).await
+}
+
+/// The executables on `path` (a `PATH` value; the app's own when `None`),
+/// sorted and deduplicated; see [`complete::path_commands`].
+#[tauri::command]
+pub async fn fs_path_commands(path: Option<String>) -> Result<Vec<String>, String> {
+    blocking(move || {
+        let path = path.unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+        Ok(complete::path_commands(&path))
+    })
+    .await
+}
+
+/// Every entry of `dir` with its kind and executable bit, for completion.
+#[tauri::command]
+pub async fn fs_complete_list(dir: String) -> Result<Vec<CompletionEntry>, String> {
+    blocking(move || complete::list_entries(&PathBuf::from(dir))).await
 }
 
 /// Status of the work tree containing `path`, or `null` outside one.

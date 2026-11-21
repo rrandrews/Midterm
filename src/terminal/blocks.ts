@@ -349,6 +349,15 @@ export class BlockTracker {
   }
 
   /**
+   * Whether a report carrying `aid` comes from the root shell: not while
+   * nested, and only with the root's aid once one is known (a nested
+   * shell's report comes before its first mark).
+   */
+  isRootReport(aid: string | undefined): boolean {
+    return !this.nested && (this.rootAid === undefined || this.rootAid === aid);
+  }
+
+  /**
    * Records a working directory report (OSC 7). `host` is unset for this
    * machine. Root blocks take their directory from `options.cwd`; this is
    * where a nested shell's comes from.

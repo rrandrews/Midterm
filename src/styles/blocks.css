@@ -204,6 +204,42 @@
   font-weight: 600;
 }
 
+/* ⇥ completion matches above the editor (CompletionList.tsx). */
+.blocks-complete {
+  --complete-row: 18px;
+  margin-bottom: 6px;
+  font-family: var(--terminal-font, var(--font-mono));
+  font-size: var(--text-meta);
+}
+.blocks-complete-list {
+  max-height: calc(10 * var(--complete-row));
+  overflow-y: auto;
+  border: 1px solid var(--color-line-menu);
+  border-radius: 4px;
+}
+.blocks-complete-row {
+  height: var(--complete-row);
+  padding: 0 6px;
+  overflow: hidden;
+  line-height: var(--complete-row);
+  white-space: pre;
+  text-overflow: ellipsis;
+  color: var(--color-fg-soft);
+  cursor: pointer;
+}
+.blocks-complete-row:hover {
+  background: var(--color-hover);
+}
+.blocks-complete-row[aria-selected="true"] {
+  background: var(--color-raised);
+  color: var(--color-fg-bright);
+}
+.blocks-complete-count {
+  margin-top: 2px;
+  font-family: var(--font-sans);
+  color: var(--color-fg-faint);
+}
+
 /* The ghost text sits behind a transparent textarea with identical metrics. */
 .blocks-input-field {
   position: relative;

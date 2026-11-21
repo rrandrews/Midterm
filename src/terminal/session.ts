@@ -13,7 +13,7 @@ import { BlockTracker } from "./blocks";
 import { branchOf } from "./gitBranch";
 import { registerFileLinks } from "./fileLinkProvider";
 import { fitTerminal } from "./fit";
-import { parseOsc7 } from "./osc";
+import { OSC_PATH, parseOsc7, parsePathReport } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { type TerminalConfig, terminalConfig, terminalSettings } from "./settings";
 import { TERMINAL_OPTIONS, terminalOptions } from "./theme";
@@ -109,6 +109,8 @@ export class TerminalSession {
 
   /** Last directory the shell reported; until then, where it was started. */
   private currentCwd: string | undefined;
+  /** The root shell's `PATH`, from OSC 6973; unset until the first report. */
+  private reportedPath: string | undefined;
   /**
    * Fallback when this machine's host name is unknown: the host named in
    * the first OSC 7, which normally comes from our own shell integration.
@@ -163,6 +165,12 @@ export class TerminalSession {
     });
     // Apps (codex) ask for the default background to blend against; a
     // transparent theme would answer black, so answer with the solid color.
+    this.term.parser.registerOscHandler(OSC_PATH, (data) => {
+      const report = parsePathReport(data);
+      // A nested shell (ssh) reports its own, which is no use here.
+      if (report && this.blocks.isRootReport(report.aid)) this.reportedPath = report.path;
+      return true;
+    });
     this.term.parser.registerOscHandler(11, (data) => this.answerBackgroundQuery(data));
     this.term.parser.registerOscHandler(111, () => {
       this.backgroundSet = false;
@@ -314,6 +322,11 @@ export class TerminalSession {
     const current = await this.pty.foreground();
     this.noteForeground(current);
     return current;
+  }
+
+  /** The shell's `PATH` as it last reported it (OSC 6973); `undefined` before the first report. */
+  get shellPath(): string | undefined {
+    return this.reportedPath;
   }
 
   /** The shell's working directory, as far as we know. */

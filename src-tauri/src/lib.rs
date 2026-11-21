@@ -170,6 +170,8 @@ pub fn run() {
             fs::commands::fs_write_text,
             fs::commands::fs_file_version,
             fs::commands::git_status,
+            fs::commands::fs_path_commands,
+            fs::commands::fs_complete_list,
             fs::commands::fs_watch_start,
             fs::commands::fs_watch_set,
             fs::commands::fs_watch_stop,

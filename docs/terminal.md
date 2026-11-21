@@ -235,6 +235,22 @@ Paths are percent-encoded byte by byte (everything except `A-Za-z0-9/._~-`)
 in zsh and bash, and with `string escape --style=url` in fish. The host is
 `$HOST` (zsh), `$HOSTNAME` (bash) or `$hostname` (fish).
 
+**PATH report (OSC 6973, Midterm's own).** The shell's `PATH` differs from
+the app's (login files, rc files, virtualenvs), and command completion in
+the blocks editor needs the shell's. Before each prompt (after D, before
+OSC 7) the scripts compare `$PATH` (fish: `$PATH` joined with `:`) with the
+last value they reported and, if it changed (always at the first prompt),
+send `ESC ] 6973 ; path=<percent-encoded PATH> ; aid=<shell id> BEL`,
+encoded like the OSC 7 path. 6973 was picked because no known terminal uses
+it: xterm uses 0–119, plus 133 (FinalTerm marks), 633 (VS Code), 777
+(urxvt/notifications), 1337 (iTerm2), 9 and 99 (notifications), 5113 and
+5522 (kitty) and 7, 8, 52. `parsePathReport` (`src/terminal/osc.ts`) reads
+it, and the session keeps it as `session.shellPath` only when it comes from
+the root shell (`blocks.isRootReport`: not while nested, and with the root's
+aid once one is known), so a nested shell over ssh, which sends its own,
+never replaces the local `PATH`. Tests: `*_reports_path_changes` in
+`src-tauri/src/pty/tests/shells.rs`.
+
 ### SSH
 
 `ssh host` from an integrated shell loads the same integration on the
@@ -635,6 +651,8 @@ so).
   take the selection. ⌃P/⌃N act like ↑/↓, ⌃E at the end with a ghost
   suggestion accepts it. macOS handles ⌃A/⌃F/⌃B/⌃T/⌃D/⌥ keys natively.
   A pending `/cmd` request blocks all of these. App shortcuts still run first (capture phase).
+- ⇥ completes the word at the caret (see Completion below); with nothing
+  to complete it accepts the suggestion as before.
 - ⌃R opens a reverse history search above the editor
   (`HistorySearch.tsx`, filtering in `terminal/historySearch.ts`) over the
   same entries as ↑/↓, newest first. The query starts as the editor's
@@ -682,6 +700,50 @@ so).
 - `registerPaneFocuser` focuses the editor at a prompt, the terminal
   otherwise, and the pane hands focus over when the phase or mode changes
   while it has it.
+
+### Completion
+
+⇥ completes like a shell. The pure part is `src/terminal/completion.ts`
+(tokenizer, context, escaping, filtering, inserting; tested), listing is
+`src/terminal/completionSource.ts` over `src/ipc/complete.ts`, and the keys
+and list are `src/components/panes/useCompletion.tsx` and
+`CompletionList.tsx`, hooked into `BlockInput` with a few lines.
+
+- The line before the caret is tokenized shell-style (single and double
+  quotes, backslashes, operators). The first word of a command (also after
+  `|`, `;`, `&`, `&&`, `||`, `(`, assignments, `sudo`/`env`/`time`/
+  `nohup`/`exec`/`command`/… and their options, `if`/`then`/`do`/…)
+  completes command names: the executables on the shell's `PATH`
+  (`fs_path_commands`, from the OSC 6973 report, or the app's `PATH`
+  until one arrives; each directory's listing is cached by mtime with a
+  30 s TTL) plus common builtins. A first word with a `/` completes
+  executables and directories. Other words complete paths relative to the
+  prompt's cwd (`fs_complete_list`, every entry with its dir and
+  executable flags, no ignore rules); `cd`, `pushd` and `rmdir` take
+  directories only. `~/` is expanded for the lookup and kept as typed;
+  `~` alone becomes `~/`. Words with `$`/backquote, `~user` and here-doc
+  words are not completed.
+- Matching: case-sensitive prefix first, else case-insensitive; dotfiles
+  only when the typed name starts with `.`.
+- One match is inserted: a directory with `/`, anything else with a space
+  (after closing the quote the word opened). Several insert their common
+  prefix; if that adds nothing (so also on a second ⇥) a list opens above
+  the editor: ⇥/↓ next, ⇧⇥/↑ previous, ⏎ or → takes (⏎ never runs while
+  it is open), Esc closes, typing narrows it (or closes it when nothing
+  matches or the word changes), any other key, a ⌃ key (⌃R) or blur
+  closes it. At most 200 rows are shown, 10 at a time.
+- Inserted names are escaped with backslashes (space, quotes, `$`, `` ` ``,
+  `\`, `!`, `&`, `|`, `;`, `<`, `>`, `(`, `)`, `*`, `?`, `[`, `]`, `#`, `{`,
+  `}`, and `~` at the start of a word), or, inside a quote the user opened,
+  for that quote: `'` becomes `'\''` in single quotes; in double quotes a
+  backslash goes before `"`, `$`, `\` and backquotes.
+- ⇥ precedence: an empty line, a slash command line (`/cmd …`), a
+  selection, a nested shell's prompt (ssh: the files are elsewhere) or a
+  word that cannot be completed accept the ghost suggestion as before;
+  otherwise completion runs, and falls back to the suggestion when nothing
+  matches. → always accepts the suggestion.
+- The lookup is async: a result is dropped if the line or caret changed
+  (or another ⇥ came) meanwhile.
 
 ### History and suggestions
 

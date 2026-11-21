@@ -364,6 +364,18 @@ describe("BlockTracker: nested shells (ssh)", () => {
     expect(t.branch).not.toHaveBeenCalled();
   });
 
+  it("takes reports (PATH) from the root shell only", async () => {
+    const fresh = setup();
+    // Before any mark the first shell is the root.
+    expect(fresh.tracker.isRootReport("100.1")).toBe(true);
+    const t = await sshSession();
+    expect(t.tracker.isRootReport("100.1")).toBe(false);
+    await t.write(`exit\r\n${remote.C}${local.D(0)}${local.prompt()}`);
+    expect(t.tracker.isRootReport("100.1")).toBe(true);
+    expect(t.tracker.isRootReport("200.2")).toBe(false);
+    expect(t.tracker.isRootReport(undefined)).toBe(false);
+  });
+
   it("resetScope leaves the nested scope without a closing block", async () => {
     const t = await sshSession();
     t.tracker.resetScope();

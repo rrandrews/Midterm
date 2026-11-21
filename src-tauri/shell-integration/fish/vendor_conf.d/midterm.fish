@@ -6,8 +6,9 @@
 # user's XDG_DATA_DIRS.
 #
 # Hooks:
-#   __midterm_prompt    before each prompt (fish_prompt event): OSC 7,
-#                       OSC 133;A; wraps fish_prompt the first time
+#   __midterm_prompt    before each prompt (fish_prompt event): OSC 6973
+#                       (PATH, only when changed), OSC 7, OSC 133;A;
+#                       wraps fish_prompt the first time
 #   fish_prompt         the user's prompt (__midterm_original_fish_prompt),
 #                       then OSC 133;B
 #   __midterm_preexec   before each command line runs (fish_preexec event):
@@ -79,7 +80,20 @@ function __midterm_report_cwd --on-variable PWD
     printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)
 end
 
+# OSC 6973 (Midterm's own): tells the terminal the shell's PATH, for command
+# completion, when it differs from the last one reported.
+function __midterm_report_path
+    set -l path (string join : -- $PATH)
+    if set -q __midterm_reported_path; and test "$__midterm_reported_path" = "$path"
+        return
+    end
+    set -g __midterm_reported_path $path
+    set -l encoded (string escape --style=url -- $path)
+    printf '\e]6973;path=%s;aid=%s\a' "$encoded" $__midterm_aid
+end
+
 function __midterm_prompt --on-event fish_prompt
+    __midterm_report_path
     __midterm_report_cwd
     printf '\e]133;A;aid=%s\a' $__midterm_aid
     __midterm_wrap_prompt

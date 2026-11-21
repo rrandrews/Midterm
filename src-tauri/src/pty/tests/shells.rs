@@ -632,6 +632,83 @@ fn fish_emits_prompt_marks() {
     assert!(text.contains(&format!("fish> {MARK_B}")), "{text:?}");
 }
 
+/// Every OSC 6973 PATH report in `output` as (decoded PATH, aid).
+fn path_reports(output: &str) -> Vec<(String, String)> {
+    output
+        .split("\x1b]6973;")
+        .skip(1)
+        .map(|rest| {
+            let payload = &rest[..rest.find('\x07').expect("unterminated OSC 6973")];
+            let (path, aid) = payload
+                .strip_prefix("path=")
+                .and_then(|p| p.split_once(";aid="))
+                .unwrap_or_else(|| panic!("malformed OSC 6973: {payload:?}"));
+            let decoded = percent_encoding::percent_decode_str(path)
+                .decode_utf8()
+                .expect("PATH report is not UTF-8")
+                .into_owned();
+            (decoded, aid.to_string())
+        })
+        .collect()
+}
+
+/// Starts `shell`, changes `PATH` with `set_path` (which must put
+/// `/midterm test;dir` first) and runs more commands: the PATH is reported at
+/// the first prompt and after the change only, percent-encoded, with the
+/// shell's aid.
+fn check_path_reports(shell: &Path, sandbox: &Sandbox, set_path: &str) {
+    let mut h = sandbox.spawn(shell, &sandbox.home, |_| {});
+    h.wait_for_output("\x1b]6973;");
+    h.session
+        .write(format!("{set_path}\necho \"P=[$PATH]\"\ntrue\necho end\nexit\n").into_bytes())
+        .unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let text = h.text();
+    let reports = path_reports(&text);
+    assert_eq!(reports.len(), 2, "reports: {reports:?}\noutput: {text:?}");
+    let printed = text
+        .split("P=[")
+        .filter_map(|rest| rest.split_once(']').map(|(path, _)| path))
+        .find(|path| path.starts_with("/midterm test;dir:"))
+        .unwrap_or_else(|| panic!("no PATH printed: {text:?}"));
+    assert!(!reports[0].0.starts_with("/midterm"), "{reports:?}");
+    assert_eq!(reports[1].0, printed);
+    let marks = osc133_marks(&text);
+    let aid = marks[0].1.rsplit_once("aid=").expect("mark without aid").1;
+    assert!(reports.iter().all(|(_, a)| a == aid), "{reports:?} vs {aid}");
+}
+
+#[test]
+fn zsh_reports_path_changes() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-path");
+    sandbox.write(".zshrc", "");
+    check_path_reports(&zsh, &sandbox, "export PATH=\"/midterm test;dir:$PATH\"");
+}
+
+#[test]
+fn bash_reports_path_changes() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-path");
+    check_path_reports(&bash, &sandbox, "export PATH=\"/midterm test;dir:$PATH\"");
+}
+
+#[test]
+fn fish_reports_path_changes() {
+    let Some(fish) = find_shell("fish") else {
+        eprintln!("fish not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("fish-path");
+    check_path_reports(&fish, &sandbox, "set -gx PATH '/midterm test;dir' $PATH");
+}
+
 /// Waits until the session's foreground process satisfies `pred`.
 fn wait_for_foreground(session: &Session, what: &str, pred: impl Fn(&Foreground) -> bool) {
     wait_until(what, || session.foreground().is_some_and(|fg| pred(&fg)));

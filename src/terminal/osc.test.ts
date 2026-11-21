@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOsc7 } from "./osc";
+import { parseOsc7, parsePathReport } from "./osc";
 
 describe("parseOsc7", () => {
   it("parses host and path", () => {
@@ -29,5 +29,19 @@ describe("parseOsc7", () => {
     expect(parseOsc7("http://h/tmp")).toBeNull();
     expect(parseOsc7("/tmp")).toBeNull();
     expect(parseOsc7("file://h/%E0%A4%A")).toBeNull();
+  });
+});
+
+describe("parsePathReport", () => {
+  it("decodes the path and reads the aid", () => {
+    expect(parsePathReport("path=/usr/bin%3A/my%20bin;aid=12.34")).toEqual({ path: "/usr/bin:/my bin", aid: "12.34" });
+    expect(parsePathReport("path=/a:/b")).toEqual({ path: "/a:/b", aid: undefined });
+    expect(parsePathReport("path=")).toEqual({ path: "", aid: undefined });
+  });
+
+  it("rejects anything else", () => {
+    expect(parsePathReport("aid=1")).toBeNull();
+    expect(parsePathReport("/usr/bin")).toBeNull();
+    expect(parsePathReport("path=%E0%A4%A")).toBeNull();
   });
 });

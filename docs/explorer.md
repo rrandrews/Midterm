@@ -24,7 +24,7 @@ Everything but `commands.rs` is independent of Tauri and unit-tested in place
 
 ### Commands
 
-All paths are absolute strings. `src/ipc/fs.ts` is the only caller.
+All paths are absolute strings. `src/ipc/fs.ts` is the only caller, except for the two completion commands.
 
 | Command | Arguments (JS names) | Notes |
 |---|---|---|
@@ -38,6 +38,8 @@ All paths are absolute strings. `src/ipc/fs.ts` is the only caller.
 | `fs_watch_start` | `onEvent` | Returns a watcher id. Events arrive as `{ dirs }`. |
 | `fs_watch_set` | `id`, `dirs` | Replaces the watched set. Errors on an unknown id. |
 | `fs_watch_stop` | `id` | Unknown ids are ignored. |
+| `fs_path_commands` | `path` (or `null`) | Executable names on a `PATH` value (the app's own for `null`), sorted, deduplicated; unreadable and relative entries skipped, each directory cached by mtime (30 s TTL). For ⇥ completion in the blocks editor (`complete.rs`, caller `src/ipc/complete.ts`). |
+| `fs_complete_list` | `dir` | `{ name, dir, executable }[]` for every entry (dotfiles too, no ignore rules, symlinks followed). For ⇥ completion. |
 
 - `FsEntry` is `{ name, path, kind: "file" | "dir", symlink, hidden, ignored }`.
   `path` is the listed directory as given joined with `name`. Symlinks

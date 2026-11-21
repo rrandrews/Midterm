@@ -3,8 +3,8 @@
 #
 # Hooks:
 #   _midterm_precmd      before each prompt, first in precmd_functions:
-#                        OSC 133;D;<status> (only after a C), OSC 7,
-#                        OSC 133;A
+#                        OSC 133;D;<status> (only after a C), OSC 6973
+#                        (PATH, only when changed), OSC 7, OSC 133;A
 #   _midterm_prompt_end  last in precmd_functions, after whatever the
 #                        user's hooks (themes) did to PS1: moves OSC 133;B
 #                        to the end of PS1
@@ -54,6 +54,17 @@ _midterm_report_cwd() {
   builtin print -rn -- $'\e]7;file://'"${HOST}${REPLY}"$'\a'
 }
 
+# OSC 6973 (Midterm's own): tells the terminal the shell's PATH, for command
+# completion, when it differs from the last one reported.
+_midterm_report_path() {
+  builtin emulate -L zsh
+  (( ${+_midterm_reported_path} )) && [[ $PATH == "$_midterm_reported_path" ]] && builtin return
+  builtin typeset -g _midterm_reported_path=$PATH
+  builtin local REPLY
+  _midterm_urlencode $PATH
+  builtin print -rn -- $'\e]6973;path='"${REPLY};aid=$_midterm_aid"$'\a'
+}
+
 # Set by preexec once a C has been emitted, so that the next prompt emits D
 # (none after an empty line or ^C at the prompt).
 builtin typeset -gi _midterm_ran=0
@@ -66,6 +77,7 @@ _midterm_prompt_start() {
     _midterm_ran=0
     builtin print -rn -- $'\e]133;D;'"$1;aid=$_midterm_aid"$'\a'
   fi
+  _midterm_report_path
   _midterm_report_cwd
   builtin print -rn -- $'\e]133;A;aid='"$_midterm_aid"$'\a'
   if [[ ${precmd_functions[-1]-} != _midterm_prompt_end ]]; then
