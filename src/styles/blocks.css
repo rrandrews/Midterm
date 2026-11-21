@@ -132,6 +132,7 @@
 }
 
 .blocks-input {
+  position: relative;
   flex: none;
   border-top: 1px solid var(--color-line-input);
   padding: 10px 16px 12px 18px;
@@ -204,22 +205,30 @@
   font-weight: 600;
 }
 
-/* ⇥ completion matches above the editor (CompletionList.tsx). */
+/* ⇥ completion matches (CompletionList.tsx): overlaid on the blocks just
+   above the editor, so the editor stays put even in a short split. */
 .blocks-complete {
   --complete-row: 18px;
-  margin-bottom: 6px;
+  position: absolute;
+  z-index: 5;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 4px);
+  padding: 4px;
+  border-radius: 6px;
+  background: var(--color-popover);
+  box-shadow: var(--shadow-menu);
   font-family: var(--terminal-font, var(--font-mono));
   font-size: var(--text-meta);
 }
 .blocks-complete-list {
   max-height: calc(10 * var(--complete-row));
   overflow-y: auto;
-  border: 1px solid var(--color-line-menu);
-  border-radius: 4px;
 }
 .blocks-complete-row {
   height: var(--complete-row);
   padding: 0 6px;
+  border-radius: 4px;
   overflow: hidden;
   line-height: var(--complete-row);
   white-space: pre;
@@ -236,6 +245,7 @@
 }
 .blocks-complete-count {
   margin-top: 2px;
+  padding: 0 6px;
   font-family: var(--font-sans);
   color: var(--color-fg-faint);
 }

@@ -46,14 +46,22 @@ export function useCompletion({
   /** Bumped by every ⇥, so that only the latest lookup's result is used. */
   const lookup = useRef(0);
 
-  // Clicking elsewhere closes the list.
+  // Leaving the editor drops a pending lookup and the list; so does a click
+  // in it, which moves the caret without an edit.
   useEffect(() => {
     const input = inputRef.current;
-    if (!input || !list) return;
-    const close = () => setList(null);
+    if (!input) return;
+    const close = () => {
+      lookup.current++;
+      setList(null);
+    };
     input.addEventListener("blur", close);
-    return () => input.removeEventListener("blur", close);
-  }, [inputRef, list]);
+    input.addEventListener("mousedown", close);
+    return () => {
+      input.removeEventListener("blur", close);
+      input.removeEventListener("mousedown", close);
+    };
+  }, [inputRef]);
 
   const close = () => {
     lookup.current++;
@@ -64,7 +72,10 @@ export function useCompletion({
     const input = inputRef.current;
     if (!input || !list) return;
     setList(null);
-    apply(applyCandidate(input.value, input.selectionEnd, list.context, candidate));
+    // Only into the word the list was for, as it is now.
+    const context = completionContext(input.value, input.selectionEnd);
+    if (!context || context.from !== list.context.from || input.selectionStart !== input.selectionEnd) return;
+    apply(applyCandidate(input.value, input.selectionEnd, context, candidate));
   };
 
   /** Starts a completion of the word at the caret; `fallback` runs if nothing completes. */

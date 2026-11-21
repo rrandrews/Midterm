@@ -111,6 +111,8 @@ function __midterm_wrap_prompt
     # The original runs first, so that it still sees the command's $status.
     function fish_prompt
         __midterm_original_fish_prompt $argv
+        # Again, in case an event handler that ran after ours changed it.
+        __midterm_report_path
         printf '\e]133;B;aid=%s\a' $__midterm_aid
     end
 end

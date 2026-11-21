@@ -699,6 +699,50 @@ fn bash_reports_path_changes() {
     check_path_reports(&bash, &sandbox, "export PATH=\"/midterm test;dir:$PATH\"");
 }
 
+/// A user hook that changes PATH at the prompt (like direnv) runs after
+/// our first report: the change must still be reported before the prompt.
+fn check_path_from_a_hook(shell: &Path, sandbox: &Sandbox) {
+    let mut h = sandbox.spawn(shell, &sandbox.home, |_| {});
+    h.wait_for_output("\x1b]133;B");
+    h.session.write(b"exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let reports = path_reports(&h.text());
+    let first_b = h.text().find("\x1b]133;B").unwrap();
+    let before_prompt = path_reports(&h.text()[..first_b]);
+    assert!(
+        before_prompt.last().is_some_and(|(path, _)| path.starts_with("/hooked:")),
+        "{reports:?}"
+    );
+}
+
+#[test]
+fn zsh_reports_path_set_by_a_precmd_hook() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-path-hook");
+    sandbox.write(
+        ".zshrc",
+        "hook() { [[ $PATH == /hooked:* ]] || PATH=/hooked:$PATH }\nprecmd_functions+=(hook)\n",
+    );
+    check_path_from_a_hook(&zsh, &sandbox);
+}
+
+#[test]
+fn bash_reports_path_set_by_a_prompt_command() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-path-hook");
+    sandbox.write(
+        ".bash_profile",
+        "hook() { [[ $PATH == /hooked:* ]] || PATH=/hooked:$PATH; }\nPROMPT_COMMAND=hook\n",
+    );
+    check_path_from_a_hook(&bash, &sandbox);
+}
+
 #[test]
 fn fish_reports_path_changes() {
     let Some(fish) = find_shell("fish") else {

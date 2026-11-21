@@ -52,6 +52,20 @@ describe("tokenize", () => {
     expect(quoted).toMatchObject({ value: "src/my f", quote: "'", cut: { raw: 9, value: 4 } });
   });
 
+  it("keeps a file descriptor with its redirection", () => {
+    expect(tokenize("2>/dev/null x").map((t) => (t.kind === "op" ? `op:${t.op}` : t.value))).toEqual([
+      "op:>",
+      "/dev/null",
+      "x",
+    ]);
+    expect(tokenize("echo 2 >x").map((t) => (t.kind === "op" ? `op:${t.op}` : t.value))).toEqual(["echo", "2", "op:>", "x"]);
+  });
+
+  it("cuts after a closed quote", () => {
+    const [, word] = tokenize(`cat "src/"`);
+    expect(word).toMatchObject({ value: "src/", quote: null, cut: { raw: 10, value: 4 } });
+  });
+
   it("flags expansions", () => {
     expect(tokenize("$HOME/x")[0]).toMatchObject({ expands: true });
     expect(tokenize(`"$HOME"`)[0]).toMatchObject({ expands: true });
@@ -66,6 +80,8 @@ describe("completionContext", () => {
     }
     expect(at("").context).toMatchObject({ kind: "command", prefix: "" });
     expect(at("gi").context).toMatchObject({ prefix: "gi", from: 0, kept: 0 });
+    expect(at("sudo -u root gi").context?.kind).toBe("command");
+    expect(at("2>/dev/null gi").context?.kind).toBe("command");
   });
 
   it("completes paths elsewhere, executables for a command with a slash", () => {
@@ -89,6 +105,16 @@ describe("completionContext", () => {
   it("looks only at the text before the caret", () => {
     expect(at("ls sr‸ -l").context).toMatchObject({ kind: "path", prefix: "sr" });
     expect(at("gi‸t status").context).toMatchObject({ kind: "command", prefix: "gi" });
+  });
+
+  it("treats an escaped trailing space as part of the word", () => {
+    expect(at("ls my\\ ").context).toMatchObject({ prefix: "my ", from: 3 });
+  });
+
+  it("expands only an unquoted, unescaped ~", () => {
+    expect(at("cat ~/x").context?.dir).toBe("~/");
+    expect(at("cat \\~/x").context?.dir).toBe("./~/");
+    expect(at("cat '~'/x").context?.dir).toBe("./~/");
   });
 
   it("does not complete expansions and ~user", () => {
@@ -127,6 +153,7 @@ describe("commonPrefix", () => {
     expect(commonPrefix(["a", "b"])).toBe("");
     expect(commonPrefix([])).toBe("");
     expect(commonPrefix(["Readme", "README.md"], true)).toBe("Readme");
+    expect(commonPrefix(["file😀", "file😁"])).toBe("file");
   });
 });
 
@@ -145,6 +172,10 @@ describe("filterCandidates", () => {
   it("hides dotfiles unless the prefix starts with a dot", () => {
     expect(filterCandidates(all, "").matches.map((c) => c.name)).toEqual(["README.md", "readme.txt", "src"]);
     expect(filterCandidates(all, ".").matches.map((c) => c.name)).toEqual([".env", ".git"]);
+  });
+
+  it("never offers names with control characters", () => {
+    expect(filterCandidates([file("a\nb"), file("ab")], "a").matches.map((c) => c.name)).toEqual(["ab"]);
   });
 
   it("drops duplicate names", () => {
@@ -190,6 +221,13 @@ describe("applying a completion", () => {
     expect(applyCandidate(line, caret, context!, dir("src"))).toEqual({ value: "ls src/ -l", caret: 7 });
     const word = at("gi‸ status");
     expect(applyCandidate(word.line, word.caret, word.context!, file("git"))).toEqual({ value: "git status", caret: 4 });
+    const inside = at("gi‸t status");
+    expect(applyCandidate(inside.line, inside.caret, inside.context!, file("git"))).toEqual({ value: "git status", caret: 4 });
+  });
+
+  it("appends after a closed quote", () => {
+    const { line, caret, context } = at(`cat "src/"no`);
+    expect(applyCandidate(line, caret, context!, file("notes"))).toEqual({ value: `cat "src/"notes `, caret: 16 });
   });
 
   it("turns ~ into ~/", () => {

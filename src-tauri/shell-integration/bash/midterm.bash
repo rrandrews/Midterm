@@ -14,8 +14,10 @@
 #   _midterm_prompt_command  before each prompt (first in PROMPT_COMMAND):
 #                            OSC 133;D;<status> (only after a C), OSC 6973
 #                            (PATH, only when changed), OSC 7, OSC 133;A
-#   _midterm_prompt_end      last in PROMPT_COMMAND: moves OSC 133;B to the
-#                            end of PS1 and arms _midterm_debug_trap
+#   _midterm_prompt_end      last in PROMPT_COMMAND: OSC 6973 again if the
+#                            user's hooks (direnv) changed PATH, moves
+#                            OSC 133;B to the end of PS1 and arms
+#                            _midterm_debug_trap
 #   _midterm_debug_trap      DEBUG trap: OSC 133;C before the first command
 #                            of a command line, then the user's own trap
 #
@@ -115,9 +117,9 @@ _midterm_report_cwd() {
 # OSC 6973 (Midterm's own): tells the terminal the shell's PATH, for command
 # completion, when it differs from the last one reported.
 _midterm_report_path() {
-  [[ -n ${_midterm_reported_path+set} && $PATH == "$_midterm_reported_path" ]] && builtin return
-  _midterm_reported_path=$PATH
-  _midterm_urlencode "$PATH"
+  [[ -n ${_midterm_reported_path+set} && ${PATH-} == "$_midterm_reported_path" ]] && builtin return
+  _midterm_reported_path=${PATH-}
+  _midterm_urlencode "${PATH-}"
   builtin printf '\033]6973;path=%s;aid=%s\007' "$_midterm_encoded" "$_midterm_aid"
 }
 
@@ -153,6 +155,7 @@ _midterm_prompt_command() {
 # to the prompt, where `\$?` sees it.
 _midterm_prompt_end() {
   local ret=$?
+  _midterm_report_path
   PS1=${PS1//"$_midterm_mark_b"/}$_midterm_mark_b
   _midterm_armed=1
   [[ $- == *e* ]] && builtin return 0

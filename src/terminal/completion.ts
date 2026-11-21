@@ -21,6 +21,8 @@ export type Word = {
   quote: Quote | null;
   /** Contains an unquoted or double-quoted `$` or a backquote: the value is not literal. */
   expands: boolean;
+  /** Starts with an unquoted, unescaped `~`, which the shell expands. */
+  tilde: boolean;
   /**
    * The last place the word can be cut for completion: after its last `/`
    * or the start of the open quote's text, whichever is later (else the
@@ -54,10 +56,12 @@ export function tokenize(line: string): Token[] {
       i++;
       continue;
     }
-    const op = OPERATORS.find((candidate) => line.startsWith(candidate, i));
-    if (op) {
-      tokens.push({ kind: "op", start: i, end: i + op.length, op });
-      i += op.length;
+    // A file descriptor right before a redirection belongs to it (`2>`).
+    const fd = /^\d+(?=[<>])/.exec(line.slice(i))?.[0] ?? "";
+    const op = OPERATORS.find((candidate) => line.startsWith(candidate, i + fd.length));
+    if (op && (!fd || op.startsWith("<") || op.startsWith(">"))) {
+      tokens.push({ kind: "op", start: i, end: i + fd.length + op.length, op });
+      i += fd.length + op.length;
       continue;
     }
     const start = i;
@@ -65,16 +69,21 @@ export function tokenize(line: string): Token[] {
     let quote: Quote | null = null;
     let expands = false;
     let cut = { raw: start, value: 0 };
+    const tilde = line[start] === "~";
     while (i < line.length) {
       const c = line[i];
       if (quote === "'") {
-        if (c === "'") quote = null;
-        else value += c;
         i++;
+        if (c === "'") {
+          quote = null;
+          // A cut inside the closed quote would drop the closing quote: cut after it instead.
+          cut = { raw: i, value: value.length };
+        } else value += c;
       } else if (quote === '"') {
         if (c === '"') {
           quote = null;
           i++;
+          cut = { raw: i, value: value.length };
         } else if (c === "\\" && i + 1 < line.length && '"$`\\\n'.includes(line[i + 1])) {
           value += line[i + 1];
           i += 2;
@@ -107,7 +116,7 @@ export function tokenize(line: string): Token[] {
       }
       if (value.endsWith("/") && line[i - 1] === "/") cut = { raw: i, value: value.length };
     }
-    tokens.push({ kind: "word", start, end: i, value, quote, expands, cut });
+    tokens.push({ kind: "word", start, end: i, value, quote, expands, tilde, cut });
   }
   return tokens;
 }
@@ -136,6 +145,9 @@ const PREFIXES = new Set([
   "until",
   "do",
 ]);
+/** Options of prefix commands that take a value (`sudo -u root`). */
+const OPTION_VALUES: Record<string, string> = { sudo: "ugCDhprtU", env: "uCS", nice: "n", doas: "uC" };
+
 /** Commands whose arguments are directories. */
 const DIR_COMMANDS = new Set(["cd", "pushd", "rmdir"]);
 
@@ -173,13 +185,14 @@ export function completionContext(line: string, caret: number): CompletionContex
   const before = line.slice(0, caret);
   const tokens = tokenize(before);
   let last = tokens[tokens.length - 1];
-  const endsInWord = last?.kind === "word" && last.end === caret && !(last.quote === null && /[ \t]$/.test(before));
+  // A word that ends at the caret (an escaped trailing space is part of it).
+  const endsInWord = last?.kind === "word" && last.end === caret;
   let word: Word;
   if (endsInWord && last.kind === "word") {
     word = last;
     tokens.pop();
   } else {
-    word = { kind: "word", start: caret, end: caret, value: "", quote: null, expands: false, cut: { raw: caret, value: 0 } };
+    word = { kind: "word", start: caret, end: caret, value: "", quote: null, expands: false, tilde: false, cut: { raw: caret, value: 0 } };
   }
   last = tokens[tokens.length - 1];
   if (word.expands) return null;
@@ -197,7 +210,7 @@ export function completionContext(line: string, caret: number): CompletionContex
   }
   // Skip assignments, prefix words and their options, and redirections.
   let commandName: string | undefined;
-  let afterPrefix = false;
+  let prefixWord: string | undefined;
   let skipNext = false;
   for (const w of commandWords) {
     if (skipNext) {
@@ -209,9 +222,13 @@ export function completionContext(line: string, caret: number): CompletionContex
       continue;
     }
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w.value)) continue;
-    if (afterPrefix && w.value.startsWith("-")) continue;
+    if (prefixWord !== undefined && w.value.startsWith("-")) {
+      // `sudo -u root cmd`: the option's value is not the command.
+      if (w.value.length === 2 && OPTION_VALUES[prefixWord]?.includes(w.value[1])) skipNext = true;
+      continue;
+    }
     if (PREFIXES.has(w.value)) {
-      afterPrefix = true;
+      prefixWord = w.value;
       continue;
     }
     commandName = w.value;
@@ -221,19 +238,24 @@ export function completionContext(line: string, caret: number): CompletionContex
   const isCommand = commandName === undefined && !redirected && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value);
 
   const value = word.value;
-  if (value.startsWith("~") && !value.startsWith("~/") && value !== "~") return null;
+  const home = word.tilde;
+  if (home && !value.startsWith("~/") && value !== "~") return null;
   let kind: CompletionKind;
-  if (isCommand) kind = value.includes("/") || value === "~" ? "executable" : "command";
+  if (isCommand) kind = value.includes("/") || (home && value === "~") ? "executable" : "command";
   else kind = commandName !== undefined && DIR_COMMANDS.has(commandName) && !redirected ? "dir" : "path";
 
   if (kind === "command") {
     return { kind, word, dir: "", prefix: value, from: word.cut.raw, kept: word.cut.value };
   }
   // `~` alone: the home directory itself, completed to `~/`.
-  if (value === "~") return { kind, word, dir: "~", prefix: "", from: caret, kept: 0 };
+  if (home && value === "~") return { kind, word, dir: "~", prefix: "", from: caret, kept: 0 };
   const slash = value.lastIndexOf("/");
   const dir = value.slice(0, slash + 1);
-  return { kind, word, dir, prefix: value.slice(dir.length), from: word.cut.raw, kept: word.cut.value - dir.length };
+  const prefix = value.slice(dir.length);
+  const kept = word.cut.value - dir.length;
+  // A quoted or escaped `~` is a name, not the home directory.
+  const lookup = !home && dir.startsWith("~") ? `./${dir}` : dir;
+  return { kind, word, dir: lookup, prefix, from: word.cut.raw, kept };
 }
 
 /** Stands in for the target of a redirection in the command's word list. */
@@ -244,6 +266,7 @@ const REDIRECT_TARGET: Word = {
   value: "",
   quote: null,
   expands: false,
+  tilde: false,
   cut: { raw: -1, value: 0 },
 };
 
@@ -286,7 +309,8 @@ export function commonPrefix(names: readonly string[], ignoreCase = false): stri
     prefix = prefix.slice(0, i);
     if (!prefix) break;
   }
-  return prefix;
+  // Never end in half of a surrogate pair.
+  return /[\uD800-\uDBFF]$/.test(prefix) ? prefix.slice(0, -1) : prefix;
 }
 
 /**
@@ -298,7 +322,9 @@ export function filterCandidates(
   candidates: readonly Candidate[],
   prefix: string,
 ): { matches: Candidate[]; ignoreCase: boolean } {
-  const visible = prefix.startsWith(".") ? candidates : candidates.filter((c) => !c.name.startsWith("."));
+  // Names with control characters (a newline would end the command) are never offered.
+  const usable = candidates.filter((c) => !/[\u0000-\u001f\u007f]/.test(c.name));
+  const visible = prefix.startsWith(".") ? usable : usable.filter((c) => !c.name.startsWith("."));
   let matches = visible.filter((c) => c.name.startsWith(prefix));
   let ignoreCase = false;
   if (matches.length === 0 && prefix) {
@@ -321,11 +347,17 @@ export type Edit = { value: string; caret: number };
  * from where the user's typing could be cut), escaped for where it goes,
  * then appends `suffix` and keeps whatever followed the caret.
  */
-function insert(line: string, caret: number, context: CompletionContext, text: string, suffix: string): Edit {
+function insert(line: string, end: number, context: CompletionContext, text: string, suffix: string): Edit {
   const atWordStart = context.from === context.word.start && context.word.quote === null;
   const inserted = escapeText(text, context.word.quote, atWordStart) + suffix;
-  const value = line.slice(0, context.from) + inserted + line.slice(caret);
+  const value = line.slice(0, context.from) + inserted + line.slice(end);
   return { value, caret: context.from + inserted.length };
+}
+
+/** Where the word the caret is inside ends; the caret itself if it is not inside one. */
+function wordEnd(line: string, caret: number): number {
+  const word = tokenize(line).find((token) => token.kind === "word" && token.start < caret && token.end > caret);
+  return word?.end ?? caret;
 }
 
 /**
@@ -339,10 +371,12 @@ export function applyCandidate(line: string, caret: number, context: CompletionC
   const name = candidate.name.slice(context.kept);
   const quote = context.word.quote;
   const suffix = candidate.dir ? "/" : `${quote ?? ""} `;
+  // The chosen name replaces the whole word, also what followed the caret in it.
+  const end = wordEnd(line, caret);
   // No second space if one already follows.
-  const after = line.slice(caret);
-  const edit = insert(line, caret, context, name, after.startsWith(" ") && !candidate.dir ? suffix.trimEnd() : suffix);
-  return after.startsWith(" ") && !candidate.dir ? { ...edit, caret: edit.caret + 1 } : edit;
+  const spaced = line.slice(end).startsWith(" ") && !candidate.dir;
+  const edit = insert(line, end, context, name, spaced ? suffix.trimEnd() : suffix);
+  return spaced ? { ...edit, caret: edit.caret + 1 } : edit;
 }
 
 /** Inserts the common prefix of the matches; `null` if it adds nothing to what is typed. */

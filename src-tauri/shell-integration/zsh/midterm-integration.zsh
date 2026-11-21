@@ -6,8 +6,8 @@
 #                        OSC 133;D;<status> (only after a C), OSC 6973
 #                        (PATH, only when changed), OSC 7, OSC 133;A
 #   _midterm_prompt_end  last in precmd_functions, after whatever the
-#                        user's hooks (themes) did to PS1: moves OSC 133;B
-#                        to the end of PS1
+#                        user's hooks (themes, direnv) did: OSC 6973 again
+#                        if PATH changed, moves OSC 133;B to the end of PS1
 #   _midterm_preexec     before each command line runs: OSC 133;C
 #
 # Limitations: B is left out when prompt_percent is off (zsh could not tell
@@ -99,6 +99,7 @@ _midterm_precmd() {
 # prompt_subst and prompt_bang leave it alone; %{ %} makes it zero-width.
 _midterm_prompt_end() {
   builtin local ret=$?
+  _midterm_report_path
   builtin local mark=$'%{\e]133;B;aid='"$_midterm_aid"$'\a%}'
   PS1=${PS1//"$mark"/}
   [[ -o prompt_percent ]] && PS1+=$mark
