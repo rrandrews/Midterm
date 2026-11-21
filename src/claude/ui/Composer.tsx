@@ -2,6 +2,7 @@ import {
   ArrowUp,
   ChevronDown,
   FilePen,
+  Gauge,
   ListChecks,
   Paperclip,
   Shield,
@@ -12,9 +13,9 @@ import {
   X,
 } from "lucide-react";
 import { type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { Menu, MenuContent, MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger, MenuTrigger } from "../../components/ui/Menu";
-import type { ImageAttachment, ModelInfo, PermissionMode, SlashCommand } from "../protocol";
-import { bypassAllowed, getSession, interrupt, sendMessage, setModel, setPanel, setPermissionMode, useSession } from "../store";
+import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "../../components/ui/Menu";
+import type { EffortLevel, ImageAttachment, ModelInfo, PermissionMode, SlashCommand } from "../protocol";
+import { bypassAllowed, getDraft, getSession, interrupt, runningTasks, sendMessage, setDraft, setEffort, setModel, setPanel, setPermissionMode, useSession } from "../store";
 import type { ClaudeSession } from "../types";
 import { contextPercent, EFFORT_LABELS, FALLBACK_MODELS, levelOf, MODE_LABELS, modeCycle, modelLabel, nextMode } from "./format";
 import { allowByEnter } from "./PermissionPrompt";
@@ -82,53 +83,58 @@ function rank(commands: SlashCommand[], query: string): SlashCommand[] {
 function ModelMenu({ sessionKey, models }: { sessionKey: string; models: ModelInfo[] }) {
   const model = useSession(sessionKey, (session) => session?.model);
   const resolved = useSession(sessionKey, (session) => session?.resolvedModel);
-  const effort = useSession(sessionKey, (session) => session?.effort);
-  const current = models.find((candidate) => candidate.value === (model ?? "default"));
-  const levels = current?.supportsEffort ? (current.supportedEffortLevels ?? []) : [];
   return (
     <Menu>
       <MenuTrigger asChild>
-        <button type="button" className="cc-chip" title="Model and effort">
+        <button type="button" className="cc-chip" title="Model">
           <span>{modelLabel(model, models, resolved)}</span>
-          {effort && <span className="text-fg-dim">{EFFORT_LABELS[effort] ?? effort}</span>}
           <ChevronDown size={10} className="text-fg-faint" />
         </button>
       </MenuTrigger>
       <MenuContent align="start" side="top" className="cc-menu">
         {models.map((candidate) => (
           <MenuItem key={candidate.value} checked={candidate.value === (model ?? "default")} onSelect={() => void setModel(sessionKey, candidate.value === "default" ? undefined : candidate.value)}>
-            <span className="cc-menu-model">
-              <span>{candidate.displayName}</span>
-              {candidate.description && <span className="cc-menu-desc">{candidate.description}</span>}
-            </span>
+            {candidate.displayName}
           </MenuItem>
         ))}
-        {levels.length > 0 && (
-          <>
-            <MenuSeparator />
-            <MenuSub>
-              <MenuSubTrigger>
-                {/* Lines up with the items' check column above. */}
-                <span className="w-3 flex-none" aria-hidden="true" />
-                <span className="cc-menu-model">
-                  <span>Effort</span>
-                  <span className="cc-menu-desc">{effort ? (EFFORT_LABELS[effort] ?? effort) : "Model default"}</span>
-                </span>
-              </MenuSubTrigger>
-              <MenuSubContent>
-                {levels.map((level) => (
-                  <MenuItem key={level} checked={effort === level} onSelect={() => void setModel(sessionKey, model, level)}>
-                    {EFFORT_LABELS[level] ?? level}
-                  </MenuItem>
-                ))}
-                <MenuSeparator />
-                <MenuItem checked={!effort} onSelect={() => void setModel(sessionKey, model, null)}>
-                  Model default
-                </MenuItem>
-              </MenuSubContent>
-            </MenuSub>
-          </>
-        )}
+      </MenuContent>
+    </Menu>
+  );
+}
+
+const STANDARD_EFFORTS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
+/**
+ * The effort chip: the current model's levels (the standard ones until the
+ * session reports its models), and "Model default" ("Auto" on the chip).
+ * Hidden only for a model known not to take an effort.
+ */
+function EffortMenu({ sessionKey, models }: { sessionKey: string; models: ModelInfo[] }) {
+  const model = useSession(sessionKey, (session) => session?.model);
+  const effort = useSession(sessionKey, (session) => session?.effort);
+  const current = models.find((candidate) => candidate.value === (model ?? "default"));
+  if (current?.supportsEffort === false) return null;
+  const levels = current?.supportedEffortLevels?.length ? current.supportedEffortLevels : STANDARD_EFFORTS;
+  return (
+    <Menu>
+      <MenuTrigger asChild>
+        <button type="button" className="cc-chip" title="Reasoning effort">
+          <Gauge size={11} className="text-fg-dim" />
+          <span>{effort ? (EFFORT_LABELS[effort] ?? effort) : "Auto"}</span>
+          <ChevronDown size={10} className="text-fg-faint" />
+        </button>
+      </MenuTrigger>
+      <MenuContent align="start" side="top" className="cc-menu cc-menu-narrow">
+        <div className="cc-menu-label">Reasoning effort</div>
+        {levels.map((level) => (
+          <MenuItem key={level} checked={effort === level} onSelect={() => void setEffort(sessionKey, level)}>
+            {EFFORT_LABELS[level] ?? level}
+          </MenuItem>
+        ))}
+        <MenuSeparator />
+        <MenuItem checked={!effort} onSelect={() => void setEffort(sessionKey, null)}>
+          Model default
+        </MenuItem>
       </MenuContent>
     </Menu>
   );
@@ -139,10 +145,13 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
   const mode = useSession(sessionKey, (session) => session?.permissionMode ?? "default");
   const canBypass = useSession(sessionKey, (session) => (session ? bypassAllowed(session) : false));
   const init = useSession(sessionKey, (session) => session?.init);
-  const agents = useSession(sessionKey, (session) => Object.values(session?.tasks ?? {}).filter((task) => task.status === "running").length);
+  const agents = useSession(sessionKey, (session) => (session ? runningTasks(session) : 0));
   const percent = useSession(sessionKey, (session) => contextPercent(session?.contextTokens, session?.context?.maxTokens || session?.contextWindow));
-  const [text, setText] = useState("");
-  const [images, setImages] = useState<ImageAttachment[]>([]);
+  // The draft outlives the component (tab switches): read on mount, saved as it changes.
+  const [text, setText] = useState(() => getDraft(sessionKey)?.text ?? "");
+  const [images, setImages] = useState<ImageAttachment[]>(() => getDraft(sessionKey)?.images ?? []);
+  useEffect(() => setDraft(sessionKey, { text, images }), [sessionKey, text, images]);
+  const loading = useSession(sessionKey, (session) => session?.loadingTranscript === true);
   const [selected, setSelected] = useState(0);
   const [menuClosed, setMenuClosed] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -329,7 +338,7 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
           rows={1}
           value={text}
           className="cc-input"
-          placeholder={running ? "Queue another message…" : "Message Claude…"}
+          placeholder={loading ? "Loading the transcript…" : running ? "Queue another message…" : "Message Claude…"}
           aria-label="Message Claude"
           spellCheck
           onChange={(event) => {
@@ -380,6 +389,7 @@ export function Composer({ sessionKey, inputRef }: { sessionKey: string; inputRe
             </MenuContent>
           </Menu>
           <ModelMenu sessionKey={sessionKey} models={models} />
+          <EffortMenu sessionKey={sessionKey} models={models} />
           {agents > 0 && (
             <button type="button" className="cc-chip" title="Running agents" onClick={() => setPanel(sessionKey, "agents")}>
               <span className="cc-live-dot" />

@@ -81,6 +81,21 @@ function persist(key: string, patch: Partial<ClaudePaneData>): void {
 let generation = 0;
 const newKey = (paneId: string) => `${paneId}~${++generation}`;
 
+/* ---- Composer drafts ---- */
+
+/** What is typed in a composer, kept while the pane is unmounted (tab switches). */
+export type Draft = { text: string; images: ImageAttachment[] };
+const drafts = new Map<string, Draft>();
+
+export function getDraft(key: string): Draft | undefined {
+  return drafts.get(key);
+}
+/** Saves (or, when empty, discards) a session's draft. */
+export function setDraft(key: string, draft: Draft): void {
+  if (!draft.text && draft.images.length === 0) drafts.delete(key);
+  else drafts.set(key, draft);
+}
+
 /** A pane's hold on its session; `key` changes with New session and resume. */
 type PaneSession = { paneId: string; key: string };
 
@@ -88,6 +103,7 @@ const paneSessions = createPaneState<PaneSession>({
   kind: CLAUDE_KIND,
   dispose: (held) => {
     void closeProcess(held.key);
+    drafts.delete(held.key);
     useClaudeStore.setState((state) => {
       const { [held.key]: _gone, ...sessions } = state.sessions;
       const { [held.paneId]: _pane, ...panes } = state.panes;
@@ -123,6 +139,10 @@ function replaceSession(key: string, seed: { sessionId?: string }): string | und
   session.panel = old.panel;
   const held = paneSessions.get(old.paneId);
   if (held) held.key = next;
+  // What was being typed stays in the composer.
+  const draft = drafts.get(key);
+  drafts.delete(key);
+  if (draft) drafts.set(next, draft);
   useClaudeStore.setState((state) => {
     const { [key]: _gone, ...sessions } = state.sessions;
     return { sessions: { ...sessions, [next]: session }, panes: { ...state.panes, [old.paneId]: next } };
@@ -154,6 +174,7 @@ function flush(key: string): void {
   if (!entry || entry.queue.length === 0) return;
   const messages = entry.queue.splice(0);
   let ended = false;
+  const before = getSession(key);
   updateSession(key, (session) => {
     let next = session;
     const now = Date.now();
@@ -164,7 +185,8 @@ function flush(key: string): void {
     return next;
   });
   const session = getSession(key);
-  if (session?.sessionId) persist(key, { sessionId: session.sessionId });
+  // Saved only when it changed. Settings the CLI reports (mode, model) are never saved: only the user's choices are.
+  if (session?.sessionId && session.sessionId !== before?.sessionId) persist(key, { sessionId: session.sessionId });
   if (ended) void refreshContext(key, "summary");
 }
 
@@ -252,6 +274,7 @@ function ensureProcess(key: string): Promise<boolean> {
   }).then(
     (init) => {
       if (live.get(key) !== entry) return false;
+      const knownId = getSession(key)?.sessionId;
       updateSession(key, (current) => ({
         init,
         sessionId: init.sessionId ?? current.sessionId,
@@ -259,7 +282,7 @@ function ensureProcess(key: string): Promise<boolean> {
         status: current.status === "starting" ? "idle" : current.status,
       }));
       const sessionId = getSession(key)?.sessionId;
-      if (sessionId) persist(key, { sessionId });
+      if (sessionId && sessionId !== knownId) persist(key, { sessionId });
       void refreshContext(key, "summary");
       return true;
     },
@@ -298,6 +321,8 @@ function titleOf(text: string): string {
 
 /** Sends a message, starting (or resuming) the session's process first if needed. While a turn runs it is queued. */
 export async function sendMessage(key: string, text: string, images?: ImageAttachment[]): Promise<void> {
+  // A restored transcript first: the process starts (and its events arrive) only after it is in place.
+  await loads.get(key);
   const session = getSession(key);
   if (!session || (!text.trim() && !images?.length)) return;
   const uuid = crypto.randomUUID();
@@ -331,6 +356,12 @@ export async function answerPermission(key: string, requestId: string, result: P
       tools: tool && result.behavior === "deny" ? { ...session.tools, [tool.id]: { ...tool, status: "denied" } } : session.tools,
     };
   });
+  // A mode the user picked in the prompt (plan approval) is theirs: saved like the mode chip's.
+  const mode = result.behavior === "allow" ? result.updatedPermissions?.find((update) => update.type === "setMode" && update.destination === "session") : undefined;
+  if (mode?.type === "setMode") {
+    updateSession(key, { permissionMode: mode.mode });
+    persist(key, { permissionMode: mode.mode });
+  }
   await request("session.permission", { session: key, requestId, result }).catch((error) => addNotice(key, `Could not answer the prompt: ${messageOf(error)}`));
 }
 
@@ -344,29 +375,63 @@ export function bypassAllowed(session: ClaudeSession): boolean {
   return session.bypassAllowed ?? bypassSetting();
 }
 
-export async function setPermissionMode(key: string, mode: PermissionMode): Promise<void> {
+type Setting = "permissionMode" | "model" | "effort";
+type SettingValue<K extends Setting> = ClaudeSession[K];
+
+/* Setting changes of a session, one at a time (and after its start). */
+const settingChains = new Map<string, Promise<void>>();
+
+/**
+ * Changes a session setting: shown at once, saved to the pane once the
+ * session acknowledged it (or right away when no process runs: it is
+ * applied at the next start). A change while the process starts waits for
+ * the start. On failure the previous value comes back, with a notice.
+ */
+function changeSetting<K extends Setting>(key: string, field: K, value: SettingValue<K>, send: () => Promise<unknown>, what: string): Promise<void> {
   const session = getSession(key);
-  if (!session || (mode === "bypassPermissions" && !bypassAllowed(session))) return;
-  updateSession(key, { permissionMode: mode });
-  persist(key, { permissionMode: mode });
-  if (!hasProcess(key)) return;
-  await request("session.setPermissionMode", { session: key, mode }).catch((error) => addNotice(key, `Could not change the mode: ${messageOf(error)}`));
+  if (!session) return Promise.resolve();
+  const previous = session[field];
+  updateSession(key, { [field]: value } as Partial<ClaudeSession>);
+  const save = () => persist(key, { [field]: value ?? undefined } as Partial<ClaudePaneData>);
+  const task = async () => {
+    await live.get(key)?.started;
+    if (!getSession(key)) return;
+    if (!hasProcess(key)) {
+      save();
+      return;
+    }
+    try {
+      await send();
+      // The start's init may have reported the old value meanwhile.
+      updateSession(key, { [field]: value } as Partial<ClaudeSession>);
+      save();
+    } catch (error) {
+      updateSession(key, (current) => (current[field] === value ? ({ [field]: previous } as Partial<ClaudeSession>) : {}));
+      addNotice(key, `Could not change ${what}: ${messageOf(error)}`);
+    }
+  };
+  const next = (settingChains.get(key) ?? Promise.resolve()).then(task, task);
+  settingChains.set(key, next);
+  return next;
 }
 
-/** Changes the model (`undefined`: the default) and, when given, the effort (`null`: the model's default). */
-export async function setModel(key: string, model: string | undefined, effort?: EffortLevel | null): Promise<void> {
-  const before = getSession(key);
-  if (!before) return;
-  const modelChanged = before.model !== model;
-  updateSession(key, effort === undefined ? { model } : { model, effort });
-  persist(key, effort === undefined ? { model } : { model, effort: effort ?? undefined });
-  if (!hasProcess(key)) return;
-  try {
-    if (modelChanged) await request("session.setModel", { session: key, model });
-    if (effort !== undefined) await request("session.setEffort", { session: key, effort });
-  } catch (error) {
-    addNotice(key, `Could not change the model: ${messageOf(error)}`);
-  }
+export function setPermissionMode(key: string, mode: PermissionMode): Promise<void> {
+  const session = getSession(key);
+  if (!session || (mode === "bypassPermissions" && !bypassAllowed(session))) return Promise.resolve();
+  return changeSetting(key, "permissionMode", mode, () => request("session.setPermissionMode", { session: key, mode }), "the mode");
+}
+
+/** Changes the model (`undefined`: the default). Only the model: the effort is `setEffort`'s. */
+export function setModel(key: string, model: string | undefined): Promise<void> {
+  if (!getSession(key) || getSession(key)?.model === model) return Promise.resolve();
+  return changeSetting(key, "model", model, () => request("session.setModel", { session: key, model }), "the model");
+}
+
+/** Changes the effort (`null`: the model's default). Only the effort. */
+export function setEffort(key: string, effort: EffortLevel | null): Promise<void> {
+  const session = getSession(key);
+  if (!session || (session.effort ?? null) === effort) return Promise.resolve();
+  return changeSetting(key, "effort", effort, () => request("session.setEffort", { session: key, effort }), "the effort");
 }
 
 /** Ends the current session and starts empty (same folder). */
@@ -383,14 +448,27 @@ export async function resumeSession(key: string, sessionId: string): Promise<voi
   await loadTranscript(next, sessionId);
 }
 
-async function loadTranscript(key: string, sessionId: string): Promise<void> {
+/** Transcripts being loaded, by session key (a send waits for its session's). */
+const loads = new Map<string, Promise<void>>();
+
+function loadTranscript(key: string, sessionId: string): Promise<void> {
+  const loading = readTranscript(key, sessionId).finally(() => {
+    loads.delete(key);
+    updateSession(key, { loadingTranscript: undefined });
+  });
+  loads.set(key, loading);
+  updateSession(key, { loadingTranscript: true });
+  return loading;
+}
+
+async function readTranscript(key: string, sessionId: string): Promise<void> {
   const session = getSession(key);
   if (!session) return;
   try {
     const messages = await request("sessions.messages", { cwd: session.cwd, sessionId });
     const loaded = fromSessionMessages(messages);
     updateSession(key, (current) => {
-      // Something happened meanwhile (a message was sent): keep it after the loaded transcript.
+      // Sends wait for the load and nothing runs yet, so only local notices can be here: keep them after it.
       const firstUser = loaded.items.find((item) => item.kind === "user");
       return {
         ...loaded,
@@ -408,6 +486,7 @@ async function loadTranscript(key: string, sessionId: string): Promise<void> {
 export function setCwd(key: string, cwd: string): void {
   const session = getSession(key);
   if (!session || session.items.length > 0 || live.has(key)) return;
+  cwd = cwd.replace(/(.)\/+$/, "$1");
   updateSession(key, { cwd });
   persist(key, { cwd });
 }
@@ -456,4 +535,25 @@ export function hasProcess(key: string): boolean {
 export function paneIsRunning(paneId: string): boolean {
   const key = paneSessionKey(paneId);
   return key !== undefined && getSession(key)?.status === "running";
+}
+
+/** Background tasks and subagents still running. */
+export function runningTasks(session: Pick<ClaudeSession, "tasks">): number {
+  return Object.values(session.tasks).filter((task) => task.status === "running" || task.status === "pending").length;
+}
+
+/**
+ * What closing (or replacing) the session would stop, as a name for close
+ * prompts ("Claude Code (2 agents running)"), or `undefined` when nothing
+ * is: a running turn, running background tasks, or a first message waiting
+ * for the process to start.
+ */
+export function sessionWork(key: string): string | undefined {
+  const session = getSession(key);
+  if (!session) return undefined;
+  const agents = runningTasks(session);
+  const waiting = session.status === "starting" && session.items.some((item) => item.kind === "user");
+  if (agents > 0) return `Claude Code (${agents} agent${agents === 1 ? "" : "s"} running)`;
+  if (session.status === "running" || waiting) return "Claude Code";
+  return undefined;
 }

@@ -60,6 +60,13 @@ function ResultRow({ tool, render }: { tool: ToolCall; render?: (result: string)
   return <Gutter label="OUT">{tool.isError ? <Output text={tool.result} tone="err" /> : render ? render(tool.result) : <Output text={tool.result} />}</Gutter>;
 }
 
+/** Read's range: "lines 10–49", "from line 100", "lines 1–40"; `undefined` for the whole file. */
+export function readRange(offset: number | undefined, limit: number | undefined): string | undefined {
+  if (offset === undefined && limit === undefined) return undefined;
+  const from = offset ?? 1;
+  return limit === undefined ? `from line ${from}` : `lines ${from}–${from + limit - 1}`;
+}
+
 /** Strips Read's `cat -n` line numbers ("    12→text" or "    12\ttext"). */
 export function stripLineNumbers(result: string): string {
   const lines = result.split("\n");
@@ -113,10 +120,11 @@ export function ToolBody({ tool, cwd, home }: { tool: ToolCall; cwd: string; hom
     case "Edit":
     case "MultiEdit":
     case "Write": {
+      // The path is on the row: the body is the diff (and an error), never empty (see `hasBody`).
       const diff = toolDiff(tool);
       return (
         <>
-          {diff && diff.length > 0 ? <Diff lines={diff} /> : <Gutter label="IN">{relativeTo(text(input.file_path) ?? "", cwd, home)}</Gutter>}
+          {diff && diff.length > 0 && <Diff lines={diff} />}
           {tool.isError && <ResultRow tool={tool} />}
         </>
       );
@@ -128,12 +136,7 @@ export function ToolBody({ tool, cwd, home }: { tool: ToolCall; cwd: string; hom
         <>
           <Gutter label="IN">
             <span className="cc-mono">{relativeTo(text(input.file_path) ?? "", cwd, home)}</span>
-            {offset !== undefined || limit !== undefined ? (
-              <span className="cc-faint">
-                {" "}
-                · lines {offset ?? 1}–{(offset ?? 1) + (limit ?? 0) - 1}
-              </span>
-            ) : null}
+            {readRange(offset, limit) && <span className="cc-faint"> · {readRange(offset, limit)}</span>}
           </Gutter>
           <ResultRow tool={tool} render={(result) => <Output text={stripLineNumbers(result)} />} />
         </>
@@ -191,6 +194,21 @@ export function ToolBody({ tool, cwd, home }: { tool: ToolCall; cwd: string; hom
           <ResultRow tool={tool} render={(result) => <Output text={result} mono={false} />} />
         </>
       );
+    case "TaskCreate":
+      return (
+        <div className="cc-card-pad">
+          <div className="text-fg-soft">{text(input.subject)}</div>
+          {text(input.description) && <div className="cc-dim cc-prose">{text(input.description)}</div>}
+        </div>
+      );
+    case "TaskList": {
+      const tasks = Array.isArray(structured.tasks) ? structured.tasks.map(rec) : [];
+      return (
+        <div className="cc-card-pad">
+          <Todos input={{ todos: tasks.map((task) => ({ content: `#${text(task.id) ?? "?"} ${text(task.subject) ?? ""}`, status: task.status })) }} />
+        </div>
+      );
+    }
     case "ExitPlanMode":
       return (
         <div className="cc-card-pad">
@@ -263,10 +281,25 @@ export function ToolMeta({ tool }: { tool: ToolCall }) {
 
 /** Whether the call opens expanded: edits show their diff. */
 export function opensExpanded(tool: ToolCall): boolean {
-  return (tool.name === "Edit" || tool.name === "MultiEdit" || tool.name === "Write") && tool.status !== "streaming";
+  return (tool.name === "Edit" || tool.name === "MultiEdit" || tool.name === "Write") && tool.status !== "streaming" && hasBody(tool);
 }
 
-/** Whether a call has anything to show when expanded. */
+/** Whether a call has anything to show when expanded. Task updates say it all on their row. */
 export function hasBody(tool: ToolCall): boolean {
-  return Object.keys(tool.input).length > 0 || Boolean(tool.result);
+  if (tool.isError && tool.result) return true;
+  switch (tool.name) {
+    case "Edit":
+    case "MultiEdit":
+    case "Write":
+      return Boolean(toolDiff(tool)?.length);
+    case "TaskUpdate":
+    case "TaskGet":
+      return false;
+    case "TaskCreate":
+      return Boolean(text(tool.input.description));
+    case "TaskList":
+      return Array.isArray(rec(tool.structured).tasks) && (rec(tool.structured).tasks as unknown[]).length > 0;
+    default:
+      return Object.keys(tool.input).length > 0 || Boolean(tool.result);
+  }
 }

@@ -6,7 +6,8 @@ import type { PanePlugin, PaneProps } from "../plugins/types";
 import type { SettingField } from "../plugins/fields";
 import { CLAUDE_KIND } from "./client";
 import type { EffortLevel, PermissionMode } from "./protocol";
-import { getSession, interrupt, newSession, paneIsRunning, paneSessionKey, setPanel, setPaneDataWriter, useClaudeStore, type ClaudePaneData } from "./store";
+import { getSession, interrupt, paneIsRunning, paneSessionKey, sessionWork, setPanel, setPaneDataWriter, useClaudeStore, type ClaudePaneData } from "./store";
+import { startNewSession } from "./ui/actions";
 import type { SidePanel } from "./types";
 import { ClaudePane } from "./ui/ClaudePane";
 import { MODE_LABELS } from "./ui/format";
@@ -26,7 +27,7 @@ const EFFORTS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 export function validateClaudeData(raw: Record<string, unknown>): ClaudePaneData {
   const text = (value: unknown) => (typeof value === "string" && value.trim() !== "" ? value : undefined);
   return {
-    cwd: text(raw.cwd) ?? homeDirectory() ?? "/",
+    cwd: (text(raw.cwd) ?? homeDirectory() ?? "/").replace(/(.)\/+$/, "$1"),
     sessionId: text(raw.sessionId),
     model: text(raw.model),
     effort: EFFORTS.includes(raw.effort as EffortLevel) ? (raw.effort as EffortLevel) : undefined,
@@ -94,12 +95,16 @@ export const claudeCodePlugin: PanePlugin = {
       const key = paneSessionKey(pane.id);
       return (key && getSession(key)?.cwd) || (pane.data as unknown as ClaudePaneData).cwd;
     },
-    closeBlockers: async (paneId) => (paneIsRunning(paneId) ? [{ type: "running", name: "Claude Code" }] : []),
+    closeBlockers: async (paneId) => {
+      const key = paneSessionKey(paneId);
+      const work = key ? sessionWork(key) : undefined;
+      return work ? [{ type: "running", name: work }] : [];
+    },
     menu: (ctx) => {
       const key = paneSessionKey(ctx.paneId);
       const running = paneIsRunning(ctx.paneId);
       return [
-        { label: "New session", commandId: "claude.newSession", run: () => key && newSession(key) },
+        { label: "New session", commandId: "claude.newSession", run: () => key && startNewSession(key) },
         { label: "Interrupt", commandId: "claude.interrupt", disabled: !running, run: () => key && interrupt(key) },
         { type: "separator" },
         {
@@ -122,7 +127,7 @@ export const claudeCodePlugin: PanePlugin = {
       enabled: () => activeSession() !== undefined,
       run: () => {
         const key = activeSession();
-        if (key) void newSession(key);
+        if (key) void startNewSession(key);
       },
     },
     {

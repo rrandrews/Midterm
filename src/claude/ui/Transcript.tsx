@@ -33,16 +33,28 @@ const UserMessage = memo(function UserMessage({ item }: { item: Item<"user"> }) 
   );
 });
 
+/** Thinking with nothing to show (display omitted, or redacted). */
+const isBlankThinking = (item: TranscriptItem): boolean => item.kind === "thinking" && (item.redacted === true || item.text.trim() === "");
+
 const Thinking = memo(function Thinking({ item }: { item: Item<"thinking"> }) {
   const [open, setOpen] = useState(false);
+  if (isBlankThinking(item)) {
+    // Only that Claude thought: a quiet line, nothing to open.
+    return (
+      <div className="cc-item cc-thinking is-blank" data-dot="hollow">
+        <span className="cc-dot" aria-hidden="true" />
+        <span className={`cc-thinking-blank${item.streaming ? " cc-shimmer" : ""}`}>{item.streaming ? "Thinking" : "Thought"}</span>
+      </div>
+    );
+  }
   const preview = item.text.trim().split("\n")[0];
   return (
     <div className="cc-item cc-thinking" data-dot="hollow">
       <span className="cc-dot" aria-hidden="true" />
-      <button type="button" className="cc-thinking-row" aria-expanded={open} disabled={item.redacted || !item.text} onClick={() => setOpen(!open)}>
-        <span className={item.streaming ? "cc-shimmer" : undefined}>{item.redacted ? "Thinking (redacted)" : item.streaming ? "Thinking" : "Thought"}</span>
+      <button type="button" className="cc-thinking-row" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className={item.streaming ? "cc-shimmer" : undefined}>{item.streaming ? "Thinking" : "Thought"}</span>
         {!open && preview && <span className="cc-thinking-preview">{preview}</span>}
-        {item.text && !item.redacted && <ChevronRight size={11} className="cc-chevron" aria-hidden="true" />}
+        <ChevronRight size={11} className="cc-chevron" aria-hidden="true" />
       </button>
       {open && <div className="cc-thinking-text">{item.text}</div>}
     </div>
@@ -105,7 +117,7 @@ function RailItem({ sessionKey, item, compact, showThinking }: { sessionKey: str
 
 type Group = Item<"user"> | Item<"result"> | TranscriptItem[];
 
-/** Items in rail groups, broken by user messages and turn ends; queued messages last. */
+/** Items in rail groups, broken by user messages and turn ends; queued messages last; runs of blank thinking as one. */
 function groups(items: TranscriptItem[], compact: boolean): Group[] {
   const ordered = [...items.filter((item) => !(item.kind === "user" && item.queued)), ...items.filter((item) => item.kind === "user" && item.queued)];
   const out: Group[] = [];
@@ -115,8 +127,11 @@ function groups(items: TranscriptItem[], compact: boolean): Group[] {
     } else if (item.kind === "user") out.push(item);
     else {
       const last = out[out.length - 1];
-      if (Array.isArray(last)) last.push(item);
-      else out.push([item]);
+      if (!Array.isArray(last)) out.push([item]);
+      else if (isBlankThinking(item) && last.length > 0 && isBlankThinking(last[last.length - 1])) {
+        // The latest state under the first one's id (a stable key).
+        last[last.length - 1] = { ...item, id: last[last.length - 1].id };
+      } else last.push(item);
     }
   }
   return out;

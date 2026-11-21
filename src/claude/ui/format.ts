@@ -1,3 +1,4 @@
+import { structuredPatch } from "diff";
 import type { ModelInfo, PermissionMode } from "../protocol";
 import type { ToolCall } from "../types";
 
@@ -59,7 +60,7 @@ export const EFFORT_LABELS: Record<string, string> = { low: "Low", medium: "Medi
 export function relativeTo(path: string, cwd: string, home?: string): string {
   if (!path) return path;
   const base = cwd.replace(/\/+$/, "");
-  if (base && path.startsWith(`${base}/`)) return path.slice(base.length + 1);
+  if (base && path.startsWith(`${base}/`)) return path.slice(base.length + 1).replace(/^\/+/, "");
   if (path === base) return ".";
   if (home && (path === home || path.startsWith(`${home}/`))) return `~${path.slice(home.length)}`;
   return path;
@@ -112,6 +113,18 @@ export function toolGist(tool: Pick<ToolCall, "name" | "input">, cwd: string, ho
       const done = todos.filter((todo) => (todo as { status?: unknown })?.status === "completed").length;
       return todos.length ? `${done}/${todos.length} done` : "";
     }
+    case "TaskCreate":
+      return str(input.subject) ?? "";
+    case "TaskUpdate": {
+      const id = str(input.taskId);
+      const status = str(input.status);
+      const change = status ? `→ ${status === "in_progress" ? "in progress" : status}` : str(input.subject);
+      return [id ? `#${id}` : undefined, change].filter(Boolean).join(" ");
+    }
+    case "TaskGet":
+      return str(input.taskId) ? `#${input.taskId}` : "";
+    case "TaskList":
+      return "";
     case "ExitPlanMode":
       return "Plan ready for review";
     case "AskUserQuestion": {
@@ -162,33 +175,33 @@ export function diffFromPatch(hunks: readonly Hunk[]): DiffLine[] {
   return lines;
 }
 
-/** A line diff of two texts (LCS; falls back to all-removed/all-added for very large inputs). */
+/** Context lines around each change. */
+const DIFF_CONTEXT = 3;
+
+/**
+ * A line diff of two texts as hunks (jsdiff's Myers diff, `structuredPatch`).
+ * Bounded: past the time limit it falls back to the changed middle between
+ * the common first and last lines, still as one real hunk.
+ */
 export function diffTexts(before: string, after: string): DiffLine[] {
+  const patch = structuredPatch("a", "b", before, after, undefined, undefined, { context: DIFF_CONTEXT, timeout: 250 });
+  return patch ? diffFromPatch(patch.hunks) : diffAround(before, after);
+}
+
+/** The cheap fallback: one hunk of what changed between the common first and last lines. */
+export function diffAround(before: string, after: string): DiffLine[] {
   const a = before === "" ? [] : before.split("\n");
   const b = after === "" ? [] : after.split("\n");
-  if (a.length * b.length > 250_000) {
-    return [...a.map((text, i) => ({ type: "del" as const, text, oldLine: i + 1 })), ...b.map((text, i) => ({ type: "add" as const, text, newLine: i + 1 }))];
-  }
-  // lengths[i][j]: LCS of a[i..] and b[j..].
-  const lengths: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) lengths[i][j] = a[i] === b[j] ? lengths[i + 1][j + 1] + 1 : Math.max(lengths[i + 1][j], lengths[i][j + 1]);
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let end = 0;
+  while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
+  const from = Math.max(0, start - DIFF_CONTEXT);
   const lines: DiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) {
-      lines.push({ type: "context", text: a[i], oldLine: i + 1, newLine: j + 1 });
-      i++;
-      j++;
-    } else if (i < a.length && (j >= b.length || lengths[i + 1][j] >= lengths[i][j + 1])) {
-      // Removed lines before added ones.
-      lines.push({ type: "del", text: a[i], oldLine: i + 1 });
-      i++;
-    } else {
-      lines.push({ type: "add", text: b[j], newLine: j + 1 });
-      j++;
-    }
-  }
+  for (let i = from; i < start; i++) lines.push({ type: "context", text: a[i], oldLine: i + 1, newLine: i + 1 });
+  for (let i = start; i < a.length - end; i++) lines.push({ type: "del", text: a[i], oldLine: i + 1 });
+  for (let j = start; j < b.length - end; j++) lines.push({ type: "add", text: b[j], newLine: j + 1 });
+  for (let k = 0; k < Math.min(end, DIFF_CONTEXT); k++) lines.push({ type: "context", text: a[a.length - end + k], oldLine: a.length - end + k + 1, newLine: b.length - end + k + 1 });
   return lines;
 }
 
@@ -205,16 +218,30 @@ export function diffStats(lines: readonly DiffLine[]): { added: number; removed:
 
 /** The diff of an Edit / MultiEdit / Write call: from its structured result when there is one, else from its input. */
 export function toolDiff(tool: Pick<ToolCall, "name" | "input" | "structured">): DiffLine[] | undefined {
+  // Tool calls are immutable in the store: one diff per call, however often it is asked for.
+  if (diffCache.has(tool)) return diffCache.get(tool);
+  const diff = computeToolDiff(tool);
+  diffCache.set(tool, diff);
+  return diff;
+}
+
+const diffCache = new WeakMap<object, DiffLine[] | undefined>();
+
+/** Line numbers of a diff between snippets count from the snippet, not the file: dropped. */
+const unnumbered = (lines: DiffLine[]): DiffLine[] => lines.map(({ oldLine: _old, newLine: _new, ...line }) => line);
+
+function computeToolDiff(tool: Pick<ToolCall, "name" | "input" | "structured">): DiffLine[] | undefined {
   const structured = tool.structured as { structuredPatch?: unknown } | undefined;
   if (structured && Array.isArray(structured.structuredPatch) && structured.structuredPatch.length) return diffFromPatch(structured.structuredPatch as Hunk[]);
   const input = tool.input;
-  if (tool.name === "Edit" && typeof input.old_string === "string" && typeof input.new_string === "string") return diffTexts(input.old_string, input.new_string);
+  // No patch (a replayed transcript, or a call that failed): the input's own texts.
+  if (tool.name === "Edit" && typeof input.old_string === "string" && typeof input.new_string === "string") return unnumbered(diffTexts(input.old_string, input.new_string));
   if (tool.name === "MultiEdit" && Array.isArray(input.edits)) {
     const lines: DiffLine[] = [];
     for (const edit of input.edits as { old_string?: unknown; new_string?: unknown }[]) {
       if (typeof edit?.old_string !== "string" || typeof edit.new_string !== "string") continue;
       if (lines.length) lines.push({ type: "gap", text: "" });
-      lines.push(...diffTexts(edit.old_string, edit.new_string));
+      lines.push(...unnumbered(diffTexts(edit.old_string, edit.new_string)));
     }
     return lines;
   }

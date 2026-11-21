@@ -43,8 +43,11 @@ webview (src/claude/)  ──invoke/Channel──▶  backend (src-tauri/src/cla
 ## Session options
 
 `session.start` passes: `cwd`; `resume` (the pane's saved session id);
-`model`, `effort`, `permissionMode` from the pane; `settingSources:
-["user", "project", "local"]` (the user's real configuration);
+`model`, `effort`, `permissionMode` from the pane; `systemPrompt: { type:
+"preset", preset: "claude_code" }` (without it the SDK sends an empty
+prompt); `settingSources: ["user", "project", "local"]` (the user's real
+configuration); `allowDangerouslySkipPermissions` only when the
+`allowBypassPermissions` setting is on (`allowBypass`);
 `includePartialMessages: true` (streaming); `forwardSubagentText: true`
 and `agentProgressSummaries: true` (subagent observability); `canUseTool`
 (prompts become `permission` events); `env` without `CLAUDECODE` /
@@ -57,9 +60,16 @@ and `agentProgressSummaries: true` (subagent observability); `canUseTool`
   restore a saved `sessionId` is resumed with its transcript
   (`sessions.messages`).
 - `tabTitle`: the session title, else "Claude Code". `closeBlockers`: a
-  running turn. `directory`: `cwd`. Menu: New session, Interrupt, panels.
+  running turn, running background agents ("Claude Code (2 agents
+  running)") or a first message waiting for the start (`sessionWork`).
+  New session (header, menu, command) asks first in the same cases
+  (`ui/actions.ts`). `directory`: `cwd`. Menu: New session, Interrupt, panels.
 - Plugin settings (`settings.fields`): `claudePath` (override), `nodePath`
-  (override), `defaultPermissionMode`, `showThinking`.
+  (override), `defaultPermissionMode`, `allowBypassPermissions` (offers the
+  bypass mode; off by default), `showThinking`.
+- Requirements: Claude Code installed and signed in, Node.js 18.14 or later
+  on the login shell's PATH (the backend checks both when the bridge
+  starts).
 
 ## Design
 
@@ -143,8 +153,10 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
   autocomplete above the box (name in mono, argument hint `fg-faint`,
   description `fg-dim`; ↑↓ ⏎ ⇥). Pasted images attach as thumbnails. The
   bar below: attach, commands, the mode chip (icon + label; bypass in
-  `err`, plan in `info`, accept edits in `ok`), model + effort chip (a menu
-  of `init.models` and their effort levels), running agents chip, then the
+  `err`, plan in `info`, accept edits in `ok`), model chip (names of
+  `init.models`), effort chip (gauge + level, "Auto" for the model default;
+  the model's `supportedEffortLevels`, or low…max before init; hidden only
+  when the model has `supportsEffort: false`), running agents chip, then the
   context percentage and Send / Stop (Stop is an `err` square).
 - **To-dos**: the latest TodoWrite, pinned above the composer as one line
   ("3/7 · Running the test suite") that expands to the checklist.
@@ -169,15 +181,27 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
     Discover (search over marketplace plugins, virtualized, install with a
     scope), Marketplaces (add by repo/URL/path, update, remove), MCP
     servers (status dot, enable switch, reconnect). After a change, a
-    "Reload plugins into this session" bar.
+    "Reload plugins into this session" bar on every live session the
+    change reaches (by scope), and a reload button that is always there.
+    Install and update never pass `--yes`: when a marketplace wants to run
+    a command, the CLI's approval request comes back as `confirm`, the
+    panel shows the command, and only an approval re-runs it with
+    `--accept-command <digest>`. Installs for other projects and synced
+    plugins are listed read-only.
   - **Config**: a scope switch (User, Project, Local) with the file path.
     Fields: model, effort, default permission mode, permission rules
     (allow / ask / deny lists of rule chips with add and remove), env
     variables (key/value rows). Edits are applied to the JSON with
     `jsonc-parser` (`modify`), keeping unknown keys and formatting, and
     saved with Save. "Edit JSON" shows the raw text in a mono editor with
-    validation; "Open in editor" opens the file in an editor pane. Memory:
-    the CLAUDE.md files with Open (creating them on demand).
+    validation (strict JSON object, the bridge's own rule: no comments,
+    trailing commas or empty text); "Open in editor" opens the file in an
+    editor pane. Drafts are keyed by file path, shared by every pane, and
+    Save re-reads the file first: if it changed since it was loaded, a bar
+    offers Reload or Overwrite instead of saving. Saving keeps the file's
+    mode and follows symlinks. Memory: User, Project, Project (.claude)
+    and Local CLAUDE.md files, plus parent folders' files that exist, with
+    Open (creating them on demand).
   - **History**: past sessions of this folder (title or first prompt,
     relative time, branch); click resumes it in this pane.
 - **Motion**: only in answer to something: the running dot pulses, rows
@@ -198,7 +222,11 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
   status (`done`, `error`, `denied` from the rejection text or
   `permission_denied`, `cancelled` on "interrupted by user"), the result
   text (64 KB) and `structured` (`tool_use_result`). `task_*` build `tasks`
-  (ambient tasks skipped). TodoWrite input → `todos`. `result` → totals
+  (ambient tasks skipped). `todos` (main thread): TodoWrite's list, or
+  the CLI's task tools once they succeed (TaskCreate adds one, its id from
+  the structured result or "Task #3 created…"; TaskUpdate changes or
+  deletes one; TaskList / TaskGet refresh). Blank thinking (display
+  omitted) shows as one quiet "Thought" line per run. `result` → totals
   (cost and per-model usage are cumulative in the CLI), a `result` item
   with that turn's cost, `contextWindow`, status idle (running while
   `queued_turn_count > 0`), and settles anything still streaming or
@@ -206,13 +234,28 @@ files `type`, skills `string`, messages `accent`, autocompact buffer
   main-thread API message. Status `compacting`, `compact_boundary`,
   `api_retry` (coalesced), `local_command_output`, `informational`, failed
   hooks and errors become notice/command items. Unknown messages are
-  ignored. `fromSessionMessages` replays a saved transcript the same way.
+  ignored. `conversation_reset` clears the transcript for every trigger.
+  After a resume the first result's cost is left out (the CLI's total
+  includes earlier spend). Diffs (`diffTexts`) use jsdiff's
+  `structuredPatch`, with a time limit and a changed-middle fallback.
+  Replayed calls have no structured results: Edit/MultiEdit diffs come
+  from the input (without line numbers), an Agent's report is its result
+  text, and a card with nothing to show has no body.
+  `fromSessionMessages` replays a saved transcript the same way.
 - **Store** (`store.ts`): a pane holds its session through
   `acquirePaneSession(paneId, data)` (a `createPaneState`; disposing closes
   the process). New session / resume give the pane a new session key.
   Messages are applied once per animation frame. The plugin sets
   `setPaneDataWriter` so `sessionId`, `model`, `effort`, `permissionMode`
-  and `cwd` are saved to the pane data. A message sent while a turn runs is
+  and `cwd` are saved to the pane data. Mode, model and effort changes
+  show at once but are saved only once the session acknowledged them
+  (`changeSetting`: one at a time, after a pending start; a refusal brings
+  the old value back with a notice). `setModel` and `setEffort` change one
+  setting each. Only the user's choices are saved (chips, and a mode picked
+  in a permission prompt): values the CLI reports (init, status) never are,
+  so a restored pane keeps its saved model, effort and mode. Composer drafts (text and images) are
+  kept per session key (`getDraft`/`setDraft`) across unmounts. While a
+  restored transcript loads (`loadingTranscript`) sends wait for it. A message sent while a turn runs is
   shown queued until the CLI folds it in (`user_message_uuids`).
   `allowBypass` comes from the `allowBypassPermissions` setting at start
   (`bypassAllowed(session)`).

@@ -105,7 +105,7 @@ const ACCOUNT: AccountInfo = {
   apiProvider: "firstParty",
 };
 
-const TOOLS = ["Task", "Bash", "Glob", "Grep", "ExitPlanMode", "Read", "Edit", "Write", "NotebookEdit", "WebFetch", "TodoWrite", "WebSearch", "AskUserQuestion", "mcp__linear__list_issues", "mcp__context7__query-docs"];
+const TOOLS = ["Task", "Bash", "Glob", "Grep", "ExitPlanMode", "Read", "Edit", "Write", "NotebookEdit", "WebFetch", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "WebSearch", "AskUserQuestion", "mcp__linear__list_issues", "mcp__context7__query-docs"];
 const SKILLS = ["commit-commands:commit", "frontend-design:frontend-design", "deploy"];
 const PLUGINS = [
   { name: "commit-commands", path: `${STUB_PATH}/commit-commands`, version: "1.4.0" },
@@ -308,6 +308,8 @@ function testOutput(cwd: string, failing: boolean): string {
 
 type Session = {
   key: string;
+  /** This session's MCP servers (toggles and reconnects change them). */
+  mcp: McpServerStatus[];
   cwd: string;
   sessionId: string;
   model: string;
@@ -432,7 +434,7 @@ class Turn {
       model: modelId(s),
       permissionMode: s.mode,
       tools: TOOLS,
-      mcp_servers: MCP_SERVERS.map((m) => ({ name: m.name, status: m.status })),
+      mcp_servers: s.mcp.map((m) => ({ name: m.name, status: m.status })),
       slash_commands: COMMANDS.map((c) => c.name),
       skills: SKILLS,
       plugins: PLUGINS,
@@ -624,13 +626,21 @@ async function showcaseTurn(t: Turn): Promise<void> {
   const { s } = t;
   const cwd = s.cwd;
   const workerPath = `${cwd}/src/queue/worker.ts`;
-  const todo = (a: "pending" | "in_progress" | "completed", b: typeof a, c: typeof a, d: typeof a) =>
-    [
-      { content: "Reproduce the flaky queue test", status: a, activeForm: "Reproducing the flaky queue test" },
-      { content: "Find the race in the worker drain loop", status: b, activeForm: "Finding the race in the worker drain loop" },
-      { content: "Fix it and re-run the tests", status: c, activeForm: "Fixing it and re-running the tests" },
-      { content: "Check other timers for the same pattern", status: d, activeForm: "Checking other timers for the same pattern" },
-    ];
+  const plan = [
+    { subject: "Reproduce the flaky queue test", activeForm: "Reproducing the flaky queue test", description: "Run bun test on src/queue and capture the failure." },
+    { subject: "Find the race in the worker drain loop", activeForm: "Finding the race in the worker drain loop", description: "Read worker.ts and look for state shared with timers." },
+    { subject: "Fix it and re-run the tests", activeForm: "Fixing it and re-running the tests", description: "Change drain() and run the suite again." },
+    { subject: "Check other timers for the same pattern", activeForm: "Checking other timers for the same pattern", description: "Grep the queue module for setTimeout." },
+  ];
+  /** TaskUpdate calls setting each task id to its status, with their results. */
+  const updates = async (changes: [string, "pending" | "in_progress" | "completed"][]) => {
+    const calls = changes.map(([taskId, status]) => tool("TaskUpdate", { taskId, status }));
+    await t.api(calls);
+    calls.forEach((call, index) => {
+      const [taskId, to] = changes[index];
+      t.result(call.id, `Updated task #${taskId} status`, { success: true, taskId, updatedFields: ["status"], statusChange: { from: "pending", to } });
+    });
+  };
 
   // 1. Run the tests.
   const bash1 = tool("Bash", { command: "bun test src/queue", description: "Run the queue tests" });
@@ -656,12 +666,16 @@ async function showcaseTurn(t: Turn): Promise<void> {
   t.result(grep.id, `Found 3 files\n${files.join("\n")}`, { mode: "files_with_matches", numFiles: 3, filenames: files });
 
   // 3. Todo list.
-  const todos1 = tool("TodoWrite", { todos: todo("completed", "in_progress", "pending", "pending") });
-  await t.api([todos1]);
-  t.result(todos1.id, "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable", {
-    oldTodos: [],
-    newTodos: todo("completed", "in_progress", "pending", "pending"),
+  const creates = plan.map((task) => tool("TaskCreate", task));
+  await t.api(creates);
+  creates.forEach((call, index) => {
+    const id = String(index + 1);
+    t.result(call.id, `Task #${id} created successfully: ${plan[index].subject}`, { task: { id, subject: plan[index].subject } });
   });
+  await updates([
+    ["1", "completed"],
+    ["2", "in_progress"],
+  ]);
 
   // 4. A subagent.
   await subagentTurn(t);
@@ -715,12 +729,11 @@ async function showcaseTurn(t: Turn): Promise<void> {
   t.result(bash2.id, out2, { stdout: out2, stderr: "", interrupted: false });
 
   // 7. Wrap up.
-  const todos2 = tool("TodoWrite", { todos: todo("completed", "completed", "completed", "completed") });
-  await t.api([todos2]);
-  t.result(todos2.id, "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable", {
-    oldTodos: todo("completed", "in_progress", "pending", "pending"),
-    newTodos: todo("completed", "completed", "completed", "completed"),
-  });
+  await updates([
+    ["2", "completed"],
+    ["3", "completed"],
+    ["4", "completed"],
+  ]);
   const answer =
     "The flaky test is fixed. The cause was a race in `Worker.drain()`: a job that finished while the queue still held work never triggered another pass, so jobs pushed during a drain could stall.\n\n" +
     "- `src/queue/worker.ts` now calls `schedule()` as each job settles, so leftovers are always picked up\n" +
@@ -867,7 +880,8 @@ async function askTurn(t: Turn): Promise<void> {
 
 async function failTurn(t: Turn): Promise<void> {
   const bash = tool("Bash", { command: "bun run build", description: "Build the project" });
-  await t.api([{ type: "text", text: "Let me run the build to see what is failing." }, bash]);
+  // Thinking whose text the CLI omits (display: "omitted"): blank blocks, shown as one quiet line.
+  await t.api([{ type: "thinking", text: "" }, { type: "thinking", text: "" }, { type: "text", text: "Let me run the build to see what is failing." }, bash]);
   await t.longRunning(bash.id, "Bash", 1200);
   const stderr = `src/queue/worker.ts(41,7): error TS2322: Type 'Promise<JobResult>' is not assignable to type 'JobResult'.\nsrc/queue/worker.ts(44,5): error TS2304: Cannot find name 'retryJob'.\nFound 2 errors.`;
   t.result(bash.id, `Exit code 2\n${stderr}`, { stdout: "", stderr, interrupted: false }, { isError: true });
@@ -1082,6 +1096,14 @@ function pastTranscript(sessionId: string, cwd: string): SessionMessage[] {
       "end_turn",
     ),
     message("user", { role: "user", content: [{ type: "text", text: "Good catch, please fix it." }] }),
+    // Replayed calls carry no structured results: the Edit's diff comes from its input, the Agent's report from its result.
+    asst([{ type: "tool_use", id: "toolu_01PastAgent001", name: "Agent", input: { description: "Find other callers of cancel()", prompt: "List every caller of Scheduler.cancel.", subagent_type: "Explore" } }], "tool_use"),
+    message("user", {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_01PastAgent001", content: [{ type: "text", text: "Two callers:\n\n- `src/queue/worker.ts:88` cancels on shutdown\n- `src/api/jobs.ts:41` cancels on `DELETE /jobs/:id`" }] }],
+    }),
+    asst([{ type: "tool_use", id: "toolu_01PastEdit0001", name: "Edit", input: { file_path: path, old_string: "    await delay(job.delayMs ?? 0);", new_string: "    const handle = setTimeout(resolve, job.delayMs ?? 0);\n    this.delays.set(job.id, handle);" } }], "tool_use"),
+    message("user", { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01PastEdit0001", content: `The file ${path} has been updated successfully.` }] }),
     asst([{ type: "text", text: "Done: `execute()` now records the timer handle, and `cancel()` clears it and rejects the pending promise." }], "end_turn"),
   ];
 }
@@ -1205,6 +1227,7 @@ export function openMockBridge(onLine: (line: string) => void): { send(line: str
           linesRemoved: 0,
           perms: new Map(),
           tasks: new Map(),
+          mcp: MCP_SERVERS.map((server) => ({ ...server })),
           closed: false,
         };
         sessions.set(s.key, s);
@@ -1262,12 +1285,26 @@ export function openMockBridge(onLine: (line: string) => void): { send(line: str
       case "session.usage":
         return planUsage(getSession((params as BridgeParams<"session.usage">).session));
       case "session.mcpStatus":
-        getSession((params as BridgeParams<"session.mcpStatus">).session);
-        return MCP_SERVERS;
-      case "session.mcpToggle":
-      case "session.mcpReconnect":
-        getSession((params as { session: string }).session);
+        return getSession((params as BridgeParams<"session.mcpStatus">).session).mcp;
+      case "session.mcpToggle": {
+        const p = params as BridgeParams<"session.mcpToggle">;
+        const s = getSession(p.session);
+        const original = MCP_SERVERS.find((server) => server.name === p.server);
+        if (!original) throw new BridgeFail(`No MCP server named ${p.server}`, "notFound");
+        s.mcp = s.mcp.map((server) => (server.name !== p.server ? server : p.enabled ? { ...original } : { ...server, status: "disabled", error: undefined, tools: [] }));
         return {};
+      }
+      case "session.mcpReconnect": {
+        const p = params as BridgeParams<"session.mcpReconnect">;
+        const s = getSession(p.session);
+        const original = MCP_SERVERS.find((server) => server.name === p.server);
+        if (!original) throw new BridgeFail(`No MCP server named ${p.server}`, "notFound");
+        // A reconnect that works: the failed server comes up (with a tool), the others as they were.
+        s.mcp = s.mcp.map((server) =>
+          server.name !== p.server ? server : original.status === "failed" ? { ...original, status: "connected", error: undefined, tools: [{ name: "search_issues" }] } : { ...original },
+        );
+        return {};
+      }
       case "session.stopTask": {
         const p = params as BridgeParams<"session.stopTask">;
         getSession(p.session).tasks.get(p.taskId)?.stop();
@@ -1279,7 +1316,7 @@ export function openMockBridge(onLine: (line: string) => void): { send(line: str
           commands: COMMANDS,
           agents: AGENTS,
           plugins: PLUGINS.map((p) => ({ ...p, source: "marketplace" })),
-          mcpServers: MCP_SERVERS,
+          mcpServers: getSession((params as BridgeParams<"session.reloadPlugins">).session).mcp,
           error_count: 0,
         };
         return result;

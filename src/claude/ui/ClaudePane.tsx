@@ -4,7 +4,8 @@ import { displayPath } from "../../explorer/tree";
 import { homeDirectory } from "../../ipc/system";
 import type { PaneProps } from "../../plugins/types";
 import type { PermissionRequest } from "../protocol";
-import { acquirePaneSession, interrupt, newSession, setCwd, setPanel, useClaudeStore, useSession, type ClaudePaneData } from "../store";
+import { startNewSession } from "./actions";
+import { acquirePaneSession, interrupt, setCwd, setPanel, useClaudeStore, useSession, type ClaudePaneData } from "../store";
 import type { TranscriptItem } from "../types";
 import { ClaudeMark } from "./ClaudeMark";
 import { Composer, insertIntoComposer, sessionCommands } from "./Composer";
@@ -191,7 +192,7 @@ function PaneBody({ sessionKey, ctx }: { sessionKey: string; ctx: PaneProps["ctx
             {status === "error" && (
               <div className="cc-error" role="alert">
                 <span className="cc-error-text">{error ?? "Claude Code stopped."} Your next message resumes the session.</span>
-                <button type="button" className="cc-link" onClick={() => void newSession(sessionKey)}>
+                <button type="button" className="cc-link" onClick={() => void startNewSession(sessionKey)}>
                   <RotateCcw size={10} /> New session
                 </button>
               </div>

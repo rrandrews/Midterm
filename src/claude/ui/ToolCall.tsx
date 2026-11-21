@@ -66,21 +66,23 @@ function AgentCard({ sessionKey, tool, task, cwd }: { sessionKey: string; tool: 
   const toolUses = task?.toolUses ?? sub?.filter((item) => item.kind === "tool").length ?? 0;
   const type = task?.subagentType ?? (typeof tool.input.subagent_type === "string" ? tool.input.subagent_type : "general-purpose");
   const elapsed = task?.durationMs ?? (task?.endedAt ? task.endedAt - task.startedAt : now - (task?.startedAt ?? tool.startedAt));
-  const report = tool.status === "done" ? tool.result : undefined;
+  // Whatever the agent answered (a replayed transcript has only this: no task, no stats).
+  const report = !running && !isLive(tool.status) && tool.result?.trim() ? tool.result : undefined;
   const description = typeof tool.input.description === "string" ? tool.input.description : task?.description;
   const summary = task?.summary && task.summary !== description ? task.summary : undefined;
   const live = running ? (summary ?? (last ? `${toolLabel(last.name)}  ${toolGist(last, cwd, homeDirectory())}` : "Starting…")) : summary;
+  const counts = [toolUses ? `${toolUses} tool${toolUses === 1 ? "" : "s"}` : undefined, task?.totalTokens ? `${formatTokens(task.totalTokens)} tokens` : undefined, formatElapsed(elapsed)]
+    .filter(Boolean)
+    .join(" · ");
+  // Nothing known but the type (a replayed call without an answer): the badge alone, no box.
+  const bare = !counts && !live && !report && !task;
 
   return (
-    <div className={`cc-agent${running ? " is-running" : ""}`}>
+    <div className={`cc-agent${running ? " is-running" : ""}${bare ? " is-bare" : ""}`}>
       <div className="cc-agent-head">
         <span className="cc-badge">{type}</span>
         {task?.backgrounded && <span className="cc-badge is-quiet">background</span>}
-        <span className="cc-agent-counts cc-num">
-          {[toolUses ? `${toolUses} tool${toolUses === 1 ? "" : "s"}` : undefined, task?.totalTokens ? `${formatTokens(task.totalTokens)} tokens` : undefined, formatElapsed(elapsed)]
-            .filter(Boolean)
-            .join(" · ")}
-        </span>
+        {counts && <span className="cc-agent-counts cc-num">{counts}</span>}
       </div>
       {live && (
         <div className="cc-agent-live">
@@ -93,18 +95,20 @@ function AgentCard({ sessionKey, tool, task, cwd }: { sessionKey: string; tool: 
           <Markdown text={report} compact />
         </div>
       )}
-      <div className="cc-agent-foot">
-        {report && (
-          <button type="button" className="cc-link" onClick={() => setShowReport(!showReport)}>
-            {showReport ? "Hide report" : "Show report"}
-          </button>
-        )}
-        {task && (
-          <button type="button" className="cc-link" onClick={() => focusTask(sessionKey, task.id)}>
-            Open in Agents <ArrowUpRight size={10} />
-          </button>
-        )}
-      </div>
+      {(report || task) && (
+        <div className="cc-agent-foot">
+          {report && (
+            <button type="button" className="cc-link" onClick={() => setShowReport(!showReport)}>
+              {showReport ? "Hide report" : "Show report"}
+            </button>
+          )}
+          {task && (
+            <button type="button" className="cc-link" onClick={() => focusTask(sessionKey, task.id)}>
+              Open in Agents <ArrowUpRight size={10} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

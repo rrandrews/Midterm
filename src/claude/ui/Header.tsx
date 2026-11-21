@@ -2,7 +2,8 @@ import { History, Puzzle, Settings2, SquarePen } from "lucide-react";
 import { homeDirectory } from "../../ipc/system";
 import { displayPath } from "../../explorer/tree";
 import { formatCost } from "./panels/format";
-import { newSession, setCwd, setPanel, useSession } from "../store";
+import { runningTasks, setCwd, setPanel, useSession } from "../store";
+import { startNewSession } from "./actions";
 import type { SidePanel } from "../types";
 import { contextPercent, levelOf } from "./format";
 import { ClaudeMark } from "./ClaudeMark";
@@ -50,9 +51,11 @@ export function Header({ sessionKey }: { sessionKey: string }) {
   const panel = useSession(sessionKey, (session) => session?.panel);
   const cost = useSession(sessionKey, (session) => session?.totals.costUsd ?? 0);
   const percent = useSession(sessionKey, (session) => contextPercent(session?.contextTokens, session?.context?.maxTokens || session?.contextWindow));
-  const agents = useSession(sessionKey, (session) => Object.values(session?.tasks ?? {}).filter((task) => task.status === "running").length);
+  const agents = useSession(sessionKey, (session) => (session ? runningTasks(session) : 0));
   const running = status === "running";
-  const folder = displayPath(cwd, homeDirectory());
+  // `~`-shortened, no trailing slash. The outer box is right-to-left so a long path keeps its end (the
+  // ellipsis goes first); the path itself is an isolated left-to-right run, so its slashes stay put.
+  const folder = <bdi dir="ltr">{displayPath(cwd.replace(/(.)\/+$/, "$1"), homeDirectory())}</bdi>;
 
   const changeFolder = async () => {
     const picked = await pickFolder(cwd);
@@ -114,7 +117,7 @@ export function Header({ sessionKey }: { sessionKey: string }) {
         <PanelButton sessionKey={sessionKey} panel="config" label="Settings" open={panel === "config"}>
           <Settings2 size={13} />
         </PanelButton>
-        <button type="button" className="cc-icon-button" title="New session" aria-label="New session" onClick={() => void newSession(sessionKey)}>
+        <button type="button" className="cc-icon-button" title="New session" aria-label="New session" onClick={() => void startNewSession(sessionKey)}>
           <SquarePen size={13} />
         </button>
       </span>

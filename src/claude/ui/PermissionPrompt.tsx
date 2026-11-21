@@ -94,8 +94,6 @@ function ToolPrompt({ sessionKey, request, cwd }: { sessionKey: string; request:
   const input = request.input;
   const home = homeDirectory();
   const allow = (updatedPermissions?: PermissionUpdate[]) => {
-    const mode = updatedPermissions?.find((update) => update.type === "setMode");
-    if (mode?.type === "setMode") updateSession(sessionKey, { permissionMode: mode.mode });
     void answerPermission(sessionKey, request.requestId, { behavior: "allow", updatedInput: input, updatedPermissions });
   };
   const deny = () => {
@@ -189,7 +187,7 @@ function PlanPrompt({ sessionKey, request }: { sessionKey: string; request: Perm
       event.preventDefault();
       event.stopPropagation();
       keepPlanning();
-    } else if (event.key === "Enter" && !event.shiftKey && event.target instanceof HTMLInputElement && note.trim()) {
+    } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.target instanceof HTMLInputElement && note.trim()) {
       event.preventDefault();
       keepPlanning();
     }
@@ -233,12 +231,15 @@ function QuestionPrompt({ sessionKey, request }: { sessionKey: string; request: 
   const answerOf = (question: Question) => [...(picked[question.question] ?? []), ...(other[question.question]?.trim() ? [other[question.question].trim()] : [])];
   const complete = questions.every((question) => answerOf(question).length > 0);
 
-  const toggle = (question: Question, label: string) =>
+  const toggle = (question: Question, label: string) => {
     setPicked((current) => {
       const chosen = current[question.question] ?? [];
       const next = question.multiSelect ? (chosen.includes(label) ? chosen.filter((item) => item !== label) : [...chosen, label]) : [label];
       return { ...current, [question.question]: next };
     });
+    // One answer per single-choice question: a preset replaces what was typed under Other.
+    if (!question.multiSelect) setOther((current) => ({ ...current, [question.question]: "" }));
+  };
   const submit = () => {
     if (!complete) return;
     const answers = Object.fromEntries(questions.map((question) => [question.question, answerOf(question).join(", ")]));
@@ -250,7 +251,14 @@ function QuestionPrompt({ sessionKey, request }: { sessionKey: string; request: 
       event.preventDefault();
       event.stopPropagation();
       skip();
-    } else if (event.key === "Enter" && !event.shiftKey && complete) {
+    } else if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing &&
+      complete &&
+      // From an Other field or the prompt itself; a focused option or button keeps its own Enter.
+      (event.target === event.currentTarget || event.target instanceof HTMLInputElement)
+    ) {
       event.preventDefault();
       submit();
     }

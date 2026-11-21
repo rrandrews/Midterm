@@ -45,6 +45,7 @@ export function createSession(seed: SessionSeed): ClaudeSession {
     cwd: seed.cwd,
     status: "new",
     sessionId: seed.sessionId,
+    resumed: seed.sessionId ? true : undefined,
     model: seed.model,
     effort: seed.effort,
     permissionMode: seed.permissionMode ?? "default",
@@ -179,6 +180,59 @@ export function todosOf(input: unknown): Todo[] | undefined {
       ? [{ content: todo.content, status: todo.status as Todo["status"], activeForm: str(todo.activeForm) }]
       : [],
   );
+}
+
+const isStatus = (value: unknown): value is Todo["status"] => typeof value === "string" && TODO_STATUSES.has(value);
+
+/**
+ * The CLI's task list tools as to-dos (main thread, once they succeeded):
+ * TaskCreate adds one (its id from the structured result, else "Task #3
+ * created…"), TaskUpdate changes or deletes one, TaskList and TaskGet
+ * bring the list up to date.
+ */
+function applyTaskTool(session: ClaudeSession, tool: ToolCall, text: string, structured: unknown): ClaudeSession {
+  const input = tool.input;
+  const output = isRec(structured) ? structured : {};
+  const update = (id: string, patch: (todo: Todo) => Todo) => ({ ...session, todos: session.todos.map((todo) => (todo.id === id ? patch(todo) : todo)) });
+  switch (tool.name) {
+    case "TaskCreate": {
+      const task = isRec(output.task) ? output.task : {};
+      const id = str(task.id) ?? /#\s*([\w-]+)/.exec(text)?.[1];
+      const content = str(task.subject) ?? str(input.subject);
+      if (!content) return session;
+      const todo: Todo = { id, content, status: "pending", activeForm: str(input.activeForm) };
+      if (id && session.todos.some((existing) => existing.id === id)) return update(id, (existing) => ({ ...todo, status: existing.status }));
+      return { ...session, todos: [...session.todos, todo] };
+    }
+    case "TaskUpdate": {
+      if (output.success === false) return session;
+      const id = str(input.taskId) ?? str(output.taskId);
+      if (!id) return session;
+      if (input.status === "deleted") return { ...session, todos: session.todos.filter((todo) => todo.id !== id) };
+      return update(id, (todo) => ({
+        ...todo,
+        content: str(input.subject) ?? todo.content,
+        activeForm: str(input.activeForm) ?? todo.activeForm,
+        status: isStatus(input.status) ? input.status : todo.status,
+      }));
+    }
+    case "TaskList": {
+      if (!Array.isArray(output.tasks)) return session;
+      const known = new Map(session.todos.map((todo) => [todo.id, todo]));
+      const todos = output.tasks.filter(isRec).flatMap((task): Todo[] =>
+        typeof task.subject === "string" && isStatus(task.status) ? [{ id: str(task.id), content: task.subject, status: task.status, activeForm: known.get(str(task.id))?.activeForm }] : [],
+      );
+      return { ...session, todos };
+    }
+    case "TaskGet": {
+      const task = isRec(output.task) ? output.task : undefined;
+      const id = task && str(task.id);
+      if (!task || !id) return session;
+      return update(id, (todo) => ({ ...todo, content: str(task.subject) ?? todo.content, status: isStatus(task.status) ? task.status : todo.status }));
+    }
+    default:
+      return session;
+  }
 }
 
 /** The tool_result content as text: text blocks joined, images noted, clipped. */
@@ -374,13 +428,9 @@ const onUser: Handler = (session, message, now) => {
     const text = resultText(block.content);
     const isError = block.is_error === true;
     const status: ToolStatus = !isError ? "done" : INTERRUPTED.test(text) ? "cancelled" : DENIED.test(text) || tool.status === "denied" ? "denied" : "error";
-    session = patchTool(session, id, {
-      status,
-      result: text,
-      isError,
-      structured: results.length === 1 && message.tool_use_result !== undefined ? message.tool_use_result : tool.structured,
-      endedAt: now,
-    });
+    const structured = results.length === 1 && message.tool_use_result !== undefined ? message.tool_use_result : tool.structured;
+    session = patchTool(session, id, { status, result: text, isError, structured, endedAt: now });
+    if (!isError && !tool.parentToolUseId) session = applyTaskTool(session, tool, text, structured);
   }
   if (results.length > 0) return session;
 
@@ -401,14 +451,15 @@ const onUser: Handler = (session, message, now) => {
   }
   // Only replayed messages (a resumed transcript) are added; live ones were added when sent.
   if (message.isReplay !== true) return session;
-  const parsed = parseUserText(text);
-  if (!parsed) return session;
   const images = blocks.flatMap((block) => {
     const source = isRec(block.source) ? block.source : undefined;
     return block.type === "image" && source?.type === "base64" && typeof source.data === "string"
       ? [{ mediaType: (str(source.media_type) ?? "image/png") as "image/png", data: source.data }]
       : [];
   });
+  // An image-only message has no text to parse.
+  const parsed = parseUserText(text) ?? (images.length ? { kind: "user" as const, text: "" } : undefined);
+  if (!parsed) return session;
   return withThread(session, null, (items) =>
     upsert(items, parsed.kind === "user" ? { kind: "user", id: uuid, text: parsed.text, images: images.length ? images : undefined } : { kind: "command", id: uuid, text: parsed.text }),
   );
@@ -447,6 +498,8 @@ function interruptedSinceLastPrompt(session: ClaudeSession): boolean {
 const onResult: Handler = (session, message, now) => {
   session = unqueue(session, uuidsOf(message));
   const previousCost = session.totals.costUsd;
+  // A resumed session's first total includes the spend before it: no baseline, so no per-turn cost.
+  const noBaseline = session.resumed === true && session.totals.turns === 0;
   const byModel: SessionTotals["byModel"] = {};
   const modelUsage = isRec(message.modelUsage) ? message.modelUsage : {};
   for (const [model, usage] of Object.entries(modelUsage)) {
@@ -491,7 +544,7 @@ const onResult: Handler = (session, message, now) => {
       kind: "result",
       id: `result:${uuid}`,
       durationMs: num(message.duration_ms),
-      costUsd: Math.max(0, totals.costUsd - previousCost),
+      costUsd: noBaseline ? 0 : Math.max(0, totals.costUsd - previousCost),
       turns: num(message.num_turns),
       isError: message.is_error === true,
       stopReason: (message.stop_reason as string | null | undefined) ?? null,
@@ -592,12 +645,13 @@ const onSystem: Handler = (session, message, now) => {
           ...session.tasks,
           [task.id]: {
             ...task,
-            description: str(message.description) ?? task.description,
+            // The title stays what the task started as; a progress `description` can be
+            // the current activity ("Reading test.js"), so it only stands in for a summary.
             totalTokens: num(usage.total_tokens) || task.totalTokens,
             toolUses: num(usage.tool_uses) || task.toolUses,
             durationMs: num(usage.duration_ms) || task.durationMs,
             lastToolName: str(message.last_tool_name) ?? task.lastToolName,
-            summary: str(message.summary) ?? task.summary,
+            summary: str(message.summary) ?? (str(message.description) !== task.description ? str(message.description) : undefined) ?? task.summary,
           },
         },
       };
@@ -654,9 +708,17 @@ const onToolProgress: Handler = (session, message) => {
   return patchTool(session, tool.id, { elapsed: num(message.elapsed_time_seconds), status });
 };
 
+const RESET_NOTICES: Record<string, string> = {
+  clear: "Conversation cleared",
+  plan_mode_exit: "Started a fresh conversation with the approved plan",
+  fresh_session: "Started a fresh conversation",
+  onboarding: "Conversation reset",
+};
+
+/** The CLI started a new conversation (whatever the trigger): the transcript starts over. */
 const onConversationReset: Handler = (session, message, now) => {
-  if (message.trigger !== "clear") return session;
-  return notice({ ...session, items: [], subTranscripts: {}, tools: {}, todos: [], streams: undefined }, null, `reset:${str(message.uuid) ?? now}`, "info", "Conversation cleared");
+  const text = RESET_NOTICES[str(message.trigger) ?? ""] ?? "Conversation reset";
+  return notice({ ...session, items: [], subTranscripts: {}, tools: {}, todos: [], streams: undefined }, null, `reset:${str(message.uuid) ?? now}`, "info", text);
 };
 
 /** Applies one SDK message to a session. */

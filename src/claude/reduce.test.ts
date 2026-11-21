@@ -150,6 +150,58 @@ describe("assistant messages without streaming", () => {
   });
 });
 
+describe("task list tools", () => {
+  const call = (id: string, name: string, input: Record<string, unknown>, parent: string | null = null) => assistant(`msg_${id}`, { type: "tool_use", id, name, input }, parent);
+
+  it("build the to-dos from TaskCreate and TaskUpdate", () => {
+    const session = run([
+      call("c1", "TaskCreate", { subject: "Reproduce the failure", description: "Run the tests", activeForm: "Reproducing the failure" }),
+      toolResult("c1", "Task #1 created successfully: Reproduce the failure", { structured: { task: { id: "1", subject: "Reproduce the failure" } } }),
+      call("c2", "TaskCreate", { subject: "Fix the race", description: "Change drain()" }),
+      // No structured result (a resumed transcript): the id comes from the text.
+      toolResult("c2", "Task #2 created successfully: Fix the race"),
+      call("c3", "TaskCreate", { subject: "Delete me", description: "" }),
+      toolResult("c3", "Task #3 created successfully: Delete me"),
+      call("u1", "TaskUpdate", { taskId: "1", status: "completed" }),
+      toolResult("u1", "Updated task #1 status", { structured: { success: true, taskId: "1", updatedFields: ["status"] } }),
+      call("u2", "TaskUpdate", { taskId: "2", status: "in_progress", subject: "Fix the drain race" }),
+      toolResult("u2", "Updated task #2 status, subject"),
+      call("u3", "TaskUpdate", { taskId: "3", status: "deleted" }),
+      toolResult("u3", "Updated task #3 deleted"),
+      // A failed update changes nothing.
+      call("u4", "TaskUpdate", { taskId: "2", status: "completed" }),
+      toolResult("u4", "Task not found", { isError: true }),
+    ]);
+    expect(session.todos).toEqual([
+      { id: "1", content: "Reproduce the failure", status: "completed", activeForm: "Reproducing the failure" },
+      { id: "2", content: "Fix the drain race", status: "in_progress", activeForm: undefined },
+    ]);
+  });
+
+  it("take TaskList's list, keeping known active forms, and ignore subagents' tasks", () => {
+    let session = run([
+      call("c1", "TaskCreate", { subject: "A", description: "", activeForm: "Doing A" }),
+      toolResult("c1", "Task #1 created successfully: A"),
+      call("sub", "TaskCreate", { subject: "Subagent task", description: "" }, "toolu_agent"),
+      toolResult("sub", "Task #9 created successfully: Subagent task", { parent: "toolu_agent" }),
+    ]);
+    expect(session.todos.map((todo) => todo.content)).toEqual(["A"]);
+    session = run(
+      [
+        call("l", "TaskList", {}),
+        toolResult("l", "#1 [in_progress] A\n#2 [pending] B", {
+          structured: { tasks: [{ id: "1", subject: "A", status: "in_progress", blockedBy: [] }, { id: "2", subject: "B", status: "pending", blockedBy: [] }] },
+        }),
+      ],
+      session,
+    );
+    expect(session.todos).toEqual([
+      { id: "1", content: "A", status: "in_progress", activeForm: "Doing A" },
+      { id: "2", content: "B", status: "pending", activeForm: undefined },
+    ]);
+  });
+});
+
 describe("tool results", () => {
   const withTool = (name = "Bash") => run([assistant("msg_r", { type: "tool_use", id: "toolu_x", name, input: { command: "rm -rf build" } })]);
 
@@ -212,9 +264,25 @@ describe("subagents", () => {
     expect(Object.keys(session.tasks)).toEqual(["t"]);
     expect(session.tasks.t).toMatchObject({ status: "failed", error: "exit 2", backgrounded: true, endedAt: 5 });
   });
+
+  it("keeps a task's description when progress reports its current activity", () => {
+    const session = run([
+      msg({ type: "system", subtype: "task_started", task_id: "t", description: "Inventory files in demo folder", task_type: "local_agent" }),
+      msg({ type: "system", subtype: "task_progress", task_id: "t", description: "Reading test.js", usage: { total_tokens: 900, tool_uses: 2, duration_ms: 1_000 }, last_tool_name: "Read" }),
+    ]);
+    expect(session.tasks.t).toMatchObject({ description: "Inventory files in demo folder", summary: "Reading test.js", lastToolName: "Read" });
+  });
 });
 
 describe("results", () => {
+  it("leaves out the first cost after a resume (its total includes earlier spend)", () => {
+    const resumed = { ...createSession({ key: "k", paneId: "p", cwd: "/repo", sessionId: "old" }), status: "idle" as const };
+    let session = run([result({ total_cost_usd: 3.1 })], resumed);
+    expect(session.items[session.items.length - 1]).toMatchObject({ kind: "result", costUsd: 0 });
+    session = run([result({ total_cost_usd: 3.4 })], session);
+    expect((session.items[session.items.length - 1] as { costUsd: number }).costUsd).toBeCloseTo(0.3);
+  });
+
   it("adds totals and a result item, and goes idle", () => {
     const session = run([
       stream({ type: "message_start", message: { id: "msg_1", content: [], usage: usage(1, 1, 1) } }),
@@ -273,6 +341,13 @@ describe("queued messages", () => {
 });
 
 describe("system messages", () => {
+  it("starts the transcript over on any conversation reset", () => {
+    for (const [trigger, text] of [["clear", "Conversation cleared"], ["plan_mode_exit", "Started a fresh conversation with the approved plan"], ["something_new", "Conversation reset"]]) {
+      const session = run([assistant("msg_1", { type: "text", text: "Before" }), msg({ type: "conversation_reset", trigger })]);
+      expect(session.items).toEqual([expect.objectContaining({ kind: "notice", text })]);
+    }
+  });
+
   it("takes the session id, model, mode and MCP servers from init", () => {
     const session = run([
       msg({ type: "system", subtype: "init", session_id: "sess-1", model: "claude-opus-5-5", permissionMode: "acceptEdits", mcp_servers: [{ name: "linear", status: "connected" }], cwd: "/repo", tools: [], slash_commands: [] }),
@@ -335,6 +410,11 @@ describe("fromSessionMessages", () => {
     message,
     parent_tool_use_id: parent,
     parent_agent_id: null,
+  });
+
+  it("keeps a message that is only images", () => {
+    const loaded = fromSessionMessages([saved("user", { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }] })], NOW);
+    expect(loaded.items).toEqual([expect.objectContaining({ kind: "user", text: "", images: [{ mediaType: "image/png", data: "AAAA" }] })]);
   });
 
   it("rebuilds the transcript with nothing left running", () => {

@@ -84,7 +84,8 @@ export type Task = {
   error?: string;
 };
 
-export type Todo = { content: string; status: "pending" | "in_progress" | "completed"; activeForm?: string };
+/** A to-do: from TodoWrite's list, or a task of the CLI's task tools (TaskCreate / TaskUpdate / TaskList), which have an `id`. */
+export type Todo = { id?: string; content: string; status: "pending" | "in_progress" | "completed"; activeForm?: string };
 
 /** Totals over the session's turns (from result messages). */
 export type SessionTotals = {
@@ -144,6 +145,10 @@ export type ClaudeSession = {
   totals: SessionTotals;
   mcpServers: McpServerStatus[] | { name: string; status: string; source?: string }[];
 
+  /** A saved transcript is being loaded (`sessions.messages`); sends wait for it. */
+  loadingTranscript?: boolean;
+  /** Created to resume a saved session: the first result's cost includes earlier spend. */
+  resumed?: boolean;
   /** Whether this session's process was started allowing `bypassPermissions` (unset before it starts). */
   bypassAllowed?: boolean;
   /** When the running turn started (for "working for 12s"); unset when idle. */

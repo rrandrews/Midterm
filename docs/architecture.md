@@ -5,12 +5,12 @@ React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
 [explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
-[ai.md](ai.md) · [design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [planning.md](planning.md)
+[ai.md](ai.md) · [claude-code.md](claude-code.md) · [design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [planning.md](planning.md)
 
 ## Concepts
 
 ```
-workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | an imported plugin's kind)
+workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | agent | claude-code | an imported plugin's kind)
            │       └─ pane …      arranged in a nested split layout
            └─ tab …
 ```
@@ -36,6 +36,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
 | `src/plugins/` | The pane plugin contract, registry, API, pane host, skills and the imported-plugin loader; built-in plugins in `builtin/`. See [plugins.md](plugins.md). |
 | `src/ai/` | AI next-command suggestions: context builder and redaction, the suggestion engine, Settings → AI, commands. Requests go through the backend (`src/ipc/ai.ts`); the webview's CSP still allows nothing remote. See [ai.md](ai.md). |
+| `src/claude/` | The Claude Code pane: a full Claude Code session per pane, run by a Node bridge on the Agent SDK (`bridge/`), its protocol, store, reducer, UI and side panels. See [claude-code.md](claude-code.md). |
 | `src/theme/` | Themes: model, resolution, bundled themes, importers, applying the theme, the Appearance section and the theme editor pane. See [themes.md](themes.md). |
 | `src/components/panes/` | The built-in panes' components. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
@@ -51,6 +52,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer; whole-file reads and atomic writes for editors and viewers. |
 | `src-tauri/src/plugins/` | Installed plugins: manifest validation, import (folder or .zip), remove, the `plugin://` scheme. |
 | `src-tauri/src/ai/` | AI providers: HTTP adapters (OpenAI-compatible, Anthropic), CLI providers, ACP agent sessions (`acp/`: long-lived adapter processes serving Midterm's skills as MCP tools), keys in the OS keychain, the `ai_*` commands; see [ai.md](ai.md). The only code that makes outbound network requests (the CLIs it runs make their own). |
+| `src-tauri/src/claude/` | Starts the Claude Code bridge (one Node process per window) and pipes its JSON lines; see [claude-code.md](claude-code.md). |
 | `src-tauri/src/menu.rs` | Native menu. Has no "Close Window", so ⌘W reaches the app. |
 | `src-tauri/src/traffic_lights.rs` | Centres the macOS traffic lights in the web title bar; re-applied on resize and focus. |
 

@@ -91,8 +91,12 @@
   font-family: var(--font-mono);
   font-size: var(--text-micro);
   color: var(--color-fg-dim);
+  /* Keeps the end of a long path visible; the path inside is a <bdi dir="ltr">. */
   direction: rtl;
   text-align: left;
+}
+.cc-folder > bdi {
+  unicode-bidi: isolate;
 }
 .cc-folder.is-editable {
   border-radius: 4px;
@@ -476,6 +480,29 @@
   white-space: nowrap;
   color: var(--color-fg-faint);
 }
+.cc-thinking.is-blank {
+  --cc-dot-top: 6.5px; /* centred on the 18px line */
+  padding: 1px 0;
+}
+.cc-thinking.is-blank > .cc-dot {
+  transform: scale(0.72);
+}
+.cc-thinking-blank {
+  display: block;
+  height: 18px;
+  font-size: var(--text-micro);
+  line-height: 18px;
+  color: var(--color-fg-faint);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cc-prose {
+  margin-top: 3px;
+  font-size: var(--text-meta);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .cc-thinking-text {
   margin: 2px 0 4px;
   padding-left: 10px;
@@ -723,6 +750,12 @@
   border-radius: 6px;
   background: color-mix(in srgb, var(--color-fg-bright) 2%, transparent);
   font-size: var(--text-meta);
+}
+.cc-agent.is-bare {
+  margin: 1px 0 3px;
+  padding: 0;
+  border: 0;
+  background: none;
 }
 .cc-agent.is-running {
   border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-line));
@@ -1326,26 +1359,18 @@
 .cc-menu {
   min-width: 240px;
 }
-.cc-menu-model {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
+.cc-menu-narrow {
+  min-width: 180px;
 }
-.cc-menu-desc {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: var(--text-meta);
-  color: var(--color-fg-dim);
-}
-.cc-menu-foot {
-  padding: 4px 10px 2px;
+.cc-menu-label {
+  padding: 4px 10px 3px;
   font-size: var(--text-meta);
   color: var(--color-fg-dim);
 }
 .cc-menu-foot {
   margin-top: 3px;
   padding: 5px 10px 3px;
+  font-size: var(--text-meta);
   border-top: 1px solid var(--color-line-menu);
   color: var(--color-fg-faint);
 }
