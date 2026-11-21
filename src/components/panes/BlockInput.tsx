@@ -15,6 +15,7 @@ import { runFromBlocks } from "../../terminal/blockMode";
 import { applyEdit, emptyKill, isKillKey, type KillBuffer, lineEdit } from "../../terminal/lineEdit";
 import { globalHistory, historyEntries, loadGlobalHistory, suggestion } from "../../terminal/history";
 import type { TerminalSession } from "../../terminal/session";
+import { HistorySearch } from "./HistorySearch";
 import { useCompletion } from "./useCompletion";
 
 /** Lines the editor grows to before it scrolls. */
@@ -59,6 +60,8 @@ export function BlockInput({
     entries: [],
   });
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  /** Whether the ⌃R history search is open. */
+  const [searching, setSearching] = useState(false);
   /** The last request for the editor (`/cmd`, Fix) and how it went; shown above the editor. */
   const request = useEditorRequests((state) => state[paneId]);
   const busy = request?.status === "loading";
@@ -267,6 +270,10 @@ export function BlockInput({
       } else if (key === "l") {
         event.preventDefault();
         session.clear();
+      } else if (key === "r") {
+        event.preventDefault();
+        completion.close();
+        setSearching(true);
       } else if (key === "p" || key === "n") {
         // Like ↑/↓: only from the first/last line, else the caret moves a line natively.
         const edge = key === "p" ? !value.slice(0, selectionStart).includes("\n") : !value.slice(selectionEnd).includes("\n");
@@ -289,6 +296,19 @@ export function BlockInput({
 
   return (
     <div className="blocks-input">
+      {searching && (
+        <HistorySearch
+          entries={entries}
+          initialQuery={value}
+          inputRef={inputRef}
+          onPick={(command) => {
+            setSearching(false);
+            setWalk({ index: -1, draft: "", entries: [] });
+            set(command);
+          }}
+          onClose={() => setSearching(false)}
+        />
+      )}
       {request && (
         <div className="blocks-slash">
           <span className="blocks-slash-line">{request.line}</span>
