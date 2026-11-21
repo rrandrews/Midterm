@@ -172,17 +172,29 @@ export type BlockTrackerOptions = {
   branch?: (cwd: string) => Promise<string | null>;
   /** How long to wait for the first mark after output starts. */
   integrationTimeoutMs?: number;
+  /** How long output at a prompt has to be quiet before `onPromptInput` listeners hear of it. */
+  promptInputSettleMs?: number;
   now?: () => number;
 };
 
 /** How long after the first output a shell without marks is taken to have no integration. */
 const INTEGRATION_TIMEOUT_MS = 3000;
+/** Quiet time after output at a prompt before checking the shell's line for typeahead. */
+const PROMPT_INPUT_SETTLE_MS = 30;
+/**
+ * How long after a prompt (B) output can still be typeahead being echoed.
+ * Later changes to the shell's line come from the shell itself (a redraw,
+ * a background job), since the input editor has the keyboard by then.
+ */
+const PROMPT_INPUT_WINDOW_MS = 1000;
 /** Commands remembered per pane for history and suggestions. */
 const MAX_PANE_COMMANDS = 500;
 
 export class BlockTracker {
   private readonly listeners = new Set<() => void>();
   private readonly outputListeners = new Set<() => void>();
+  private readonly promptInputListeners = new Set<() => void>();
+  private promptInputTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly disposables: IDisposable[] = [];
   private readonly now: () => number;
 
@@ -196,6 +208,10 @@ export class BlockTracker {
 
   /** Where the user's input starts on the current prompt (B). */
   private inputStart: { marker: IMarker; col: number } | undefined;
+  /** When the last B arrived (`now()`). */
+  private inputStartAt = 0;
+  /** `takePromptInput` handed the line over and the shell has not cleared it yet. */
+  private inputTaken = false;
   /** Commands run in this terminal, oldest first, with their scope. */
   private readonly commandList: { command: string; scope: CommandScope }[] = [];
 
@@ -239,6 +255,16 @@ export class BlockTracker {
           }, options.integrationTimeoutMs ?? INTEGRATION_TIMEOUT_MS);
         }
         if (this.phase === "running") for (const listener of this.outputListeners) listener();
+        else if (
+          this.inputStart &&
+          this.promptInputListeners.size &&
+          this.now() - this.inputStartAt <= PROMPT_INPUT_WINDOW_MS
+        ) {
+          clearTimeout(this.promptInputTimer);
+          this.promptInputTimer = setTimeout(() => {
+            for (const listener of this.promptInputListeners) listener();
+          }, options.promptInputSettleMs ?? PROMPT_INPUT_SETTLE_MS);
+        }
       }),
     );
   }
@@ -255,6 +281,56 @@ export class BlockTracker {
   onOutput(listener: () => void): () => void {
     this.outputListeners.add(listener);
     return () => this.outputListeners.delete(listener);
+  }
+
+  /**
+   * Called once output settles shortly after a prompt (the shell echoing
+   * typeahead: keys typed while the last command ran). See `promptInput`.
+   */
+  onPromptInput(listener: () => void): () => void {
+    this.promptInputListeners.add(listener);
+    return () => this.promptInputListeners.delete(listener);
+  }
+
+  /**
+   * What is on the shell's own command line at this prompt: from B to the
+   * cursor, soft-wrapped rows joined; `""` when nothing (or only blanks) is
+   * there. Typed input ends at the cursor, so a right prompt (zsh RPROMPT,
+   * fish_right_prompt) and autosuggestions drawn after it are left out.
+   * Only one logical line is read: a row break on the way means something
+   * else printed there (a background job), not typed input.
+   */
+  promptInput(): string {
+    const input = this.inputStart;
+    if (this.phase !== "prompt" || !input || input.marker.line < 0) return "";
+    if (this.term.buffer.active.type !== "normal") return "";
+    const buffer = this.term.buffer.normal;
+    const first = input.marker.line;
+    const last = buffer.baseY + buffer.cursorY;
+    if (last < first || (last === first && buffer.cursorX <= input.col)) return "";
+    let text = "";
+    for (let row = first; row <= last; row++) {
+      const line = buffer.getLine(row);
+      if (!line || (row > first && !line.isWrapped)) return "";
+      text += line.translateToString(false, row === first ? input.col : 0, row === last ? buffer.cursorX : undefined);
+    }
+    return text.trim() ? text : "";
+  }
+
+  /**
+   * `promptInput`, for moving it into the input editor; afterwards `""`
+   * until the shell's line is seen empty (the caller clears it) or the next
+   * prompt, so the same text is not taken twice. Call `inputWasTaken` once
+   * it was taken.
+   */
+  takeablePromptInput(): string {
+    const text = this.promptInput();
+    if (!text) this.inputTaken = false;
+    return this.inputTaken ? "" : text;
+  }
+
+  inputWasTaken(): void {
+    this.inputTaken = true;
   }
 
   /** The root shell's commands in this terminal, oldest first. */
@@ -309,8 +385,7 @@ export class BlockTracker {
     if (this.phase !== "prompt" || this.term.buffer.active.type !== "normal") return false;
     const start = this.term.registerMarker(0);
     if (!start) return false;
-    this.inputStart?.marker.dispose();
-    this.inputStart = undefined;
+    this.dropInputStart();
     this.phase = "running";
     if (!this.nested) this.innerLocation = undefined;
     this.addBlock(command, start, true);
@@ -329,12 +404,14 @@ export class BlockTracker {
 
   dispose(): void {
     clearTimeout(this.integrationTimer);
+    clearTimeout(this.promptInputTimer);
     for (const disposable of this.disposables) disposable.dispose();
     for (const block of this.blocks) disposeBlock(block);
     this.blocks = [];
     this.inputStart?.marker.dispose();
     this.listeners.clear();
     this.outputListeners.clear();
+    this.promptInputListeners.clear();
   }
 
   private runningBlock(): Block | undefined {
@@ -367,14 +444,14 @@ export class BlockTracker {
     switch (mark.kind) {
       case "A":
         this.finishRunning(undefined);
-        this.inputStart?.marker.dispose();
-        this.inputStart = undefined;
+        this.dropInputStart();
         this.phase = "prompt";
         break;
       case "B": {
         const marker = this.term.registerMarker(0);
         this.inputStart?.marker.dispose();
         this.inputStart = marker && { marker, col: this.term.buffer.normal.cursorX };
+        this.inputStartAt = this.now();
         this.phase = "prompt";
         break;
       }
@@ -403,11 +480,16 @@ export class BlockTracker {
   private startCommand(): void {
     const start = this.term.registerMarker(0);
     const command = this.commandFromPrompt().trim();
-    this.inputStart?.marker.dispose();
-    this.inputStart = undefined;
+    this.dropInputStart();
     this.phase = "running";
     if (!this.nested) this.innerLocation = undefined;
     if (start) this.addBlock(command, start, false);
+  }
+
+  private dropInputStart(): void {
+    this.inputStart?.marker.dispose();
+    this.inputStart = undefined;
+    this.inputTaken = false;
   }
 
   /** A nested shell's first prompt (A with a foreign aid) while root command runs. */

@@ -25,7 +25,7 @@ describe("parseOsc133", () => {
   });
 });
 
-function setup(options: { cols?: number; rows?: number; scrollback?: number } = {}) {
+function setup(options: { cols?: number; rows?: number; scrollback?: number; settleMs?: number } = {}) {
   const term = new Terminal({ cols: options.cols ?? 40, rows: options.rows ?? 10, scrollback: options.scrollback ?? 1000, allowProposedApi: true });
   let cwd = "/home/me";
   let clock = 0;
@@ -34,6 +34,7 @@ function setup(options: { cols?: number; rows?: number; scrollback?: number } = 
     branch: async (dir) => (dir === "/home/me" ? "main" : null),
     now: () => clock,
     integrationTimeoutMs: 50,
+    promptInputSettleMs: options.settleMs ?? 0,
   });
   const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
   const output = (index: number) => {
@@ -399,5 +400,100 @@ describe("formatDuration", () => {
     expect(formatDuration(2300)).toBe("2.3s");
     expect(formatDuration(65_000)).toBe("1m 05s");
     expect(formatDuration(2 * 3600_000 + 3 * 60_000)).toBe("2h 03m");
+  });
+});
+
+describe("prompt input (typeahead)", () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+
+  it("reads what the shell echoed after B, up to the cursor", async () => {
+    const t = setup();
+    await t.write(`${PROMPT}`);
+    expect(t.tracker.promptInput()).toBe("");
+    await t.write("ls -l");
+    expect(t.tracker.promptInput()).toBe("ls -l");
+  });
+
+  it("leaves out a right prompt and an autosuggestion after the cursor", async () => {
+    const t = setup({ cols: 80 });
+    // zsh: prompt, RPROMPT at the right edge, back to the input, typeahead.
+    await t.write(`${A}% \x1b]133;B\x07\x1b[K\x1b[72CRIGHT\x1b[77De\x08echo typed`);
+    expect(t.tracker.promptInput()).toBe("echo typed");
+    // An autosuggestion drawn after the cursor, cursor moved back.
+    await t.write("\x1b[90m --verbose\x1b[0m\x1b[10D");
+    expect(t.tracker.promptInput()).toBe("echo typed");
+  });
+
+  it("joins soft-wrapped rows", async () => {
+    const t = setup({ cols: 10 });
+    await t.write(PROMPT); // `~ ❯ ` is 4 cells
+    await t.write("echo abcdefghijkl");
+    expect(t.tracker.promptInput()).toBe("echo abcdefghijkl");
+    // Exactly filling the row (the cursor waits at the edge).
+    const u = setup({ cols: 10 });
+    await u.write(`${PROMPT}echo a`);
+    expect(u.tracker.promptInput()).toBe("echo a");
+  });
+
+  it("ignores blanks, other logical lines and other phases", async () => {
+    const t = setup();
+    await t.write(`${PROMPT}   `);
+    expect(t.tracker.promptInput()).toBe("");
+    // A background job's output ending in a newline: not typed input.
+    await t.write("done\r\n");
+    expect(t.tracker.promptInput()).toBe("");
+
+    const u = setup();
+    await u.write(`${PROMPT}ls`);
+    expect(u.tracker.submit("pwd")).toBe(true);
+    expect(u.tracker.promptInput()).toBe("");
+  });
+
+  it("is takeable once until the shell clears the line", async () => {
+    const t = setup();
+    await t.write(`${PROMPT}ls`);
+    expect(t.tracker.takeablePromptInput()).toBe("ls");
+    t.tracker.inputWasTaken();
+    // The shell has not processed ⌃E⌃U yet.
+    expect(t.tracker.takeablePromptInput()).toBe("");
+    expect(t.tracker.promptInput()).toBe("ls");
+    // Its redraw: back to the start of the input, erase.
+    await t.write("\b\b\x1b[K");
+    expect(t.tracker.takeablePromptInput()).toBe("");
+    await t.write("cd");
+    expect(t.tracker.takeablePromptInput()).toBe("cd");
+  });
+
+  it("tells listeners once output settles after a prompt", async () => {
+    const t = setup({ settleMs: 20 });
+    const heard: string[] = [];
+    t.tracker.onPromptInput(() => heard.push(t.tracker.promptInput()));
+    await t.write(`${A}~ ❯ `);
+    await t.write(B);
+    await t.write("ls");
+    await settle();
+    expect(heard).toEqual(["ls"]);
+
+    // Long after the prompt, changes on the line are the shell's own.
+    t.tick(5000);
+    await t.write("x");
+    await settle();
+    expect(heard).toEqual(["ls"]);
+
+    // Not while a command runs.
+    t.tracker.submit("lsx");
+    await t.write(`\r\n${C}out\r\n`);
+    await settle();
+    expect(heard).toEqual(["ls"]);
+  });
+
+  it("reads back the next command normally after the line was cleared", async () => {
+    const t = setup();
+    await t.write(`${PROMPT}ls`);
+    t.tracker.inputWasTaken();
+    await t.write("\b\b\x1b[K");
+    // Typed into the terminal (classic mode) after that.
+    await t.write(`pwd\r\n${C}/home/me\r\n${D(0)}${PROMPT}`);
+    expect(t.tracker.snapshot().blocks.map((b) => b.command)).toEqual(["pwd"]);
   });
 });

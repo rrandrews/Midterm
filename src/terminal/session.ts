@@ -49,6 +49,16 @@ const FOREGROUND_POLL_MS = 2000;
 const QUICK_EXIT_MS = 1500;
 
 /**
+ * Clears the shell's command line: ⌃E (end of line) then ⌃U (kill to the
+ * start). Works in zsh (emacs: end-of-line, kill-whole-line; viins: ⌃E
+ * self-inserts and vi-kill-line removes it with the rest), bash (emacs:
+ * end-of-line, unix-line-discard; vi insert: ⌃E self-inserts, ⌃U discards)
+ * and fish (end-of-line, which also accepts an autosuggestion, then
+ * backward-kill-line). Not in vi command mode or with rebound keys.
+ */
+export const CLEAR_LINE = "\x05\x15";
+
+/**
  * - `idle`: no shell yet (never shown); input is queued.
  * - `starting`: spawn requested; input is queued.
  * - `running`: input goes to the shell.
@@ -375,14 +385,39 @@ export class TerminalSession {
    * readline and zle insert literally).
    */
   runCommand(command: string): boolean {
+    // Text still on the shell's line (not yet cleared after the editor took
+    // it, or it could not be) would run in front of the command.
+    const leftover = this.blocks.promptInput() !== "";
     if (!this.blocks.submit(command)) return false;
     const lines = command.split(/\r?\n/);
     const data =
       lines.length > 1 && this.term.modes.bracketedPasteMode
         ? `\x1b[200~${lines.join("\n")}\x1b[201~\r`
         : `${lines.join("\x16\n")}\r`;
-    this.send({ binary: false, data });
+    this.send({ binary: false, data: leftover ? CLEAR_LINE + data : data });
     return true;
+  }
+
+  /**
+   * Moves text typed on the shell's own command line into the input editor
+   * and clears the shell's line, so it neither stays hidden there nor runs
+   * in front of the editor's next command: typeahead (keys typed while the
+   * last command ran, which went to the hidden terminal and that the shell
+   * echoes after its prompt) or a line started in classic mode before
+   * switching to blocks. Checked now (the editor just appeared at a prompt)
+   * and whenever output settles shortly after a prompt. `adopt` gets the
+   * text and returns whether it took it (only an empty editor does).
+   * Returns the unsubscribe.
+   */
+  adoptPromptInput(adopt: (text: string) => boolean): () => void {
+    const check = () => {
+      const text = this.blocks.takeablePromptInput();
+      if (!text || !adopt(text)) return;
+      this.blocks.inputWasTaken();
+      this.send({ binary: false, data: CLEAR_LINE });
+    };
+    check();
+    return this.blocks.onPromptInput(check);
   }
 
   /** The terminal's colors (blocks are drawn in the same palette). */

@@ -652,6 +652,33 @@ so).
 - While a command runs, the hidden terminal has the keyboard, so
   interactive prompts, ⌃C and typeahead work as in classic mode. Clicking
   the blocks gives the keyboard back to whichever target is current.
+- **Typeahead** (keys typed while a command ran) lands on the shell's own
+  command line, which blocks mode hides; so does a line typed in classic
+  mode before switching. The editor adopts it (`session.adoptPromptInput`,
+  wired in `BlockInput`): `tracker.promptInput()` reads the shell's line
+  from B to the **cursor**, soft-wrapped rows joined, so a right prompt
+  (RPROMPT, `fish_right_prompt`) and autosuggestions after the cursor are
+  left out; a row break on the way (a background job's output) means it is
+  not typed input. If there is text and the editor is empty (and no `/cmd`
+  or Fix request is pending for it), the text goes into the editor with the
+  caret at the end and the session sends ⌃E ⌃U (`CLEAR_LINE`) to clear the
+  shell's line. ⌃E⌃U works in zsh (emacs, and viins where ⌃E self-inserts
+  and vi-kill-line removes it), bash/readline (emacs and vi insert) and
+  fish; not in vi command mode or with rebound keys. Text after the cursor
+  (typeahead with ← in it) is cleared but not adopted.
+  - When: as the editor mounts at a prompt (covers the classic → blocks
+    switch and a nested shell's prompt, whose line the keys reach through
+    ssh), and when output settles (30 ms quiet) within 1 s of a B, since
+    the shell may echo the typeahead in a later chunk. Later changes to the
+    line are the shell's own (the editor has the keyboard), so they are not
+    adopted. An editor with text is never overwritten.
+  - The tracker remembers a taken line until the shell is seen to clear it
+    (or the next prompt), so it is not taken twice. If text is still on the
+    shell's line when the editor runs a command (not cleared yet, or the
+    clear did not work), `runCommand` sends ⌃E⌃U in front of it, so it can
+    never run glued to the command (`ls` + `pwd` → `lspwd`).
+  - Checked by hand against zsh 5.9 (emacs, vi + RPROMPT) and bash 3.2
+    (emacs, vi) in a pty; fish only by its documented bindings.
 - `registerPaneFocuser` focuses the editor at a prompt, the terminal
   otherwise, and the pane hands focus over when the phase or mode changes
   while it has it.

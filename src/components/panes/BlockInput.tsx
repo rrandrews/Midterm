@@ -90,6 +90,19 @@ export function BlockInput({
     atPrompt(paneId);
     return () => leftPrompt(paneId);
   }, [paneId]);
+  // After `atPrompt`: typeahead or a line from classic mode moves from the shell's line into an empty editor.
+  useEffect(
+    () =>
+      session.adoptPromptInput((text) => {
+        const pending = useEditorRequests.getState()[paneId];
+        if (valueRef.current || pending?.status === "loading" || pendingText(pending) !== undefined) return false;
+        valueRef.current = text;
+        set(text);
+        typed(paneId);
+        return true;
+      }),
+    [session, paneId],
+  );
   const ai = shownSuggestion(useAiSuggestions((state) => state[paneId]), session);
   const aiText = ai?.status === "ready" ? ai.text : undefined;
   const aiContinues = aiText !== undefined && aiText.length > value.length && aiText.startsWith(value);
