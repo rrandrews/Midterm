@@ -4,6 +4,7 @@ import type { PaneData } from "../state/types";
 import type { ITheme } from "@xterm/xterm";
 import { getSettings } from "../settings/settings";
 import { appliedTheme } from "../theme/apply";
+import { BLOCK_TERMINAL } from "./kinds";
 
 /*
  * The terminals' settings and pane data. Settings are shared by the classic
@@ -118,12 +119,36 @@ export const TERMINAL_FIELDS: SettingField[] = [
   },
 ];
 
+/**
+ * The block terminal's own settings (saved under its plugin entry; the
+ * shared ones above are under the classic terminal's).
+ */
+export type BlockTerminalSettings = {
+  /** Programs that run full-pane (the classic terminal shows) instead of in a block. */
+  fullPanePrograms: string[];
+};
+
+export const BLOCK_TERMINAL_FIELDS: SettingField[] = [
+  {
+    key: "fullPanePrograms",
+    type: "programs",
+    label: "Run full-pane",
+    hint: "Programs that take over the whole pane while they run, like vim or htop do, instead of running in a block. For interactive apps that misbehave in a block. Matched by program name.",
+    placeholder: "Add a program…",
+    default: ["agy"],
+  },
+];
+
 export function terminalSettings(): TerminalSettings {
   return pluginSettings("terminal", TERMINAL_FIELDS) as TerminalSettings;
 }
 
 export function useTerminalSettings(): TerminalSettings {
   return usePluginSettings("terminal", TERMINAL_FIELDS) as TerminalSettings;
+}
+
+export function useBlockTerminalSettings(): BlockTerminalSettings {
+  return usePluginSettings(BLOCK_TERMINAL, BLOCK_TERMINAL_FIELDS) as BlockTerminalSettings;
 }
 
 /**

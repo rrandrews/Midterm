@@ -610,10 +610,29 @@ terminal's OSC 133 script. The tracker tells them apart by `aid`:
 
 `TerminalPane` draws `BlocksView` over the terminal when the pane is in
 blocks mode, the shell has not turned out to lack integration, and no
-program is on the alternate screen. Otherwise the classic terminal shows
-(vim, less, htop run full-pane as usual and the blocks come back when they
-exit; a shell without integration stays classic, and the menu item says
-so).
+program is on the alternate screen or listed to run full-pane. Otherwise
+the classic terminal shows (vim, less, htop run full-pane as usual and the
+blocks come back when they exit; a shell without integration stays
+classic, and the menu item says so).
+
+**Run full-pane** (`fullPanePrograms`, the block terminal's own setting,
+saved under `plugins.block-terminal.settings`, default `agy`): interactive
+programs that draw inline, without the alternate screen, and misbehave in
+a block. While one runs the pane shows the classic terminal, exactly as
+for the alternate screen. `runsFullPane` (`src/terminal/fullPane.ts`,
+pure) matches while the phase is `running`, by the running block's command
+line (`commandPrograms`: quote-aware, the first word of each simple
+command split at unquoted `;`, `&`, `&&`, `|` and newlines, skipping
+`VAR=x` and wrappers like `sudo -u user`/`env`/`exec`; commands after `||`
+and `command -v` lookups are left out; so it switches at submit, before
+any output) or by the foreground process name
+(`TerminalSession.subscribeForeground`). The foreground lookup names only
+the process-group leader, so a script that runs a listed program without
+`exec` is not caught. The session looks the foreground up again as soon as
+the phase returns to `prompt`, so the next command is not matched against
+the program that just exited.
+Names match like `solidBackgroundCommands` (basename, case-insensitive,
+`name-…`).
 
 - Finished blocks are DOM, rendered once from their buffer rows
   (`renderRows`: cell colors and attributes to spans, soft-wrapped rows

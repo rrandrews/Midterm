@@ -4,7 +4,7 @@ import { BLOCK_TERMINAL, CLASSIC_TERMINAL, isSessionKind } from "../../terminal/
 import { terminalMenu } from "../../terminal/menu";
 import { peekSession, terminalTabTitle } from "../../terminal/sessions";
 import { SharedTerminalSettings } from "../../terminal/SharedTerminalSettings";
-import { TERMINAL_FIELDS, type TerminalData } from "../../terminal/settings";
+import { BLOCK_TERMINAL_FIELDS, TERMINAL_FIELDS, type TerminalData } from "../../terminal/settings";
 import { directoryOf } from "../panes";
 import { validateTerminalData } from "./data";
 import type { PanePlugin, PaneProps, PaneSpec } from "../types";
@@ -96,5 +96,5 @@ export const blockTerminalPlugin: PanePlugin = {
     background: "var(--pane-block-terminal, var(--pane-terminal))",
     activeBackground: "var(--pane-block-terminal-active, var(--pane-block-terminal, var(--pane-terminal-active)))",
   },
-  settings: { section: SharedTerminalSettings },
+  settings: { fields: BLOCK_TERMINAL_FIELDS, section: SharedTerminalSettings },
 };

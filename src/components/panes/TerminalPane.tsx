@@ -2,8 +2,10 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { registerPaneActions } from "../../commands/registry";
 import { registerPaneFocuser } from "../../layout/dock";
 import type { BlocksSnapshot } from "../../terminal/blocks";
+import { runsFullPane } from "../../terminal/fullPane";
 import type { TerminalSession } from "../../terminal/session";
 import { acquireSession, releaseSession } from "../../terminal/sessions";
+import { useBlockTerminalSettings } from "../../terminal/settings";
 import { BlocksView } from "./BlocksView";
 import { TerminalFindBar } from "./TerminalFindBar";
 
@@ -16,6 +18,7 @@ const NO_BLOCKS: BlocksSnapshot = {
   location: {},
 };
 const noSubscribe = () => () => {};
+const noForeground = () => undefined;
 
 /**
  * Shows a pane's terminal. The terminal itself is owned by the session
@@ -24,8 +27,8 @@ const noSubscribe = () => () => {};
  *
  * With `blocks` (the block terminal) the terminal stays in place, sized as usual but invisible,
  * and `BlocksView` is drawn over it, except while a full-screen program
- * has the alternate screen, or when the shell turned out to have no
- * integration (no OSC 133 marks).
+ * has the alternate screen or a program listed in "Run full-pane" runs, or
+ * when the shell turned out to have no integration (no OSC 133 marks).
  */
 export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -39,6 +42,22 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
     session?.blocks.snapshot ?? (() => NO_BLOCKS),
   );
 
+  // A program listed to run full-pane: known from the command line at once,
+  // or from the foreground process once it is looked up.
+  const { fullPanePrograms } = useBlockTerminalSettings();
+  const foregroundName = useSyncExternalStore(
+    session?.subscribeForeground ?? noSubscribe,
+    session ? () => session.foregroundProgram?.name : noForeground,
+  );
+  const running = snapshot.phase === "running" ? snapshot.blocks[snapshot.blocks.length - 1] : undefined;
+  const fullPane =
+    blocks &&
+    runsFullPane({
+      programs: fullPanePrograms,
+      command: running && running.end === undefined ? running.command : undefined,
+      foregroundName,
+    });
+
   // Find (⌘F) searches the terminal's scrollback; blocks mode shows it classic meanwhile.
   const [finding, setFinding] = useState<number | null>(null);
   const findStep = useRef<((backwards: boolean) => void) | null>(null);
@@ -47,7 +66,7 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
 
   // Blocks mode applies; while Find is open the view stays mounted (keeping
   // the input editor's draft) but hidden, and the classic terminal shows.
-  const blocksMode = blocks && snapshot.integration !== "absent" && !snapshot.altScreen;
+  const blocksMode = blocks && snapshot.integration !== "absent" && !snapshot.altScreen && !fullPane;
   const showBlocks = blocksMode && finding === null;
   const editorActive = showBlocks && snapshot.integration === "present" && snapshot.phase === "prompt";
 

@@ -121,6 +121,7 @@ export class TerminalSession {
   private firstHost: string | undefined;
 
   private lastForeground: PtyForeground | null = null;
+  private readonly foregroundListeners = new Set<() => void>();
   /** Whether the terminal currently renders a solid background (see `effectiveSolid`). */
   private solid = false;
   /** A program set the background itself (OSC 11); xterm reports that color, not us. */
@@ -185,6 +186,19 @@ export class TerminalSession {
     });
     this.term.buffer.onBufferChange(() => this.refreshSolid());
     this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
+    // Back at a prompt, the shell has the terminal again: look the foreground
+    // up now rather than at the next poll, so the next command is not taken
+    // for the program that just exited (full-pane programs, tab titles).
+    let lastPhase = this.blocks.snapshot().phase;
+    this.blocks.subscribe(() => {
+      const { phase } = this.blocks.snapshot();
+      if (phase === lastPhase) return;
+      lastPhase = phase;
+      if (phase !== "prompt" || this.disposed) return;
+      clearTimeout(this.foregroundTimer);
+      this.foregroundTimer = undefined;
+      void this.foreground().catch(() => {});
+    });
     this.term.onBell(() => this.ring());
     // Copy on select: only selections made with the mouse (the search addon
     // selects its matches too, and those must not reach the clipboard).
@@ -322,6 +336,12 @@ export class TerminalSession {
   get foregroundProgram(): PtyForeground | null {
     return this.lastForeground;
   }
+
+  /** Calls `listener` when `foregroundProgram` changes; returns the unsubscribe. For `useSyncExternalStore`. */
+  readonly subscribeForeground = (listener: () => void): (() => void) => {
+    this.foregroundListeners.add(listener);
+    return () => this.foregroundListeners.delete(listener);
+  };
 
   /** Looks up the foreground program now. `null` if there is no running shell. */
   async foreground(): Promise<PtyForeground | null> {
@@ -586,6 +606,7 @@ export class TerminalSession {
     if (last?.pid !== current?.pid || last?.name !== current?.name) {
       this.refreshSolid();
       this.events.onForegroundChange(this);
+      for (const listener of this.foregroundListeners) listener();
     }
   }
 
