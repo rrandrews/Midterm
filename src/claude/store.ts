@@ -168,8 +168,26 @@ type Live = {
 
 const live = new Map<string, Live>();
 
-const nextFrame: (run: () => void) => void =
-  typeof requestAnimationFrame === "function" ? (run) => requestAnimationFrame(() => run()) : (run) => setTimeout(run, 16);
+/**
+ * Runs `run` on the next frame, or after 100 ms if no frame comes: WebKit
+ * pauses frames while the window is hidden (another Space, minimized), and
+ * the session must keep up anyway (tab badges, close prompts, the transcript
+ * when it comes back).
+ */
+function nextFrame(run: () => void): void {
+  if (typeof requestAnimationFrame !== "function" || (typeof document !== "undefined" && document.hidden)) {
+    setTimeout(run, 16);
+    return;
+  }
+  let done = false;
+  const once = () => {
+    if (done) return;
+    done = true;
+    run();
+  };
+  requestAnimationFrame(once);
+  setTimeout(once, 100);
+}
 
 function flush(key: string): void {
   const entry = live.get(key);
