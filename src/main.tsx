@@ -4,6 +4,7 @@ import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles/index.css";
 import App from "./App";
+import { restoreSavedState, startSaving } from "./state/persistence";
 
 /**
  * Terminals measure their cell size from the font when they open, so the
@@ -26,7 +27,6 @@ async function start(): Promise<void> {
   (await import("./plugins")).installPlugins();
   (await import("./theme/commands")).installThemeCommands();
   (await import("./ai/commands")).installAi();
-  const { restoreSavedState, startSaving } = await import("./state/persistence");
   const { loadHomeDirectory, loadLocalHostname } = await import("./ipc/system");
   const { loadSettings } = await import("./settings/settings");
   const { loadRecent } = await import("./palette/sources");

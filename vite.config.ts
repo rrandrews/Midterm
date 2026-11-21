@@ -36,6 +36,14 @@ export default defineConfig(() => ({
     },
   },
 
+  build: {
+    // Tauri loads the bundle from local disk, so the browser rule of thumb
+    // (500 kB) doesn't apply. The main vendor chunk (react-dom, xterm,
+    // CodeMirror) is about 1 MB; the Material icon set (about 600 kB) is
+    // already loaded on demand.
+    chunkSizeWarningLimit: 1500,
+  },
+
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
