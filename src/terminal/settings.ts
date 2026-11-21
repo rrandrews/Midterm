@@ -87,10 +87,10 @@ export const TERMINAL_FIELDS: SettingField[] = [
   },
   {
     key: "solidBackgroundCommands",
-    type: "list",
+    type: "programs",
     label: "Solid for programs",
     hint: "Programs that paint their own background and so get a solid one. Matched by program name.",
-    placeholder: "codex",
+    placeholder: "Add a program…",
     default: ["codex"],
   },
   {

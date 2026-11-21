@@ -143,7 +143,9 @@ Plugin entries live in `settings.plugins[id]`:
   read (`pluginSettings(id)`). An invalid value falls back to the field's
   default.
 - Field types: `toggle`, `select`, `number` (min/max/integer), `text`,
-  `list` (one line, shell-style quoting) and `color`. The host renders them
+  `list` (one line, shell-style quoting), `programs` (program names as
+  chips with suggestions; trimmed, de-duplicated case-insensitively) and
+  `color`. The host renders them
   (`FieldRows` in `src/settings/controls.tsx`). `settings.section` adds a
   custom component below them.
 - The settings file has a `version` (`SETTINGS_VERSION`). `migrateSettings`

@@ -104,6 +104,17 @@ declarative fields:
   (− / + stepper, arrow keys, clamped), `Toggle`, `CommitField`, and
   `ColorPopover` (`src/components/ui/ColorPicker.tsx`, react-colorful in a
   popover).
+- `ProgramList` (`src/settings/ProgramList.tsx`, the `programs` field):
+  each program a chip with a remove button and a field at the end that
+  adds one (⏎ adds exactly what was typed, or the row picked with ↑/↓ or
+  the mouse; ⇥ completes to the best match; comma or space also add;
+  pasting several works), suggesting programs
+  from the command history and well-known inline TUIs
+  (`programSuggestions.ts`; nothing typed: the TUIs first, builtins like
+  `cd`/`ls` hidden). ⌫ in the empty field marks the last chip, a second ⌫
+  removes it (a held key never removes more than that); adding a name already there flashes its chip. It renders in
+  a `StackedRow` (label line with a reset-to-default button, control full
+  width below).
 - Buttons: `BUTTON`, `BUTTON_PRIMARY` (one per group of buttons),
   `ICON_BUTTON`. Override a constant's utility with Tailwind's `!` suffix
   (`size-5!`): the order of two utilities for the same property is not

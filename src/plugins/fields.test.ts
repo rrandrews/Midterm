@@ -25,6 +25,14 @@ describe("resolveFields", () => {
     expect(resolveFields(fields, "nope")).toEqual({ on: true, mode: "a", size: 4, name: "", args: [], tint: "#112233" });
   });
 
+  it("tidies program lists", () => {
+    const programs: SettingField[] = [{ key: "apps", type: "programs", label: "Apps", default: ["agy"] }];
+    expect(resolveFields(programs, { apps: [" agy ", "", "Codex", "codex", 4] })).toEqual({ apps: ["agy", "Codex"] });
+    expect(resolveFields(programs, { apps: "agy" })).toEqual({ apps: ["agy"] });
+    expect(checkFields(programs)).toEqual([]);
+    expect(checkFields([{ key: "apps", type: "programs", label: "Apps", default: ["agy", 4] }])).toHaveLength(1);
+  });
+
   it("checks declarations from imported plugins", () => {
     expect(checkFields(fields)).toEqual([]);
     expect(checkFields([{ key: "a", type: "toggle", label: "A", default: "yes" }])).toHaveLength(1);

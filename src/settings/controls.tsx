@@ -1,9 +1,10 @@
-import { Minus, Plus } from "lucide-react";
+import { Minus, Plus, RotateCcw } from "lucide-react";
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { ColorPopover } from "../components/ui/ColorPicker";
 import { Select as Dropdown, type SelectOption } from "../components/ui/Select";
-import { Help } from "../components/ui/Tooltip";
+import { Help, Tip } from "../components/ui/Tooltip";
 import { type SettingField, optionsOf } from "../plugins/fields";
+import { ProgramList } from "./ProgramList";
 import { joinArgs, splitArgs } from "./schema";
 
 /*
@@ -400,9 +401,57 @@ export function FieldControl({
           onCommit={(text) => onChange(splitArgs(text))}
         />
       );
+    case "programs":
+      return (
+        <ProgramList
+          label={field.label}
+          placeholder={field.placeholder}
+          value={(Array.isArray(value) ? (value as unknown[]) : field.default).filter((item): item is string => typeof item === "string")}
+          onChange={onChange}
+        />
+      );
     case "color":
       return <ColorPopover label={field.label} value={String(value).toLowerCase()} onChange={onChange} align="end" />;
   }
+}
+
+/**
+ * A row whose control takes the full width under its label (a list of
+ * chips), with an optional reset on the label line.
+ */
+export function StackedRow({
+  label,
+  help,
+  onReset,
+  children,
+}: {
+  label: ReactNode;
+  help?: ReactNode;
+  /** Shown as a reset button when set (the value differs from its default). */
+  onReset?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="settings-row px-3 pt-2 pb-2.5">
+      <div className="mb-1.5 flex h-5 items-center gap-1 text-ui text-fg-soft">
+        <span className="min-w-0 truncate">{label}</span>
+        {help && <Help>{help}</Help>}
+        <div className="flex-1" />
+        {onReset && (
+          <Tip content="Reset to default">
+            <button type="button" aria-label="Reset to default" className={`${ICON_BUTTON} size-5!`} onClick={onReset}>
+              <RotateCcw size={11} />
+            </button>
+          </Tip>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function sameList(a: unknown, b: readonly string[]): boolean {
+  return Array.isArray(a) && a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
 /** Rows for a list of declarative fields; put them in a `Group`. */
@@ -417,11 +466,28 @@ export function FieldRows({
 }) {
   return (
     <>
-      {fields.map((field) => (
-        <Row key={field.key} label={field.label} help={field.hint}>
+      {fields.map((field) => {
+        const control = (
           <FieldControl field={field} value={values[field.key]} onChange={(value) => onChange({ [field.key]: value })} />
-        </Row>
-      ))}
+        );
+        if (field.type === "programs") {
+          return (
+            <StackedRow
+              key={field.key}
+              label={field.label}
+              help={field.hint}
+              onReset={sameList(values[field.key], field.default) ? undefined : () => onChange({ [field.key]: [...field.default] })}
+            >
+              {control}
+            </StackedRow>
+          );
+        }
+        return (
+          <Row key={field.key} label={field.label} help={field.hint}>
+            {control}
+          </Row>
+        );
+      })}
     </>
   );
 }

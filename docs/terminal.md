@@ -71,7 +71,7 @@ before the PTY handle is known are acknowledged as soon as it is.
   With a transparent background, the terminal still goes solid while
   `solidForFullscreen` (default on) and the alternate screen is active
   (vim, htop, less), or while the foreground program is in
-  `solidBackgroundCommands` (default `codex`), because TUIs that paint their
+  `solidBackgroundCommands` (default `codex`, a `programs` chip list), because TUIs that paint their
   own background colors clash with the gradient. The pure decision is in
   `solidBackground.ts` (`effectiveSolid`; names match case-insensitively by
   basename, also `name-…` like `codex-aarch64-apple-darwin`).

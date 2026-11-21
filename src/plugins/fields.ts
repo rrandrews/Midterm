@@ -20,6 +20,12 @@ export type SettingField =
   | (FieldBase & { type: "text"; default: string; placeholder?: string })
   /** A list of strings, edited as one line with shell-style quoting. */
   | (FieldBase & { type: "list"; default: string[]; placeholder?: string })
+  /**
+   * Program names (`vim`, `codex`), edited as removable chips with
+   * suggestions from the command history. Entries are trimmed, empty ones
+   * dropped and duplicates (case-insensitive) removed.
+   */
+  | (FieldBase & { type: "programs"; default: string[]; placeholder?: string })
   /** `#rrggbb`. */
   | (FieldBase & { type: "color"; default: string });
 
@@ -30,6 +36,20 @@ export function optionsOf(field: Extract<SettingField, { type: "select" }>): Sel
 }
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
+
+/** Program names trimmed, without empty entries or case-insensitive duplicates (first kept). */
+export function normalizePrograms(names: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
 
 /** `value` if it is valid for `field` (numbers clamped, text trimmed), else `undefined`. */
 export function validateFieldValue(field: SettingField, value: unknown): unknown {
@@ -48,6 +68,8 @@ export function validateFieldValue(field: SettingField, value: unknown): unknown
       return typeof value === "string" ? value.trim() : undefined;
     case "list":
       return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+    case "programs":
+      return Array.isArray(value) ? normalizePrograms(value.filter((item): item is string => typeof item === "string")) : undefined;
     case "color":
       return typeof value === "string" && HEX.test(value) ? value : undefined;
   }
@@ -80,7 +102,7 @@ export function checkFields(fields: unknown): string[] {
     else if (keys.has(key)) problems.push(`${where}.key "${key}" is used twice`);
     else keys.add(key);
     if (typeof label !== "string" || !label) problems.push(`${where}.label must be a non-empty string`);
-    if (!["toggle", "select", "number", "text", "list", "color"].includes(type as string)) {
+    if (!["toggle", "select", "number", "text", "list", "programs", "color"].includes(type as string)) {
       problems.push(`${where}.type is not a known field type`);
       continue;
     }
@@ -88,8 +110,11 @@ export function checkFields(fields: unknown): string[] {
       problems.push(`${where}.options must be an array`);
       continue;
     }
-    const valid = validateFieldValue(field as SettingField, (field as Record<string, unknown>).default);
-    if (valid === undefined) problems.push(`${where}.default is not a valid value for the field`);
+    const fallback = (field as Record<string, unknown>).default;
+    const valid = validateFieldValue(field as SettingField, fallback);
+    // A list default is used as is when nothing is saved, so every entry must be a string.
+    const listWithJunk = (type === "list" || type === "programs") && Array.isArray(fallback) && fallback.some((item) => typeof item !== "string");
+    if (valid === undefined || listWithJunk) problems.push(`${where}.default is not a valid value for the field`);
   }
   return problems;
 }
