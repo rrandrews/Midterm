@@ -5,7 +5,7 @@
 pub mod acp;
 pub mod agent;
 mod anthropic;
-mod cli;
+pub(crate) mod cli;
 pub mod commands;
 pub mod effort;
 mod error;
@@ -13,9 +13,9 @@ mod extra;
 mod http;
 pub(crate) mod keys;
 mod openai;
-mod process;
+pub(crate) mod process;
 mod provider;
-mod shell_path;
+pub(crate) mod shell_path;
 mod sse;
 mod stream;
 #[cfg(test)]
@@ -261,6 +261,12 @@ pub struct AiManager {
 }
 
 impl AiManager {
+    /// The executable finder, shared so the login shell's PATH is resolved
+    /// once for the whole app (the Claude Code bridge uses it too).
+    pub(crate) fn discovery(&self) -> &cli::Discovery {
+        &self.discovery
+    }
+
     fn http(&self) -> Result<&reqwest::Client, AiError> {
         if let Some(client) = self.http.get() {
             return Ok(client);

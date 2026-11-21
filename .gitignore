@@ -28,3 +28,6 @@ mockup/
 
 # Playwright MCP output
 .playwright-mcp/
+
+# Bundled Claude Code bridge (bun run build:bridge)
+src-tauri/resources/claude-bridge.mjs

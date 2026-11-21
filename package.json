@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "build:bridge": "bun build src/claude/bridge/main.ts --target=node --format=esm --outfile=src-tauri/resources/claude-bridge.mjs",
+    "dev": "bun run build:bridge && vite",
     "dev:mcp": "tauri dev --features tauri-mcp --config src-tauri/tauri.mcp.conf.json",
-    "build": "tsc && vite build",
+    "build": "bun run build:bridge && tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -57,6 +58,7 @@
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "2.8.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.330",
     "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/cli": "^2",
     "@types/culori": "^4.0.1",
