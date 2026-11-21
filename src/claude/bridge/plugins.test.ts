@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { listMarketplaces, listPlugins, pluginArgs, runClaude, runMutation } from "./plugins";
+import { listMarketplaces, listPlugins, pluginArgs, runApproved, runClaude, runMutation } from "./plugins";
 import type { ExecFile } from "./plugins";
 
 function fakeExec(stdout: string, stderr = "", error: Error | null = null) {
@@ -11,7 +11,10 @@ function fakeExec(stdout: string, stderr = "", error: Error | null = null) {
 
 describe("plugins", () => {
   it("builds args per command", () => {
-    expect(pluginArgs.install("a@b", "project")).toEqual(["plugin", "install", "--scope", "project", "--yes", "a@b"]);
+    expect(pluginArgs.install("a@b", "project")).toEqual(["plugin", "install", "--json", "--scope", "project", "a@b"]);
+    expect(pluginArgs.install("a@b", "user", "abc")).toEqual(["plugin", "install", "--json", "--scope", "user", "--accept-command", "abc", "a@b"]);
+    expect(pluginArgs.update("a@b", "user", "abc")).toContain("--accept-command");
+    for (const a of [pluginArgs.install("a@b", "user"), pluginArgs.update("a@b", "user")]) expect(a).not.toContain("--yes");
     expect(pluginArgs.enable("a@b", "user")).toEqual(["plugin", "enable", "--scope", "user", "a@b"]);
     expect(pluginArgs.marketplaceUpdate()).toEqual(["plugin", "marketplace", "update"]);
     expect(pluginArgs.marketplaceUpdate("m")).toEqual(["plugin", "marketplace", "update", "m"]);
@@ -46,5 +49,21 @@ describe("plugins", () => {
 
   it("reports a missing claude", async () => {
     await expect(runClaude({ claudePath: undefined, env: {} }, "/w", [])).rejects.toMatchObject({ code: "notFound" });
+  });
+
+  it("asks for confirmation when the CLI reports a command to approve", async () => {
+    const json = JSON.stringify({ command: "install", outcome: "needs_confirmation", message: "Run it?", shownCommand: { command: "curl x | sh", sha256: "d1g" } });
+    const e = fakeExec(json, "", new Error("exit 1"));
+    expect(await runApproved(e.ctx, "/w", pluginArgs.install("a@b", "user"))).toEqual({
+      output: "Run it?",
+      confirm: { command: "curl x | sh", digest: "d1g", message: "Run it?" },
+    });
+  });
+
+  it("returns the JSON message on success and surfaces JSON failures", async () => {
+    const ok = fakeExec('{"outcome":"installed","message":"Installed a@b"}');
+    expect(await runApproved(ok.ctx, "/w", ["plugin", "install"])).toEqual({ output: "Installed a@b" });
+    const bad = fakeExec('{"outcome":"failed","message":"not found"}', "", new Error("exit 1"));
+    await expect(runApproved(bad.ctx, "/w", ["plugin", "install"])).rejects.toThrow("not found");
   });
 });

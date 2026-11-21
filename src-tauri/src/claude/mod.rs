@@ -19,10 +19,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::ai::process::{GroupHandle, LongChild, Spawn};
-use crate::ai::{AiError, AiManager, ErrorKind, shell_path};
+use crate::ai::{shell_path, AiError, AiManager, ErrorKind};
 
-/// Node 18 is the oldest release the Agent SDK supports.
-const MIN_NODE_MAJOR: u32 = 18;
+/// The oldest Node the bridge runs on (the bundle imports `isUtf8` from
+/// `buffer`, added in 18.14.0).
+const MIN_NODE: [u32; 3] = [18, 14, 0];
 
 /// How long the bridge gets to exit by itself once its stdin is closed.
 const GRACE: Duration = Duration::from_millis(300);
@@ -47,47 +48,68 @@ struct Bridge {
 }
 
 #[derive(Default)]
+struct Registry {
+    bridges: HashMap<String, Bridge>,
+    /// The newest generation reserved per window. An open that finds a
+    /// newer one when it is ready to install was cancelled (the page
+    /// reloaded or the window closed while it was locating `node`).
+    latest: HashMap<String, u64>,
+    /// Groups of bridges that are shutting down, until they are reaped, so
+    /// app exit can still kill them.
+    closing: HashMap<u64, GroupHandle>,
+}
+
+#[derive(Default)]
 pub struct ClaudeManager {
-    bridges: Arc<Mutex<HashMap<String, Bridge>>>,
+    state: Arc<Mutex<Registry>>,
     generation: AtomicU64,
 }
 
 impl ClaudeManager {
-    /// Ends a window's bridge (its page reloaded or it closed).
+    fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Ends a window's bridge (its page reloaded or it closed) and cancels
+    /// an open still in progress.
     pub fn close_owned_by(&self, owner: &str) {
-        let bridge = self.bridges.lock().unwrap().remove(owner);
-        if let Some(close) = bridge.and_then(|mut b| b.close.take()) {
-            let _ = close.send(());
+        let generation = self.next_generation();
+        let mut state = self.state.lock().unwrap();
+        state.latest.insert(owner.to_string(), generation);
+        if let Some(mut bridge) = state.bridges.remove(owner) {
+            state
+                .closing
+                .insert(bridge.generation, bridge.group.clone());
+            if let Some(close) = bridge.close.take() {
+                let _ = close.send(());
+            }
         }
     }
 
-    /// App exit: kills every bridge's process group now; the tasks may never
-    /// run again.
+    /// App exit: kills every bridge's process group now, those still shutting
+    /// down included; the tasks may never run again.
     pub fn close_all(&self) {
-        let bridges: Vec<Bridge> = self
-            .bridges
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, b)| b)
-            .collect();
-        for bridge in bridges {
+        let mut state = self.state.lock().unwrap();
+        for (_, bridge) in state.bridges.drain() {
             bridge.group.kill();
+        }
+        for (_, group) in state.closing.drain() {
+            group.kill();
         }
     }
 }
 
-/// The version of `node --version` output (`v20.11.1`) is at least [`MIN_NODE_MAJOR`].
+/// The version of `node --version` output (`v20.11.1`) is at least [`MIN_NODE`].
 fn check_node_version(line: Option<&str>) -> Result<(), AiError> {
     let Some(line) = line else {
         return Err(AiError::other(
-            "Claude Code needs Node.js 18 or later; could not run `node --version`",
+            "Claude Code needs Node.js 18.14 or later; could not run `node --version`",
         ));
     };
     match crate::ai::cli::parse_version(line) {
-        Some([major, ..]) if major >= MIN_NODE_MAJOR => Ok(()),
+        Some(version) if version >= MIN_NODE => Ok(()),
         _ => Err(AiError::other(format!(
-            "Claude Code needs Node.js {MIN_NODE_MAJOR} or later; found {}",
+            "Claude Code needs Node.js 18.14 or later; found {}",
             line.trim()
         ))),
     }
@@ -135,7 +157,10 @@ pub async fn claude_bridge_open(
     manager: State<'_, ClaudeManager>,
 ) -> Result<BridgeInfo, AiError> {
     let label = window.label().to_string();
+    // Replaces the window's bridge, and reserves this open's generation
+    // before the first await so a later close or open supersedes it.
     manager.close_owned_by(&label);
+    let generation = manager.state.lock().unwrap().latest[&label];
 
     let discovery = ai.discovery();
     let node = discovery
@@ -144,7 +169,10 @@ pub async fn claude_bridge_open(
         .map_err(|e| {
             AiError::new(
                 ErrorKind::NotFound,
-                format!("Claude Code needs Node.js 18 or later, but {}", e.message),
+                format!(
+                    "Claude Code needs Node.js 18.14 or later, but {}",
+                    e.message
+                ),
             )
         })?;
     check_node_version(discovery.version_line(node.clone()).await.as_deref())?;
@@ -180,24 +208,32 @@ pub async fn claude_bridge_open(
         }
     });
 
-    let generation = manager.generation.fetch_add(1, Ordering::Relaxed);
     let (close_tx, close_rx) = oneshot::channel();
-    manager.bridges.lock().unwrap().insert(
-        label.clone(),
-        Bridge {
-            generation,
-            tx,
-            group,
-            close: Some(close_tx),
-        },
-    );
+    {
+        let mut state = manager.state.lock().unwrap();
+        if state.latest.get(&label) != Some(&generation) {
+            // Cancelled while starting: the child dies with `child` (its
+            // group is killed on drop).
+            writer.abort();
+            return Err(AiError::cancelled());
+        }
+        state.bridges.insert(
+            label.clone(),
+            Bridge {
+                generation,
+                tx,
+                group,
+                close: Some(close_tx),
+            },
+        );
+    }
     tokio::spawn(pump(
         child,
         stdout,
         writer,
         close_rx,
         on_event,
-        manager.bridges.clone(),
+        manager.state.clone(),
         label,
         generation,
     ));
@@ -217,7 +253,7 @@ async fn pump(
     writer: tokio::task::JoinHandle<()>,
     mut close: oneshot::Receiver<()>,
     on_event: Channel<String>,
-    bridges: Arc<Mutex<HashMap<String, Bridge>>>,
+    state: Arc<Mutex<Registry>>,
     label: String,
     generation: u64,
 ) {
@@ -246,9 +282,14 @@ async fn pump(
     let _ = writer.await;
     let (code, stderr) = child.shutdown(GRACE).await;
     {
-        let mut map = bridges.lock().unwrap();
-        if map.get(&label).is_some_and(|b| b.generation == generation) {
-            map.remove(&label);
+        let mut state = state.lock().unwrap();
+        state.closing.remove(&generation);
+        if state
+            .bridges
+            .get(&label)
+            .is_some_and(|b| b.generation == generation)
+        {
+            state.bridges.remove(&label);
         }
     }
     if !closed {
@@ -262,8 +303,9 @@ pub fn claude_bridge_send(
     line: String,
     manager: State<'_, ClaudeManager>,
 ) -> Result<(), AiError> {
-    let bridges = manager.bridges.lock().unwrap();
-    let bridge = bridges
+    let state = manager.state.lock().unwrap();
+    let bridge = state
+        .bridges
         .get(window.label())
         .ok_or_else(|| AiError::other("The Claude Code bridge is not running."))?;
     bridge

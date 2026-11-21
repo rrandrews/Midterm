@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -52,12 +52,41 @@ describe("config", () => {
     mkdirSync(cfg, { recursive: true });
     writeFileSync(join(cfg, "CLAUDE.md"), "x");
     writeFileSync(join(cwd, "CLAUDE.local.md"), "y");
-    const files = memoryFiles(cwd);
+    const files = memoryFiles(cwd).filter((f) => !f.label.startsWith("Parent memory"));
     expect(files.map((f) => [f.label, f.exists])).toEqual([
       ["User memory", true],
       ["Project memory", false],
       ["Project memory (.claude)", false],
       ["Local memory", true],
     ]);
+  });
+
+  it("keeps the mode of an existing file and writes through a symlink", async () => {
+    const real = join(root, "real.json");
+    writeFileSync(real, "{}");
+    chmodSync(real, 0o600);
+    mkdirSync(cfg, { recursive: true });
+    symlinkSync(real, join(cfg, "settings.json"));
+    await writeConfig(cwd, "user", '{"a":1}');
+    expect(readFileSync(real, "utf8")).toBe('{"a":1}');
+    expect(statSync(real).mode & 0o777).toBe(0o600);
+    expect(statSync(join(cfg, "settings.json")).isFile()).toBe(true);
+    expect(readdirSync(root).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("includes parent folders' memory files, nearest last", () => {
+    const nested = join(cwd, "a", "b");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(cwd, "CLAUDE.md"), "p");
+    const files = memoryFiles(nested);
+    const labels = files.map((f) => f.label);
+    const parentIdx = files.findIndex((f) => f.path === join(cwd, "CLAUDE.md"));
+    expect(parentIdx).toBeGreaterThan(0);
+    expect(files[parentIdx].exists).toBe(true);
+    expect(labels[parentIdx]).toMatch(/^Parent memory \(/);
+    const aIdx = files.findIndex((f) => f.path === join(cwd, "a", "CLAUDE.md"));
+    expect(aIdx).toBeGreaterThan(parentIdx);
+    expect(labels.indexOf("Project memory")).toBeGreaterThan(aIdx);
+    expect(files.some((f) => f.path === join(nested, "CLAUDE.md"))).toBe(true);
   });
 });

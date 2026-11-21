@@ -2,10 +2,11 @@
  * Claude Code settings files and memory files, read and written directly
  * (there is no CLI or SDK call for the raw text, and the webview edits JSON).
  */
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, parse } from "node:path";
 import type { ConfigFile, ConfigScope, MemoryFile } from "../protocol";
 import { BridgeFailure } from "./errors";
 
@@ -47,11 +48,22 @@ export async function writeConfig(cwd: string, scope: ConfigScope, text: string)
   }
   const path = settingsPath(cwd, scope);
   await mkdir(dirname(path), { recursive: true });
-  // Temp file in the same directory so the rename is atomic and never leaves half a settings file.
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  // Replace what a symlink points at, not the link; keep the existing file's mode.
+  let target = path;
+  let mode: number | undefined;
   try {
-    await writeFile(tmp, text);
-    await rename(tmp, path);
+    target = await realpath(path);
+    mode = (await stat(target)).mode & 0o7777;
+  } catch {
+    // does not exist yet: default mode
+  }
+  // Exclusive temp file in the same directory: the rename is atomic, never half a file, and we only ever remove our own temp.
+  const tmp = join(dirname(target), `.${basename(target)}.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    await writeFile(tmp, text, { flag: "wx", ...(mode !== undefined ? { mode } : {}) });
+    // writeFile's mode is masked by the umask; restore the exact mode.
+    if (mode !== undefined) await chmod(tmp, mode);
+    await rename(tmp, target);
   } catch (e) {
     await rm(tmp, { force: true });
     throw e;
@@ -61,8 +73,19 @@ export async function writeConfig(cwd: string, scope: ConfigScope, text: string)
 
 export function memoryFiles(cwd: string): MemoryFile[] {
   const entry = (label: string, path: string): MemoryFile => ({ label, path, exists: existsSync(path) });
+  // Claude Code also loads CLAUDE.md files of parent folders; nearest last, like its own load order.
+  const parents: MemoryFile[] = [];
+  const home = homedir();
+  for (let dir = dirname(cwd); dir !== parse(dir).root && dir !== dirname(dir); dir = dirname(dir)) {
+    const label = dir === home ? "~" : dir.startsWith(home + "/") ? "~" + dir.slice(home.length) : dir;
+    parents.unshift(
+      entry(`Parent memory (${label})`, join(dir, "CLAUDE.md")),
+      entry(`Parent memory (${label}, .claude)`, join(dir, ".claude", "CLAUDE.md")),
+    );
+  }
   return [
     entry("User memory", join(userConfigDir(), "CLAUDE.md")),
+    ...parents,
     entry("Project memory", join(cwd, "CLAUDE.md")),
     entry("Project memory (.claude)", join(cwd, ".claude", "CLAUDE.md")),
     entry("Local memory", join(cwd, "CLAUDE.local.md")),

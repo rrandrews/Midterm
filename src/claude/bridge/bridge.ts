@@ -6,7 +6,7 @@ import { BRIDGE_PROTOCOL } from "../protocol";
 import type { BridgeEvent, BridgeLine, BridgeMethod, BridgeParams } from "../protocol";
 import { memoryFiles, readConfig, writeConfig } from "./config";
 import { BridgeFailure, toBridgeError } from "./errors";
-import { listMarketplaces, listPlugins, pluginArgs, runMutation } from "./plugins";
+import { listMarketplaces, listPlugins, pluginArgs, runApproved, runMutation } from "./plugins";
 import type { ExecFile } from "./plugins";
 import { Sessions, childEnv, listPastSessions, pastSessionMessages } from "./session";
 
@@ -53,11 +53,11 @@ export function createBridge(deps: BridgeDeps) {
     "sessions.list": (p) => listPastSessions(p),
     "sessions.messages": (p) => pastSessionMessages(p),
     "plugins.list": (p: BridgeParams<"plugins.list">) => listPlugins(cli(), p.cwd, !!p.available),
-    "plugins.install": mutate((p) => pluginArgs.install(p.id, p.scope)),
+    "plugins.install": (p) => runApproved(cli(), p.cwd, pluginArgs.install(p.id, p.scope, p.acceptCommand)),
     "plugins.uninstall": mutate((p) => pluginArgs.uninstall(p.id, p.scope)),
     "plugins.enable": mutate((p) => pluginArgs.enable(p.id, p.scope)),
     "plugins.disable": mutate((p) => pluginArgs.disable(p.id, p.scope)),
-    "plugins.update": mutate((p) => pluginArgs.update(p.id, p.scope)),
+    "plugins.update": (p) => runApproved(cli(), p.cwd, pluginArgs.update(p.id, p.scope, p.acceptCommand)),
     "marketplaces.list": (p) => listMarketplaces(cli(), p.cwd),
     "marketplaces.add": mutate((p) => pluginArgs.marketplaceAdd(p.source)),
     "marketplaces.remove": mutate((p) => pluginArgs.marketplaceRemove(p.name)),

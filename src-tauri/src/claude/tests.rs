@@ -3,11 +3,13 @@ use super::*;
 #[test]
 fn node_version_gate() {
     assert!(check_node_version(Some("v20.11.1")).is_ok());
-    assert!(check_node_version(Some("v18.0.0")).is_ok());
+    assert!(check_node_version(Some("v18.14.0")).is_ok());
+    assert!(check_node_version(Some("v19.0.0")).is_ok());
+    assert!(check_node_version(Some("v18.13.9")).is_err());
     let e = check_node_version(Some("v16.2.0")).unwrap_err();
     assert_eq!(
         e.message,
-        "Claude Code needs Node.js 18 or later; found v16.2.0"
+        "Claude Code needs Node.js 18.14 or later; found v16.2.0"
     );
     assert!(check_node_version(None).is_err());
     assert!(check_node_version(Some("garbage")).is_err());
@@ -54,7 +56,7 @@ async fn manager_close_all_kills_groups() {
     .unwrap();
     let manager = ClaudeManager::default();
     let (tx, _rx) = mpsc::unbounded_channel();
-    manager.bridges.lock().unwrap().insert(
+    manager.state.lock().unwrap().bridges.insert(
         "w".into(),
         Bridge {
             generation: 0,
@@ -65,5 +67,40 @@ async fn manager_close_all_kills_groups() {
     );
     manager.close_all();
     let (_, _) = child.shutdown(Duration::from_secs(1)).await;
-    assert!(manager.bridges.lock().unwrap().is_empty());
+    assert!(manager.state.lock().unwrap().bridges.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn closing_groups_stay_reachable_and_opens_are_cancelled() {
+    let (child, _stdin, _stdout) = LongChild::spawn(Spawn {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "cat".into()],
+        cwd: None,
+        env: vec![],
+        env_remove: vec![],
+    })
+    .unwrap();
+    let manager = ClaudeManager::default();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let (close, _close_rx) = oneshot::channel();
+    manager.state.lock().unwrap().bridges.insert(
+        "w".into(),
+        Bridge {
+            generation: 1,
+            tx,
+            group: child.group(),
+            close: Some(close),
+        },
+    );
+    manager.close_owned_by("w");
+    {
+        let state = manager.state.lock().unwrap();
+        assert!(state.bridges.is_empty());
+        assert!(state.closing.contains_key(&1));
+        assert!(state.latest["w"] >= 1);
+    }
+    manager.close_all();
+    let (_, _) = child.shutdown(Duration::from_secs(1)).await;
+    assert!(manager.state.lock().unwrap().closing.is_empty());
 }

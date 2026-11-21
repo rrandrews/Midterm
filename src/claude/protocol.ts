@@ -109,6 +109,9 @@ export type ConfigFile = {
   /** The file's text ("" when it does not exist). */
   text: string;
 };
+/** A plugin command's outcome; `confirm` when it did nothing yet because a marketplace command needs the user's approval. */
+export type PluginCommandResult = { output: string; confirm?: { command: string; digest: string; message?: string } };
+
 /** A memory file Claude Code would load for `cwd`. */
 export type MemoryFile = { label: string; path: string; exists: boolean };
 
@@ -132,6 +135,8 @@ export type BridgeMethods = {
       model?: string;
       effort?: EffortLevel;
       permissionMode?: PermissionMode;
+      /** Lets the session enter `bypassPermissions` (the SDK's `allowDangerouslySkipPermissions`); off unless the user turned it on in the plugin's settings. */
+      allowBypass?: boolean;
     },
     SessionInit,
   ];
@@ -168,11 +173,17 @@ export type BridgeMethods = {
 
   /** Through `claude plugin list --available --json`. `available` only when asked (it is large). */
   "plugins.list": [{ cwd: string; available?: boolean }, { installed: InstalledPlugin[]; available: AvailablePlugin[] }];
-  "plugins.install": [{ cwd: string; id: string; scope: PluginScope }, { output: string }];
+  /**
+   * Installs without approving anything the marketplace asks to run. When the
+   * CLI wants a command approved first, the answer carries `confirm`; show the
+   * command and call again with `acceptCommand` = its digest.
+   */
+  "plugins.install": [{ cwd: string; id: string; scope: PluginScope; acceptCommand?: string }, PluginCommandResult];
   "plugins.uninstall": [{ cwd: string; id: string; scope: PluginScope }, { output: string }];
   "plugins.enable": [{ cwd: string; id: string; scope: PluginScope }, { output: string }];
   "plugins.disable": [{ cwd: string; id: string; scope: PluginScope }, { output: string }];
-  "plugins.update": [{ cwd: string; id: string; scope: PluginScope }, { output: string }];
+  /** Like `plugins.install`: may answer `confirm`. */
+  "plugins.update": [{ cwd: string; id: string; scope: PluginScope; acceptCommand?: string }, PluginCommandResult];
   "marketplaces.list": [{ cwd: string }, Marketplace[]];
   "marketplaces.add": [{ cwd: string; source: string }, { output: string }];
   "marketplaces.remove": [{ cwd: string; name: string }, { output: string }];
@@ -210,6 +221,10 @@ export type PermissionRequest = {
   blockedPath?: string;
   /** "Always allow" rules the CLI proposes; send back as `updatedPermissions`. */
   suggestions?: PermissionUpdate[];
+  /** A single keystroke must not approve this one: Allow is not the default action (⏎ does not allow). */
+  defaultToNo?: boolean;
+  /** Do not offer persistent ("always allow") grants for this one. */
+  suppressAlwaysAllowRule?: boolean;
 };
 
 /* ---- Events ---- */

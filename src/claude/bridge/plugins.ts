@@ -4,7 +4,7 @@
  * bridge never touches those itself.
  */
 import { execFile } from "node:child_process";
-import type { AvailablePlugin, InstalledPlugin, Marketplace, PluginScope } from "../protocol";
+import type { AvailablePlugin, InstalledPlugin, Marketplace, PluginCommandResult, PluginScope } from "../protocol";
 import { BridgeFailure } from "./errors";
 
 export type ExecFile = typeof execFile;
@@ -33,7 +33,7 @@ export function runClaude(ctx: CliContext, cwd: string, args: string[]): Promise
           const code = (error as NodeJS.ErrnoException).code;
           if (code === "ENOENT") return reject(new BridgeFailure(`claude not found at ${claude}`, "notFound"));
           const tail = (output || error.message).split("\n").slice(-8).join("\n");
-          return reject(new BridgeFailure(tail, "other"));
+          return reject(new BridgeFailure(tail, "other", out));
         }
         resolve({ stdout: out, output });
       },
@@ -69,11 +69,17 @@ export async function listMarketplaces(ctx: CliContext, cwd: string): Promise<Ma
 
 /** Argument lists for the mutating commands (kept pure so they can be tested). */
 export const pluginArgs = {
-  install: (id: string, scope: PluginScope) => ["plugin", "install", "--scope", scope, "--yes", id],
+  // No --yes: it would approve marketplace-declared commands unseen. Without it the CLI reports the
+  // command (shownCommand) and refuses; the user approves it and we pass --accept-command <digest>.
+  install: (id: string, scope: PluginScope, accept?: string) => [
+    "plugin", "install", "--json", "--scope", scope, ...(accept ? ["--accept-command", accept] : []), id,
+  ],
   uninstall: (id: string, scope: PluginScope) => ["plugin", "uninstall", "--scope", scope, "--yes", id],
   enable: (id: string, scope: PluginScope) => ["plugin", "enable", "--scope", scope, id],
   disable: (id: string, scope: PluginScope) => ["plugin", "disable", "--scope", scope, id],
-  update: (id: string, scope: PluginScope) => ["plugin", "update", "--scope", scope, "--yes", id],
+  update: (id: string, scope: PluginScope, accept?: string) => [
+    "plugin", "update", "--json", "--scope", scope, ...(accept ? ["--accept-command", accept] : []), id,
+  ],
   marketplaceAdd: (source: string) => ["plugin", "marketplace", "add", source],
   marketplaceRemove: (name: string) => ["plugin", "marketplace", "remove", name],
   marketplaceUpdate: (name?: string) => ["plugin", "marketplace", "update", ...(name ? [name] : [])],
@@ -82,4 +88,37 @@ export const pluginArgs = {
 export async function runMutation(ctx: CliContext, cwd: string, args: string[]): Promise<{ output: string }> {
   const { output } = await runClaude(ctx, cwd, args);
   return { output };
+}
+
+/** Last parseable JSON object among the lines of `--json` output. */
+function lastJson(text: string): Record<string, any> | undefined {
+  for (const line of text.split("\n").reverse()) {
+    try {
+      const v = JSON.parse(line);
+      if (v && typeof v === "object") return v;
+    } catch {
+      // not the JSON line
+    }
+  }
+  return undefined;
+}
+
+/** install/update with `--json`: a `shownCommand` in the result means the CLI wants the user's approval first. */
+export async function runApproved(ctx: CliContext, cwd: string, args: string[]): Promise<PluginCommandResult> {
+  let stdout: string;
+  let output: string;
+  try {
+    ({ stdout, output } = await runClaude(ctx, cwd, args));
+  } catch (e) {
+    const json = e instanceof BridgeFailure && e.stdout ? lastJson(e.stdout) : undefined;
+    const shown = json?.shownCommand;
+    if (shown?.sha256) {
+      const command = typeof shown.command === "string" ? shown.command : JSON.stringify(shown);
+      return { output: String(json?.message ?? ""), confirm: { command, digest: String(shown.sha256), message: json?.message } };
+    }
+    if (json?.message && e instanceof BridgeFailure) throw new BridgeFailure(String(json.message), e.code);
+    throw e;
+  }
+  const json = lastJson(stdout);
+  return { output: json?.message ? String(json.message) : output };
 }

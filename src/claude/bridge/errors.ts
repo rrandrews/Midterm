@@ -5,6 +5,8 @@ export class BridgeFailure extends Error {
   constructor(
     message: string,
     readonly code: NonNullable<BridgeError["code"]> = "other",
+    /** Raw stdout of a failed CLI run (a --json result can accompany a non-zero exit). */
+    readonly stdout?: string,
   ) {
     super(message);
   }

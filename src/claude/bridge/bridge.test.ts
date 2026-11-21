@@ -150,7 +150,9 @@ describe("sessions", () => {
       forwardSubagentText: true,
       agentProgressSummaries: true,
       env: { X: "y" },
+      systemPrompt: { type: "preset", preset: "claude_code" },
     });
+    expect(o.allowDangerouslySkipPermissions).toBeUndefined();
     expect(typeof o.canUseTool).toBe("function");
   });
 
@@ -237,9 +239,38 @@ describe("sessions", () => {
   });
 });
 
+describe("options and stale sessions", () => {
+  it("allows bypass only when asked", async () => {
+    const { call } = setup();
+    await call("session.start", { session: "a", cwd: "/w", allowBypass: true });
+    expect(queryCalls[0].options.allowDangerouslySkipPermissions).toBe(true);
+  });
+
+  it("stays silent after a session was replaced or closed", async () => {
+    const { call } = setup();
+    await call("session.start", { session: "a", cwd: "/w" });
+    await call("session.start", { session: "a", cwd: "/w" });
+    queries[0].push({ type: "assistant", old: true });
+    queryCalls[0].options.stderr("late");
+    queryCalls[0].options.canUseTool("Bash", {}, { signal: new AbortController().signal, requestId: "z", toolUseID: "t" });
+    await tick();
+    expect(events("message")).toEqual([]);
+    expect(events("stderr")).toEqual([]);
+    expect(events("permission")).toEqual([]);
+  });
+
+  it("returns the agents of the last reloadPlugins", async () => {
+    const { call } = setup();
+    await call("session.start", { session: "a", cwd: "/w" });
+    queries[0].reloadPlugins.mockResolvedValueOnce({ agents: [{ name: "new" }] } as any);
+    await call("session.reloadPlugins", { session: "a" });
+    expect((await call("session.capabilities", { session: "a" })).result.agents).toEqual([{ name: "new" }]);
+  });
+});
+
 describe("permissions", () => {
   const ask = (session = 0, id = "r1", signal = new AbortController().signal) =>
-    queryCalls[session].options.canUseTool("Bash", { command: "echo hi" }, { signal, requestId: id, toolUseID: "tu", agentID: "ag", title: "T", suggestions: [] });
+    queryCalls[session].options.canUseTool("Bash", { command: "echo hi" }, { signal, requestId: id, toolUseID: "tu", agentID: "ag", title: "T", suggestions: [], defaultToNo: true, suppressAlwaysAllowRule: true });
 
   it("round-trips a prompt", async () => {
     const { call } = setup();
@@ -247,7 +278,7 @@ describe("permissions", () => {
     const p = ask();
     expect(events("permission")[0]).toMatchObject({
       session: "a",
-      request: { requestId: "r1", toolName: "Bash", input: { command: "echo hi" }, toolUseId: "tu", agentId: "ag", title: "T" },
+      request: { requestId: "r1", toolName: "Bash", input: { command: "echo hi" }, toolUseId: "tu", agentId: "ag", title: "T", defaultToNo: true, suppressAlwaysAllowRule: true },
     });
     const result = { behavior: "allow", updatedInput: { command: "echo yo" } };
     await call("session.permission", { session: "a", requestId: "r1", result });

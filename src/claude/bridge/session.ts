@@ -4,7 +4,7 @@
  * so settings, plugins, hooks and MCP servers are the real ones.
  */
 import { getSessionMessages, listSessions, query } from "@anthropic-ai/claude-agent-sdk";
-import type { CanUseTool, Options, PermissionMode, PermissionResult, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { AgentInfo, CanUseTool, Options, PermissionMode, PermissionResult, Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeEvent, BridgeParams, BridgeResult, PermissionRequest, SessionInit, SessionKey } from "../protocol";
 import { BridgeFailure } from "./errors";
 import { InputQueue } from "./queue";
@@ -19,6 +19,8 @@ type Session = {
   pending: Map<string, (r: PermissionResult) => void>;
   /** Set when the session was closed on purpose (close request, replaced, shutdown). */
   closing: boolean;
+  /** Agents from the last reloadPlugins(); supportedAgents() only knows the init list. */
+  agents?: AgentInfo[];
 };
 
 /** The environment the user's `claude` runs in: ours, without the markers of a Claude Code parent. */
@@ -69,6 +71,15 @@ export class Sessions {
     const pending = new Map<string, (r: PermissionResult) => void>();
     const key = p.session;
 
+    // Only the live session of a key may speak: a replaced or closed query must stay silent.
+    const live = () => {
+      const cur = this.sessions.get(key);
+      return !!cur && cur === session && !cur.closing;
+    };
+    const emit: Emit = (e) => {
+      if (live()) this.emit(e);
+    };
+
     const canUseTool: CanUseTool = (toolName, toolInput, o) =>
       new Promise<PermissionResult>((resolve) => {
         const requestId = o.requestId;
@@ -80,7 +91,7 @@ export class Sessions {
         const onAbort = () => {
           if (!pending.has(requestId)) return;
           settle({ behavior: "deny", message: "The request was cancelled" });
-          this.emit({ event: "permissionCancelled", session: key, requestId });
+          emit({ event: "permissionCancelled", session: key, requestId });
         };
         pending.set(requestId, settle);
         if (o.signal.aborted) return onAbort();
@@ -97,8 +108,10 @@ export class Sessions {
           decisionReason: o.decisionReason,
           blockedPath: o.blockedPath,
           suggestions: o.suggestions,
+          defaultToNo: o.defaultToNo,
+          suppressAlwaysAllowRule: o.suppressAlwaysAllowRule,
         };
-        this.emit({ event: "permission", session: key, request });
+        emit({ event: "permission", session: key, request });
       });
 
     const options: Options = {
@@ -109,9 +122,12 @@ export class Sessions {
       forwardSubagentText: true,
       agentProgressSummaries: true,
       env: this.env(),
-      stderr: (text) => this.emit({ event: "stderr", session: key, text }),
+      stderr: (text) => emit({ event: "stderr", session: key, text }),
+      // The normal Claude Code system prompt, as the CLI and the VS Code extension use.
+      systemPrompt: { type: "preset", preset: "claude_code" },
       canUseTool,
     };
+    if (p.allowBypass) options.allowDangerouslySkipPermissions = true;
     if (p.resume) options.resume = p.resume;
     if (p.model) options.model = p.model;
     if (p.effort) options.effort = p.effort;
@@ -152,7 +168,9 @@ export class Sessions {
   private async consume(s: Session): Promise<void> {
     let error: string | undefined;
     try {
-      for await (const message of s.q) this.emit({ event: "message", session: s.key, message });
+      for await (const message of s.q) {
+        if (this.sessions.get(s.key) === s && !s.closing) this.emit({ event: "message", session: s.key, message });
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -239,14 +257,18 @@ export class Sessions {
     await this.get(p.session).q.reconnectMcpServer(p.server);
   }
 
-  reloadPlugins(key: SessionKey): Promise<BridgeResult<"session.reloadPlugins">> {
-    return this.get(key).q.reloadPlugins();
+  async reloadPlugins(key: SessionKey): Promise<BridgeResult<"session.reloadPlugins">> {
+    const s = this.get(key);
+    const r = await s.q.reloadPlugins();
+    if (Array.isArray(r.agents)) s.agents = r.agents;
+    return r;
   }
 
   async capabilities(key: SessionKey): Promise<BridgeResult<"session.capabilities">> {
-    const q = this.get(key).q;
-    const [commands, models, agents] = await Promise.all([q.supportedCommands(), q.supportedModels(), q.supportedAgents()]);
-    return { commands, models, agents };
+    const s = this.get(key);
+    const q = s.q;
+    const [commands, models, listed] = await Promise.all([q.supportedCommands(), q.supportedModels(), q.supportedAgents()]);
+    return { commands, models, agents: s.agents ?? listed };
   }
 
   async stopTask(p: BridgeParams<"session.stopTask">): Promise<void> {
