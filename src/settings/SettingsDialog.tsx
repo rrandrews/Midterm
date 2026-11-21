@@ -5,6 +5,7 @@ import {
   FolderTree,
   Keyboard,
   type LucideIcon,
+  Orbit,
   Palette,
   Puzzle,
   Search,
@@ -88,6 +89,7 @@ const PLUGIN_ICONS: Record<string, LucideIcon> = {
   eye: Eye,
   "folder-tree": FolderTree,
   asterisk: Asterisk,
+  orbit: Orbit,
   palette: Palette,
   sparkles: Sparkles,
 };
