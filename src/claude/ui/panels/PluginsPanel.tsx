@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Download, Plus, Puzzle, RefreshCw, RotateCw, Search, Server, ShieldAlert, Store, Trash2, X } from "lucide-react";
+import { Download, Plus, Puzzle, RefreshCcwDot, RefreshCw, RotateCw, Search, Server, ShieldAlert, Store, Trash2, X } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { confirm } from "../../../components/ui/ConfirmDialog";
@@ -8,7 +8,7 @@ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "../../.
 import { Toggle } from "../../../settings/controls";
 import { request } from "../../client";
 import type { AvailablePlugin, InstalledPlugin, Marketplace, McpServerStatus, PluginCommandResult, PluginScope } from "../../protocol";
-import { getSession, hasProcess, updateSession, useSession } from "../../store";
+import { getSession, hasProcess, updateSession, useClaudeStore, useSession } from "../../store";
 import { formatTokens } from "./format";
 import { Badge, Button, Dot, Empty, ErrorLine, IconButton, Segmented, Spinner, type Tone, Toolbar, errorText, useRowCommands } from "./shared";
 
@@ -29,8 +29,9 @@ type PanelState = {
   marketplaces: Record<string, Marketplace[]>;
   view: Record<string, View>;
   needsReload: Record<string, boolean>;
+  reloading: Record<string, boolean>;
 };
-const usePanelState = create<PanelState>(() => ({ installed: {}, available: {}, marketplaces: {}, view: {}, needsReload: {} }));
+const usePanelState = create<PanelState>(() => ({ installed: {}, available: {}, marketplaces: {}, view: {}, needsReload: {}, reloading: {} }));
 const patch = <K extends keyof PanelState>(key: K, id: string, value: PanelState[K][string]) =>
   usePanelState.setState((state) => ({ [key]: { ...state[key], [id]: value } }) as Partial<PanelState>);
 
@@ -43,6 +44,27 @@ const SCOPES: { scope: PluginScope; label: string; hint: string }[] = [
 function splitId(id: string): { name: string; marketplace?: string } {
   const at = id.lastIndexOf("@");
   return at > 0 ? { name: id.slice(0, at), marketplace: id.slice(at + 1) } : { name: id };
+}
+
+const trimSlash = (path: string) => path.replace(/(.)\/+$/, "$1");
+
+/**
+ * Where an installed plugin applies, seen from `cwd`. `claude plugin list`
+ * lists local and project installs of every project; `enabled` is the
+ * plugin's state in `cwd`'s merged settings, so it only describes the rows
+ * of this folder. Rows of another project are shown but not toggled, and
+ * scopes the CLI cannot change (e.g. `synced`) are read-only.
+ */
+function placeOf(plugin: InstalledPlugin, cwd: string): { kind: "here" } | { kind: "other"; path: string } | { kind: "readonly" } {
+  const scope: string = plugin.scope;
+  if (scope !== "user" && scope !== "project" && scope !== "local") return { kind: "readonly" };
+  if (scope !== "user" && plugin.projectPath && trimSlash(plugin.projectPath) !== trimSlash(cwd)) return { kind: "other", path: plugin.projectPath };
+  return { kind: "here" };
+}
+
+/** "1.0.1-73c8cf3ea7e2" → "1.0.1-73c8cf3": long hex runs (commit hashes) cut to 7. */
+function shortVersion(version: string): string {
+  return version.replace(/^v/, "").replace(/[0-9a-f]{8,}/g, (hash) => (/[a-f]/.test(hash) ? hash.slice(0, 7) : hash));
 }
 
 async function loadInstalled(cwd: string): Promise<void> {
@@ -81,10 +103,11 @@ export function PluginsPanel({ sessionKey }: { sessionKey: string }) {
             { value: "mcp", label: <>MCP{mcpCount ? <span className="cp-segment-count">{mcpCount}</span> : null}</> },
           ]}
         />
+        <ReloadButton sessionKey={sessionKey} />
       </Toolbar>
       {view === "installed" && <InstalledView sessionKey={sessionKey} cwd={cwd} />}
-      {view === "discover" && <DiscoverView sessionKey={sessionKey} cwd={cwd} />}
-      {view === "marketplaces" && <MarketplacesView sessionKey={sessionKey} cwd={cwd} />}
+      {view === "discover" && <DiscoverView cwd={cwd} />}
+      {view === "marketplaces" && <MarketplacesView cwd={cwd} />}
       {view === "mcp" && <McpView sessionKey={sessionKey} />}
       <ReloadBar sessionKey={sessionKey} />
     </>
@@ -111,7 +134,42 @@ function useLoad(load: (force: boolean) => Promise<void>, deps: unknown[]) {
   return { loading, error, retry: () => run(true) };
 }
 
-const markChanged = (sessionKey: string) => patch("needsReload", sessionKey, true);
+/**
+ * After a plugin change, flags every running session it reaches for a
+ * reload: a user-scope change (or a marketplace change, `"all"`) reaches
+ * every session; a project or local one the sessions in that folder.
+ * Sessions without a process load plugins fresh when they start.
+ */
+function markChanged(scope: PluginScope | "all", cwd: string): void {
+  const affected = Object.values(useClaudeStore.getState().sessions)
+    .filter((session) => session.status === "idle" || session.status === "running")
+    .filter((session) => scope === "all" || scope === "user" || trimSlash(session.cwd) === trimSlash(cwd))
+    .map((session) => session.key);
+  if (affected.length === 0) return;
+  usePanelState.setState((state) => ({ needsReload: { ...state.needsReload, ...Object.fromEntries(affected.map((key) => [key, true])) } }));
+}
+
+/** Whether a session has plugin changes it has not reloaded (for a hint outside this panel). */
+export function usePluginReloadNeeded(sessionKey: string): boolean {
+  return usePanelState((state) => state.needsReload[sessionKey] ?? false);
+}
+
+/** Reloads plugins from disk into a running session, then its commands, models and agents. */
+async function reloadPlugins(sessionKey: string): Promise<void> {
+  patch("reloading", sessionKey, true);
+  try {
+    const reloaded = await request("session.reloadPlugins", { session: sessionKey });
+    const capabilities = await request("session.capabilities", { session: sessionKey });
+    const init = getSession(sessionKey)?.init;
+    updateSession(sessionKey, {
+      ...(init ? { init: { ...init, commands: capabilities.commands, models: capabilities.models, agents: capabilities.agents } } : {}),
+      ...(reloaded.mcpServers ? { mcpServers: reloaded.mcpServers } : {}),
+    });
+    patch("needsReload", sessionKey, false);
+  } finally {
+    patch("reloading", sessionKey, false);
+  }
+}
 
 /* ---- Marketplace commands that need approval ---- */
 
@@ -160,7 +218,14 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
   const { loading, error, retry } = useLoad(() => loadInstalled(cwd), [cwd]);
   const commands = useRowCommands();
   const { approvals, ask, drop } = useApprovals();
-  const sorted = useMemo(() => [...(installed ?? [])].sort((a, b) => a.id.localeCompare(b.id)), [installed]);
+  // This folder's plugins first, then other projects' installs, each by name.
+  const sorted = useMemo(
+    () =>
+      [...(installed ?? [])].sort(
+        (a, b) => Number(placeOf(a, cwd).kind !== "here") - Number(placeOf(b, cwd).kind !== "here") || a.id.localeCompare(b.id),
+      ),
+    [installed, cwd],
+  );
 
   const act = async (plugin: InstalledPlugin, method: "plugins.enable" | "plugins.disable" | "plugins.uninstall", what: string) => {
     const key = `${plugin.id}:${plugin.scope}`;
@@ -168,7 +233,7 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
       await request(method, { cwd, id: plugin.id, scope: plugin.scope });
       await loadInstalled(cwd);
     });
-    if (ok) markChanged(sessionKey);
+    if (ok) markChanged(plugin.scope, cwd);
   };
 
   const update = async (plugin: InstalledPlugin, acceptCommand?: string) => {
@@ -182,7 +247,7 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
     });
     const confirmation = asked;
     if (confirmation) ask(key, { confirm: confirmation, verb: "update", approve: () => void update(plugin, confirmation.digest) });
-    else if (ok) markChanged(sessionKey);
+    else if (ok) markChanged(plugin.scope, cwd);
   };
 
   const uninstall = async (plugin: InstalledPlugin) => {
@@ -200,7 +265,7 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
       {error && <ErrorLine onRetry={retry}>{error}</ErrorLine>}
       {!installed && loading ? (
         <Loading>Loading plugins…</Loading>
-      ) : sorted.length === 0 && !error ? (
+      ) : installed && sorted.length === 0 && !error ? (
         <Empty icon={<Puzzle size={18} />} title="No plugins installed">
           Plugins add commands, agents, skills, hooks and MCP servers.{" "}
           <button type="button" className="cp-link" onClick={() => patch("view", sessionKey, "discover")}>
@@ -213,8 +278,17 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
             const key = `${plugin.id}:${plugin.scope}`;
             const { name, marketplace } = splitId(plugin.id);
             const busy = commands.busy[key];
+            const place = placeOf(plugin, cwd);
+            const here = place.kind === "here";
+            const on = here && plugin.enabled;
+            const lockedWhy =
+              place.kind === "other"
+                ? `Installed for another project (${place.path}). Open a session there to change it.`
+                : place.kind === "readonly"
+                  ? `The ${plugin.scope} scope is not managed by Claude Code’s plugin commands.`
+                  : undefined;
             return (
-              <li key={key} className={`cp-row${plugin.enabled ? "" : " cp-row-off"}`}>
+              <li key={`${key}:${place.kind === "other" ? place.path : ""}`} className={`cp-row cp-row-plugin${on ? "" : " cp-row-off"}`}>
                 <div className="cp-row-main">
                   <div className="cp-row-title">
                     <span className="cp-row-name" title={plugin.id}>
@@ -222,9 +296,26 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
                     </span>
                   </div>
                   <div className="cp-row-meta">
-                    <Badge tone={plugin.scope === "user" ? undefined : "info"}>{plugin.scope}</Badge>
-                    {plugin.version && <span className="cp-mono">v{plugin.version.replace(/^v/, "")}</span>}
-                    {busy ? <span className="cp-accent">{busy}…</span> : marketplace && <span className="cp-truncate cp-faint">{marketplace}</span>}
+                    <Badge tone={plugin.scope === "project" || plugin.scope === "local" ? "info" : undefined}>{plugin.scope}</Badge>
+                    {place.kind === "other" && <Badge title={`Installed for another project: ${place.path}`}>other project</Badge>}
+                    {plugin.version && (
+                      <span className="cp-mono cp-version" title={plugin.version}>
+                        v{shortVersion(plugin.version)}
+                      </span>
+                    )}
+                    {busy ? (
+                      <span className="cp-accent">{busy}…</span>
+                    ) : place.kind === "other" ? (
+                      <span className="cp-truncate cp-fg-mid" title={place.path}>
+                        {place.path.split("/").filter(Boolean).pop() ?? place.path}
+                      </span>
+                    ) : (
+                      marketplace && (
+                        <span className="cp-truncate cp-faint" title={marketplace}>
+                          {marketplace}
+                        </span>
+                      )
+                    )}
                   </div>
                   {commands.errors[key] && <span className="cp-row-error">{commands.errors[key]}</span>}
                 </div>
@@ -232,15 +323,18 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
                   {busy ? (
                     <Spinner />
                   ) : (
-                    <Toggle
-                      label={plugin.enabled ? `Disable ${name}` : `Enable ${name}`}
-                      checked={plugin.enabled}
-                      onChange={(enabled) => void act(plugin, enabled ? "plugins.enable" : "plugins.disable", enabled ? "Enabling" : "Disabling")}
-                    />
+                    <span title={lockedWhy} className="flex">
+                      <Toggle
+                        label={on ? `Disable ${name}` : `Enable ${name}`}
+                        checked={on}
+                        disabled={!here}
+                        onChange={(enabled) => void act(plugin, enabled ? "plugins.enable" : "plugins.disable", enabled ? "Enabling" : "Disabling")}
+                      />
+                    </span>
                   )}
                   <Menu modal={false}>
                     <MenuTrigger asChild>
-                      <button type="button" className="cp-icon-button" aria-label={`More for ${name}`} title="More" disabled={!!busy}>
+                      <button type="button" className="cp-icon-button" aria-label={`More for ${name}`} title={lockedWhy ?? "More"} disabled={!!busy || !here}>
                         <DotsIcon size={12} />
                       </button>
                     </MenuTrigger>
@@ -265,7 +359,7 @@ function InstalledView({ sessionKey, cwd }: { sessionKey: string; cwd: string })
 
 /* ---- Discover ---- */
 
-function DiscoverView({ sessionKey, cwd }: { sessionKey: string; cwd: string }) {
+function DiscoverView({ cwd }: { cwd: string }) {
   const available = usePanelState((state) => state.available[cwd]);
   const installed = usePanelState((state) => state.installed[cwd]);
   const { loading, error, retry } = useLoad(async (force) => {
@@ -275,7 +369,8 @@ function DiscoverView({ sessionKey, cwd }: { sessionKey: string; cwd: string }) 
   const commands = useRowCommands();
   const scroller = useRef<HTMLDivElement>(null);
 
-  const installedIds = useMemo(() => new Set((installed ?? []).map((plugin) => plugin.id)), [installed]);
+  // Installed here: another project's local install does not count.
+  const installedIds = useMemo(() => new Set((installed ?? []).filter((plugin) => placeOf(plugin, cwd).kind !== "other").map((plugin) => plugin.id)), [installed, cwd]);
   const results = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     const list = (available ?? []).filter((plugin) => {
@@ -307,7 +402,7 @@ function DiscoverView({ sessionKey, cwd }: { sessionKey: string; cwd: string }) 
     });
     const confirmation = asked;
     if (confirmation) ask(key, { confirm: confirmation, verb: "install", approve: () => void install(plugin, scope, confirmation.digest) });
-    else if (ok) markChanged(sessionKey);
+    else if (ok) markChanged(scope, cwd);
   };
 
   return (
@@ -407,7 +502,7 @@ function DiscoverView({ sessionKey, cwd }: { sessionKey: string; cwd: string }) 
 
 /* ---- Marketplaces ---- */
 
-function MarketplacesView({ sessionKey, cwd }: { sessionKey: string; cwd: string }) {
+function MarketplacesView({ cwd }: { cwd: string }) {
   const marketplaces = usePanelState((state) => state.marketplaces[cwd]);
   const { loading, error, retry } = useLoad(() => loadMarketplaces(cwd), [cwd]);
   const commands = useRowCommands();
@@ -420,7 +515,7 @@ function MarketplacesView({ sessionKey, cwd }: { sessionKey: string; cwd: string
       const { [cwd]: _, ...available } = state.available;
       return { available };
     });
-    markChanged(sessionKey);
+    markChanged("all", cwd);
   };
 
   const add = async () => {
@@ -637,31 +732,33 @@ function McpView({ sessionKey }: { sessionKey: string }) {
 
 /* ---- Reload ---- */
 
+/** Reloads plugins into this session on demand (changes made outside Midterm are not seen). */
+function ReloadButton({ sessionKey }: { sessionKey: string }) {
+  const live = useSession(sessionKey, (session) => session?.status === "idle" || session?.status === "running");
+  const busy = usePanelState((state) => state.reloading[sessionKey] ?? false);
+  const [error, setError] = useState<string>();
+  return (
+    <IconButton
+      label={error ? `Reload failed: ${error}` : live ? "Reload plugins into this session" : "Reload plugins (the session is not running)"}
+      className={error ? "cp-err" : ""}
+      busy={busy}
+      disabled={!live}
+      onClick={() => {
+        setError(undefined);
+        reloadPlugins(sessionKey).catch((failure) => setError(errorText(failure)));
+      }}
+    >
+      <RefreshCcwDot size={12} />
+    </IconButton>
+  );
+}
+
 function ReloadBar({ sessionKey }: { sessionKey: string }) {
   const needed = usePanelState((state) => state.needsReload[sessionKey] ?? false);
+  const busy = usePanelState((state) => state.reloading[sessionKey] ?? false);
   const live = useSession(sessionKey, (session) => session?.status === "idle" || session?.status === "running");
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   if (!needed || !live) return null;
-
-  const reload = async () => {
-    setBusy(true);
-    setError(undefined);
-    try {
-      const reloaded = await request("session.reloadPlugins", { session: sessionKey });
-      const capabilities = await request("session.capabilities", { session: sessionKey });
-      const init = getSession(sessionKey)?.init;
-      updateSession(sessionKey, {
-        ...(init ? { init: { ...init, commands: capabilities.commands, models: capabilities.models, agents: capabilities.agents } } : {}),
-        ...(reloaded.mcpServers ? { mcpServers: reloaded.mcpServers } : {}),
-      });
-      patch("needsReload", sessionKey, false);
-    } catch (failure) {
-      setError(errorText(failure));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="cp-reload" role="status">
@@ -671,7 +768,14 @@ function ReloadBar({ sessionKey }: { sessionKey: string }) {
       <IconButton label="Dismiss" onClick={() => patch("needsReload", sessionKey, false)}>
         <X size={12} />
       </IconButton>
-      <Button variant="primary" busy={busy} onClick={() => void reload()}>
+      <Button
+        variant="primary"
+        busy={busy}
+        onClick={() => {
+          setError(undefined);
+          reloadPlugins(sessionKey).catch((failure) => setError(errorText(failure)));
+        }}
+      >
         Reload plugins into this session
       </Button>
     </div>

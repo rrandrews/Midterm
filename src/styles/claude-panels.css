@@ -1040,6 +1040,19 @@
   color: var(--color-fg-dim);
   font-size: var(--text-micro);
 }
+.cp-task-activity {
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 14px;
+  color: var(--color-fg-mid);
+  font-size: var(--text-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-task-head .cp-task-activity {
+  padding-left: 0;
+  margin-bottom: 2px;
+}
 .cp-meta-part + .cp-meta-part::before {
   content: "·";
   margin: 0 5px;
@@ -1188,6 +1201,20 @@
 }
 .cp-row-meta .cp-mono {
   font-size: var(--text-micro);
+}
+/* Plugin rows stay one line: badges keep their size, the version and marketplace give way. */
+.cp-row-plugin .cp-row-meta {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.cp-row-plugin .cp-row-meta .cp-badge {
+  flex: none;
+}
+.cp-version {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cp-row-actions {
   display: flex;
@@ -1416,6 +1443,15 @@
 }
 .cp-savebar {
   background: color-mix(in srgb, var(--color-warn) 5%, var(--color-popover));
+}
+.cp-savebar-conflict {
+  background: color-mix(in srgb, var(--color-err) 8%, var(--color-popover));
+}
+.cp-savebar-conflict .cp-savebar-text::before {
+  background: var(--color-err);
+}
+.cp-savebar-text .cp-err {
+  display: inline;
 }
 .cp-savebar-text::before {
   content: "";

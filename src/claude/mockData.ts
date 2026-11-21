@@ -101,7 +101,9 @@ const installed: InstalledPlugin[] = [
   { id: "context7@community", version: "1.0.6", scope: "user", enabled: true, installedAt: days(60), lastUpdated: days(30) },
   { id: "security-guidance@claude-plugins-official", version: "1.0.2", scope: "user", enabled: false, installedAt: days(90), lastUpdated: days(90) },
   { id: "deploy-helper@acme-internal", version: "2.3.1", scope: "project", enabled: true, installedAt: days(12), lastUpdated: days(12) },
-  { id: "playwright@claude-plugins-official", version: "0.4.2", scope: "local", enabled: true, installedAt: days(2), lastUpdated: days(2) },
+  { id: "playwright@claude-plugins-official", version: "1.0.1-73c8cf3ea7e2", scope: "local", enabled: true, installedAt: days(2), lastUpdated: days(2), projectPath: "" },
+  // Installed for another project: `claude plugin list` reports those too.
+  { id: "linear@community", version: "73c8cf3ea7e2-8d68c977", scope: "local", enabled: false, installedAt: days(9), lastUpdated: days(9), projectPath: `${MOCK_HOME}/Code/billing-service` },
 ];
 
 /** Plugins whose install or update needs a marketplace command approved first. */
@@ -126,8 +128,8 @@ function pluginCommand(id: string, acceptCommand: string | undefined, run: () =>
   return { output: `✔ Done: ${id}` };
 }
 
-function findInstalled(id: string, scope: string): InstalledPlugin {
-  const plugin = installed.find((candidate) => candidate.id === id && candidate.scope === scope);
+function findInstalled(id: string, scope: string, cwd: string): InstalledPlugin {
+  const plugin = installed.find((candidate) => candidate.id === id && candidate.scope === scope && (scope === "user" || !candidate.projectPath || candidate.projectPath === cwd));
   if (!plugin) throw new Error(`Plugin "${id}" is not installed in ${scope} scope.`);
   return plugin;
 }
@@ -195,21 +197,31 @@ function readConfig(cwd: string, scope: ConfigScope): ConfigFile {
 }
 
 function writeConfig(cwd: string, scope: ConfigScope, text: string): ConfigFile {
+  // The bridge's rule (src/claude/bridge/config.ts): JSON.parse, an object.
   let value: unknown;
   try {
-    // The mock's check is plain JSON (the bridge accepts comments too).
-    value = JSON.parse(text.replace(/^\s*\/\/.*$/gm, ""));
-  } catch {
-    throw new Error("The settings are not valid JSON.");
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The settings must be a JSON object.");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Settings must be a JSON object");
   configTexts.set(configPath(cwd, scope), text);
   return readConfig(cwd, scope);
 }
 
 function memoryFiles(cwd: string): MemoryFile[] {
+  // Like the bridge: parent folders' files (nearest last) between the user's and the project's.
+  const parents: MemoryFile[] = [];
+  for (let dir = cwd.slice(0, cwd.lastIndexOf("/")); dir; dir = dir.slice(0, dir.lastIndexOf("/"))) {
+    const label = dir === MOCK_HOME ? "~" : dir.startsWith(`${MOCK_HOME}/`) ? `~${dir.slice(MOCK_HOME.length)}` : dir;
+    parents.unshift(
+      { label: `Parent memory (${label})`, path: `${dir}/CLAUDE.md`, exists: dir === `${MOCK_HOME}/dev` },
+      { label: `Parent memory (${label}, .claude)`, path: `${dir}/.claude/CLAUDE.md`, exists: false },
+    );
+  }
   return [
     { label: "User memory", path: `${MOCK_HOME}/.claude/CLAUDE.md`, exists: true },
+    ...parents,
     { label: "Project memory", path: `${cwd}/CLAUDE.md`, exists: true },
     { label: "Project memory (.claude)", path: `${cwd}/.claude/CLAUDE.md`, exists: false },
     { label: "Local memory", path: `${cwd}/CLAUDE.local.md`, exists: false },
@@ -248,31 +260,32 @@ export function mockRequest(method: string, params: unknown): unknown | undefine
   switch (method) {
     case "plugins.list": {
       const p = params as BridgeParams<"plugins.list">;
-      return { installed: installed.map((plugin) => ({ ...plugin })), available: p.available ? availablePlugins().filter((plugin) => marketplaces.some((market) => market.name === plugin.marketplaceName)) : [] };
+      // Local and project installs without a folder belong to the folder asking (the mock has no fixed one).
+      return { installed: installed.map((plugin) => ({ ...plugin, projectPath: plugin.scope === "user" ? undefined : plugin.projectPath || p.cwd })), available: p.available ? availablePlugins().filter((plugin) => marketplaces.some((market) => market.name === plugin.marketplaceName)) : [] };
     }
     case "plugins.install": {
       const p = params as BridgeParams<"plugins.install">;
       if (p.id.startsWith("broken-plugin@")) throw new Error("Plugin manifest is invalid: commands[0].name must be a string (plugin.json:7)");
-      if (installed.some((plugin) => plugin.id === p.id && plugin.scope === p.scope)) throw new Error(`"${p.id}" is already installed in ${p.scope} scope.`);
+      if (installed.some((plugin) => plugin.id === p.id && plugin.scope === p.scope && (p.scope === "user" || !plugin.projectPath || plugin.projectPath === p.cwd))) throw new Error(`"${p.id}" is already installed in ${p.scope} scope.`);
       return pluginCommand(p.id, p.acceptCommand, () => {
         const source = availablePlugins().find((plugin) => plugin.pluginId === p.id);
-        installed.push({ id: p.id, version: source?.version, scope: p.scope, enabled: true, installedAt: new Date().toISOString(), lastUpdated: new Date().toISOString() });
+        installed.push({ id: p.id, version: source?.version, scope: p.scope, enabled: true, projectPath: p.scope === "user" ? undefined : p.cwd, installedAt: new Date().toISOString(), lastUpdated: new Date().toISOString() });
       });
     }
     case "plugins.uninstall": {
       const p = params as BridgeParams<"plugins.uninstall">;
-      installed.splice(installed.indexOf(findInstalled(p.id, p.scope)), 1);
+      installed.splice(installed.indexOf(findInstalled(p.id, p.scope, p.cwd)), 1);
       return { output: `✔ Uninstalled ${p.id}` };
     }
     case "plugins.enable":
     case "plugins.disable": {
       const p = params as BridgeParams<"plugins.enable">;
-      findInstalled(p.id, p.scope).enabled = method === "plugins.enable";
+      findInstalled(p.id, p.scope, p.cwd).enabled = method === "plugins.enable";
       return { output: `✔ ${method === "plugins.enable" ? "Enabled" : "Disabled"} ${p.id}` };
     }
     case "plugins.update": {
       const p = params as BridgeParams<"plugins.update">;
-      const plugin = findInstalled(p.id, p.scope);
+      const plugin = findInstalled(p.id, p.scope, p.cwd);
       const latest = availablePlugins().find((candidate) => candidate.pluginId === p.id)?.version;
       if (!latest || latest === plugin.version) return { output: `${p.id} is already at the latest version.` };
       return pluginCommand(p.id, p.acceptCommand, () => {

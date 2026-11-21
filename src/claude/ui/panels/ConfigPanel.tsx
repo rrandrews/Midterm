@@ -21,11 +21,29 @@ import { Badge, Button, ErrorLine, Heading, IconButton, Segmented, Spinner, Tool
  * Below: the CLAUDE.md memory files, opened (or created) in an editor pane.
  */
 
-type Draft = { file: ConfigFile; text: string };
-type ConfigState = { drafts: Record<string, Draft>; scope: Record<string, ConfigScope>; raw: Record<string, boolean> };
-const useConfigState = create<ConfigState>(() => ({ drafts: {}, scope: {}, raw: {} }));
-const draftKey = (cwd: string, scope: ConfigScope) => `${scope}\u0000${cwd}`;
-const setDraft = (key: string, draft: Draft) => useConfigState.setState((state) => ({ drafts: { ...state.drafts, [key]: draft } }));
+/**
+ * A settings file being edited: the file as it was read (`file.text` is what
+ * a save expects to still be on disk), the edited text, and the file as found
+ * on disk when a save saw it had changed since.
+ */
+type Draft = { file: ConfigFile; text: string; conflict?: ConfigFile };
+/**
+ * Drafts are keyed by the file's path, so panes whose scopes resolve to the
+ * same file (every pane's User scope) share one draft instead of saving over
+ * each other. `paths` remembers which file a folder's scope resolved to.
+ */
+type ConfigState = {
+  drafts: Record<string, Draft>;
+  paths: Record<string, string>;
+  scope: Record<string, ConfigScope>;
+  raw: Record<string, boolean>;
+};
+const useConfigState = create<ConfigState>(() => ({ drafts: {}, paths: {}, scope: {}, raw: {} }));
+const scopeKey = (cwd: string, scope: ConfigScope) => `${scope}\u0000${cwd}`;
+const setDraft = (path: string, draft: Draft) => useConfigState.setState((state) => ({ drafts: { ...state.drafts, [path]: draft } }));
+const isDirty = (draft: Draft | undefined) => !!draft && draft.text !== draft.file.text;
+/** Whether what is on disk is still what the draft was read from. */
+const unchanged = (a: ConfigFile, b: ConfigFile) => a.exists === b.exists && a.text === b.text;
 
 const SCOPES: { value: ConfigScope; label: string; title: string }[] = [
   { value: "user", label: "User", title: "Your settings, for every project" },
@@ -60,19 +78,34 @@ function formattingOf(text: string): FormattingOptions {
   };
 }
 
-type Parsed = { value?: Record<string, unknown>; error?: string };
+/**
+ * The settings in `text`, or why they cannot be saved. The rule is the
+ * bridge's writer's (`JSON.parse`, an object): no comments, no trailing
+ * commas, not empty. Empty text (a file not created yet) still shows as `{}`
+ * in the fields, but cannot be saved as it is.
+ */
+type Parsed = { value?: Record<string, unknown>; error?: string; empty?: boolean };
 
 function parseSettings(text: string): Parsed {
-  if (!text.trim()) return { value: {} };
+  if (!text.trim()) return { value: {}, empty: true, error: "The file is empty. Settings must be a JSON object, at least {}." };
+  // jsonc-parser, strict, for where the problem is; JSON.parse as the final word.
   const errors: ParseError[] = [];
-  const value = parse(text, errors, { allowTrailingComma: true, disallowComments: false });
+  parse(text, errors, { allowTrailingComma: false, disallowComments: true });
   if (errors.length > 0) {
     const first = errors[0];
     const before = text.slice(0, first.offset).split("\n");
-    return { error: `Line ${before.length}, column ${before[before.length - 1].length + 1}: ${describe(printParseErrorCode(first.error))}` };
+    const code = printParseErrorCode(first.error);
+    const why = code === "InvalidCommentToken" ? "Comments are not allowed" : code === "PropertyNameExpected" || code === "ValueExpected" ? `${describe(code)} (a trailing comma?)` : describe(code);
+    return { error: `Line ${before.length}, column ${before[before.length - 1].length + 1}: ${why}.` };
   }
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { error: "The settings must be a JSON object." };
-  return { value };
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (failure) {
+    return { error: errorText(failure) };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { error: "Settings must be a JSON object." };
+  return { value: value as Record<string, unknown> };
 }
 
 function describe(code: string): string {
@@ -94,22 +127,34 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
   const models = useSession(sessionKey, (session) => session?.init?.models);
   const scope = useConfigState((state) => state.scope[sessionKey] ?? "user");
   const raw = useConfigState((state) => state.raw[sessionKey] ?? false);
-  const key = draftKey(cwd, scope);
-  const draft = useConfigState((state) => state.drafts[key]);
-  const dirtyScopes = useConfigState((state) => SCOPES.filter(({ value }) => {
-    const other = state.drafts[draftKey(cwd, value)];
-    return other && other.text !== other.file.text;
-  }).map(({ value }) => value).join(","));
+  const path = useConfigState((state) => state.paths[scopeKey(cwd, scope)]);
+  const draft = useConfigState((state) => (path ? state.drafts[path] : undefined));
+  const dirtyScopes = useConfigState((state) =>
+    SCOPES.filter(({ value }) => {
+      const known = state.paths[scopeKey(cwd, value)];
+      return known !== undefined && isDirty(state.drafts[known]);
+    })
+      .map(({ value }) => value)
+      .join(","),
+  );
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
 
-  const load = async () => {
+  /** Reads the file. A clean draft (or `discard`) takes what is on disk; a dirty one is kept. */
+  const load = async (discard = false) => {
     setLoading(true);
     setError(undefined);
     try {
       const file = await request("config.read", { cwd, scope });
-      setDraft(key, { file, text: file.text });
+      useConfigState.setState((state) => {
+        const current = state.drafts[file.path];
+        const keep = current && isDirty(current) && !discard;
+        return {
+          paths: { ...state.paths, [scopeKey(cwd, scope)]: file.path },
+          drafts: keep ? state.drafts : { ...state.drafts, [file.path]: { file, text: file.text } },
+        };
+      });
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -117,32 +162,39 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
     }
   };
 
+  // On showing a scope: a clean draft picks up edits made elsewhere (an editor pane, another tool).
   useEffect(() => {
-    if (!useConfigState.getState().drafts[key]) void load();
+    void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [cwd, scope]);
 
   const text = draft?.text ?? "";
   const parsed = useMemo(() => parseSettings(text), [text]);
-  const dirty = !!draft && draft.text !== draft.file.text;
+  const dirty = isDirty(draft);
   const settings = parsed.value;
 
-  const change = (path: JSONPath, value: unknown, insert = false) => {
-    if (!draft) return;
+  const change = (jsonPath: JSONPath, value: unknown, insert = false) => {
+    if (!draft || !path) return;
     try {
-      setDraft(key, { ...draft, text: edit(draft.text, path, value, insert) });
+      setDraft(path, { ...draft, text: edit(draft.text, jsonPath, value, insert) });
     } catch (failure) {
       setError(errorText(failure));
     }
   };
 
-  const save = async () => {
-    if (!draft || parsed.error) return;
+  /** Writes the draft, unless the file changed on disk since it was read (then asks, unless `overwrite`). */
+  const save = async (overwrite = false) => {
+    if (!draft || !path || parsed.error) return;
     setSaving(true);
     setError(undefined);
     try {
+      const onDisk = await request("config.read", { cwd, scope });
+      if (!overwrite && !unchanged(onDisk, draft.file)) {
+        setDraft(path, { ...draft, conflict: onDisk });
+        return;
+      }
       const file = await request("config.write", { cwd, scope, text: draft.text });
-      setDraft(key, { file, text: file.text });
+      setDraft(path, { file, text: file.text });
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -154,11 +206,13 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
     const paneId = getSession(sessionKey)?.paneId;
     if (!draft || !paneId) return;
     try {
-      if (!draft.file.exists) {
-        const file = await request("config.write", { cwd, scope, text: draft.text.trim() ? draft.text : "{}\n" });
-        setDraft(key, { file, text: file.text });
+      // A file that does not exist yet is created ("{}"), unless something created it meanwhile.
+      const onDisk = await request("config.read", { cwd, scope });
+      if (!onDisk.exists) {
+        const file = await request("config.write", { cwd, scope, text: "{}\n" });
+        if (!isDirty(draft)) setDraft(file.path, { file, text: file.text });
         openFile(file.path, { fromPaneId: paneId });
-      } else openFile(draft.file.path, { fromPaneId: paneId });
+      } else openFile(onDisk.path, { fromPaneId: paneId });
     } catch (failure) {
       setError(errorText(failure));
     }
@@ -212,8 +266,8 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
               <Spinner /> Reading settings…
             </div>
           )
-        ) : raw || parsed.error ? (
-          <RawEditor text={text} error={parsed.error} forced={!raw} onChange={(next) => setDraft(key, { ...draft, text: next })} />
+        ) : raw || (parsed.error && !parsed.empty) ? (
+          <RawEditor text={text} error={parsed.error} forced={!raw} onChange={(next) => path && setDraft(path, { ...draft, text: next })} />
         ) : (
           <>
             <Heading>Model</Heading>
@@ -262,10 +316,10 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
               env={env}
               onSet={(name, value) => change(["env", name], value)}
               onRename={(from, to) => {
-                if (!draft || !to || to === from || to in env) return;
+                if (!draft || !path || !to || to === from || to in env) return;
                 try {
                   const value = env[from];
-                  setDraft(key, { ...draft, text: edit(edit(draft.text, ["env", from], undefined), ["env", to], value) });
+                  setDraft(path, { ...draft, text: edit(edit(draft.text, ["env", from], undefined), ["env", to], value) });
                 } catch (failure) {
                   setError(errorText(failure));
                 }
@@ -277,16 +331,30 @@ export function ConfigPanel({ sessionKey }: { sessionKey: string }) {
 
         <Memory sessionKey={sessionKey} cwd={cwd} />
       </div>
-      {dirty && (
-        <div className="cp-savebar">
-          <span className="cp-savebar-text">Unsaved changes</span>
-          <Button variant="ghost" disabled={saving} onClick={() => void load()} title="Discard changes and read the file again">
-            Revert
+      {draft?.conflict ? (
+        <div className="cp-savebar cp-savebar-conflict" role="alert">
+          <span className="cp-savebar-text">This file changed since you opened it.</span>
+          <Button variant="ghost" disabled={saving} onClick={() => void load(true)} title="Discard your changes and read the file again">
+            Reload
           </Button>
-          <Button variant="primary" busy={saving} disabled={!!parsed.error} onClick={() => void save()}>
-            Save
+          <Button variant="danger" busy={saving} onClick={() => void save(true)} title="Replace what is on disk with your version">
+            Overwrite
           </Button>
         </div>
+      ) : (
+        dirty && (
+          <div className="cp-savebar">
+            <span className="cp-savebar-text" title={parsed.error}>
+              {parsed.error ? <span className="cp-err">{parsed.empty ? "Can’t save an empty file" : "Can’t save until the JSON is valid"}</span> : "Unsaved changes"}
+            </span>
+            <Button variant="ghost" disabled={saving} onClick={() => void load(true)} title="Discard changes and read the file again">
+              Revert
+            </Button>
+            <Button variant="primary" busy={saving} disabled={!!parsed.error} onClick={() => void save()}>
+              Save
+            </Button>
+          </div>
+        )
       )}
     </>
   );
@@ -421,7 +489,7 @@ function EnvEditor({
 function RawEditor({ text, error, forced, onChange }: { text: string; error?: string; forced: boolean; onChange: (text: string) => void }) {
   return (
     <div className="cp-raw">
-      {forced && <p className="cp-note">The file isn’t valid JSON, so it can only be edited as text until it is.</p>}
+      {forced && <p className="cp-note">The file isn’t plain JSON (Claude Code’s settings allow no comments or trailing commas), so it can only be edited as text until it is.</p>}
       <textarea
         className="cp-raw-text"
         spellCheck={false}
@@ -453,7 +521,9 @@ function Memory({ sessionKey, cwd }: { sessionKey: string; cwd: string }) {
 
   const load = async () => {
     try {
-      setFiles(await request("config.memoryFiles", { cwd }));
+      // The user's file and this folder's always show (to create them); a parent folder's only when it exists.
+      const all = await request("config.memoryFiles", { cwd });
+      setFiles(all.filter((file, index) => file.exists || index === 0 || file.path.startsWith(`${cwd.replace(/\/+$/, "")}/`)));
     } catch (failure) {
       setError(errorText(failure));
     }

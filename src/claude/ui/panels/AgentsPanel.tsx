@@ -1,7 +1,7 @@
 import { ArrowLeft, Bot, Square } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { focusTask, stopTask, useSession } from "../../store";
-import type { Task } from "../../types";
+import type { Task, ToolCall } from "../../types";
 import { Transcript } from "../Transcript";
 import { formatDuration, formatTokens } from "./format";
 import { Badge, Button, Dot, Empty, ErrorLine, Heading, IconButton, Section, type Tone, Toolbar, useNow, useRowCommands } from "./shared";
@@ -46,6 +46,17 @@ function flatten(tasks: Record<string, Task>): Node[] {
   return out;
 }
 
+/** The task's title: what it was started to do (the Agent call's own description when there is one). */
+function titleOf(task: Task, tools: Record<string, ToolCall> | undefined): string {
+  const input = task.toolUseId ? tools?.[task.toolUseId]?.input.description : undefined;
+  return typeof input === "string" && input.trim() ? input : task.description;
+}
+
+/** What a running task is doing now (its progress summary), when it says something new. */
+function activityOf(task: Task, title: string): string | undefined {
+  return task.status === "running" && task.summary && task.summary !== title ? task.summary : undefined;
+}
+
 function elapsed(task: Task, now: number): number {
   if (task.status === "running" || task.status === "pending") return now - task.startedAt;
   return task.durationMs ?? (task.endedAt ?? now) - task.startedAt;
@@ -55,6 +66,7 @@ export function AgentsPanel({ sessionKey }: { sessionKey: string }) {
   const tasks = useSession(sessionKey, (session) => session?.tasks);
   const focused = useSession(sessionKey, (session) => (session?.focusedTask ? session.tasks[session.focusedTask] : undefined));
   const agents = useSession(sessionKey, (session) => session?.init?.agents);
+  const tools = useSession(sessionKey, (session) => session?.tools);
   const nodes = useMemo(() => flatten(tasks ?? {}), [tasks]);
   const running = nodes.filter((node) => node.task.status === "running").length;
   const now = useNow(1000, running > 0);
@@ -76,7 +88,7 @@ export function AgentsPanel({ sessionKey }: { sessionKey: string }) {
     else if (was) list.current?.querySelector<HTMLElement>(`[data-task="${CSS.escape(was)}"]`)?.focus({ preventScroll: true });
   }, [focusedId]);
 
-  if (focused) return <TaskDetail sessionKey={sessionKey} task={focused} now={now} stop={stop} busy={!!commands.busy[focused.id]} error={commands.errors[focused.id]} />;
+  if (focused) return <TaskDetail sessionKey={sessionKey} task={focused} title={titleOf(focused, tools)} now={now} stop={stop} busy={!!commands.busy[focused.id]} error={commands.errors[focused.id]} />;
 
   return (
     <>
@@ -96,15 +108,24 @@ export function AgentsPanel({ sessionKey }: { sessionKey: string }) {
             {nodes.map(({ task, depth }) => {
               const status = STATUS[task.status] ?? STATUS.pending;
               const isRunning = task.status === "running";
+              const title = titleOf(task, tools);
+              const activity = activityOf(task, title);
               return (
                 <li key={task.id} className="cp-task" style={{ paddingLeft: depth * 14 }} data-depth={depth || undefined}>
                   <button type="button" className="cp-task-main" data-task={task.id} onClick={() => focusTask(sessionKey, task.id)}>
                     <span className="cp-task-line">
                       <Dot tone={status.tone} pulse={isRunning} hollow={status.hollow} label={status.label} />
                       {(task.subagentType ?? task.taskType) && <Badge mono>{task.subagentType ?? task.taskType}</Badge>}
-                      <span className="cp-task-desc">{task.description}</span>
+                      <span className="cp-task-desc" title={title}>
+                        {title}
+                      </span>
                       <span className="cp-task-time">{formatDuration(elapsed(task, now))}</span>
                     </span>
+                    {activity && (
+                      <span className="cp-task-activity" title={activity}>
+                        {activity}
+                      </span>
+                    )}
                     <span className="cp-task-meta">
                       <TaskMeta task={task} />
                     </span>
@@ -165,6 +186,7 @@ function TaskMeta({ task }: { task: Task }) {
 function TaskDetail({
   sessionKey,
   task,
+  title,
   now,
   stop,
   busy,
@@ -172,6 +194,7 @@ function TaskDetail({
 }: {
   sessionKey: string;
   task: Task;
+  title: string;
   now: number;
   stop: (task: Task) => void;
   busy: boolean;
@@ -205,7 +228,8 @@ function TaskDetail({
             <span className="cp-grow" />
             <span className="cp-task-time">{formatDuration(elapsed(task, now))}</span>
           </div>
-          <div className="cp-task-title">{task.description}</div>
+          <div className="cp-task-title">{title}</div>
+          {activityOf(task, title) && <div className="cp-task-activity">{task.summary}</div>}
           <div className="cp-task-meta">
             <TaskMeta task={task} />
           </div>
@@ -215,7 +239,7 @@ function TaskDetail({
               <div className="cp-prose">{task.prompt}</div>
             </Section>
           )}
-          {task.summary && task.summary !== task.description && (
+          {task.summary && !isRunning && task.summary !== title && (
             <Section title="Summary" defaultOpen>
               <div className="cp-prose">{task.summary}</div>
             </Section>
