@@ -348,17 +348,20 @@ theme's id.
 
 Settings → Appearance has the following:
 
-- Follow the system, with the light and dark picks.
-- The accent: "Theme's", the presets, or a custom color.
-- File icons: the icon set, and importing, exporting and deleting custom
-  sets ([icons.md](icons.md)).
-- The gallery: swatches drawn from each resolved theme. Click one to apply
-  it; while following the system, that sets the light or dark pick for its
-  kind.
-- Actions on the selected theme: Edit, Duplicate, Export… (Midterm JSON),
-  Delete and rename (custom themes only).
-- Import… (Midterm JSON, `.itermcolors`, VS Code JSON, Base16/Base24 YAML).
+- A preview: a few terminal lines in the current theme, font, size and
+  accent, updating live.
+- Theme: "Match system appearance", and the gallery, split into dark and
+  light themes. Each card is drawn from the resolved theme. Click one to
+  apply it; while following the system, that sets the light or dark pick
+  for its kind, and both picks are marked. A card's … menu has Edit
+  colors… (closes settings and opens the editor), Duplicate, Export…
+  (Midterm JSON), and for custom themes Rename and Delete.
+- Import (Midterm JSON, `.itermcolors`, VS Code JSON, Base16/Base24 YAML).
   The imported theme gets a free id and name, and is shown.
+- Text: the font family and size (shared by terminals and the editor).
+- Interface: the accent (the theme's own, the presets, or a custom color)
+  and file icons (the icon set; its … menu imports, exports and deletes
+  custom sets, [icons.md](icons.md)).
 
 Palette commands:
 
@@ -389,18 +392,22 @@ preview on the real terminals and files beside it. Its pane data is
     wherever it is (`revealPane`).
   - After "Save as new" the pane edits the new theme. Saving a kind change
     lets go of a light or dark pick that no longer fits.
-- **Layout:**
-  - At the top: the theme picker, light/dark, name, undo/redo,
-    discard/save and a filter.
-  - A sample strip: the ANSI colors, a code sample in the syntax colors,
-    and the UI states.
-  - The groups: base palette, the token groups, terminal ANSI colors, file
-    icons (the theme's icon set or "From settings", with sample icons), and
-    pane backgrounds for every built-in key and enabled plugin.
-- **Each token row**:
-  - It shows "derived" or "set", with a reset to derived.
-  - A swatch opens a picker with alpha (`react-colorful`) and a hex field.
-  - Text, status and syntax tokens warn when their WCAG contrast against
-    the window background is below 4.5:1 (body text) or 3:1.
+- **Layout:** a header with the theme picker (grouped dark/light),
+  dark/light, the name (editable in place), an unsaved-changes dot,
+  undo/redo, Discard and Save, then four pages:
+  - **Palette**: a preview (a terminal using the ANSI, cursor and selection
+    colors, a code sample in the syntax colors, UI states), the five base
+    colors as tiles (cursor and selection show "auto" until set; their
+    picker can derive them again), and the 16 ANSI colors as a normal and
+    a bright row.
+  - **Interface**: every other token by group, named in words with the
+    token id beside it, filterable. A row shows the swatch (click for a
+    picker with alpha and a hex field), the value, and a reset to derived
+    when it is set by hand. Text, status and syntax tokens show a contrast
+    chip when their WCAG contrast against the window background is below
+    4.5:1 (body text) or 3:1.
+  - **Panes**: a gradient card per built-in key and enabled plugin, with
+    top and bottom stops, the angle, and a reset.
+  - **Icons**: the theme's icon set or "From settings", with sample files.
 - **Keys:** ⌘Z / ⇧⌘Z undo and redo while focus is outside a text field. ⌘S
   saves (the pane's `save` action).

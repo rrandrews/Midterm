@@ -419,7 +419,7 @@ async function themeChecks(checks: Check[]): Promise<void> {
     detail: { before, after },
   });
   editTheme("solarized-light");
-  const editor = await waitFor(() => document.querySelector('[data-pane-kind="theme-editor"] [data-token="fg"]') !== null, 3000);
+  const editor = await waitFor(() => document.querySelector('[data-pane-kind="theme-editor"] [data-base="foreground"]') !== null, 3000);
   checks.push({ name: "themes: the theme editor pane opens", ok: editor });
   const editorPane = (document.querySelector('[data-pane-kind="theme-editor"]') as HTMLElement | null)?.dataset.paneId;
   if (editorPane) closePaneNow(editorPane);
