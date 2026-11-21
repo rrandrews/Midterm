@@ -627,7 +627,14 @@ so).
   has the keyboard. ⏎ runs, ⇧⏎ adds a line, ⇥ or → (at the end) accepts
   the suggestion, ↑/↓ walk the history (from the first/last line), Esc
   leaves the history, ⌃C clears the line, ⌃D on an empty line sends EOF,
-  ⌃L clears the blocks. App shortcuts still run first (capture phase).
+  ⌃L clears the blocks. Line editing (`terminal/lineEdit.ts`, edits go
+  through `execCommand` so ⌘Z undoes them): ⌃U kills to the start of the
+  caret's line, ⌃W the word before the caret, ⌃K to the end of the line
+  (joins the next line at its end), ⌃Y yanks the last kill. Consecutive
+  kills accumulate in one buffer per editor; with a selection the kills
+  take the selection. ⌃P/⌃N act like ↑/↓, ⌃E at the end with a ghost
+  suggestion accepts it. macOS handles ⌃A/⌃F/⌃B/⌃T/⌃D/⌥ keys natively.
+  A pending `/cmd` request blocks all of these. App shortcuts still run first (capture phase).
   Paste from the menu goes into the editor.
 - Running a command sends it to the shell as if typed
   (`session.runCommand`). A multi-line one has to arrive as one command

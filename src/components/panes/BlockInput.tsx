@@ -12,6 +12,7 @@ import {
 } from "../../ai/editorRequests";
 import { type ParsedSlash, parseSlash, slashCompletion, slashHandler, writeCommand } from "../../ai/slash";
 import { runFromBlocks } from "../../terminal/blockMode";
+import { applyEdit, emptyKill, isKillKey, type KillBuffer, lineEdit } from "../../terminal/lineEdit";
 import { globalHistory, historyEntries, loadGlobalHistory, suggestion } from "../../terminal/history";
 import type { TerminalSession } from "../../terminal/session";
 
@@ -181,6 +182,8 @@ export function BlockInput({
     setWalk({ index: -1, draft: "", entries: [] });
   };
 
+  const killRef = useRef<KillBuffer>(emptyKill);
+
   const step = (direction: 1 | -1) => {
     const list = walk.index === -1 ? entries : walk.entries;
     const index = walk.index + direction;
@@ -198,6 +201,10 @@ export function BlockInput({
     const { selectionStart, selectionEnd } = input;
     const collapsed = selectionStart === selectionEnd;
 
+    // Any key but a kill ends a run of kills.
+    if (!["Control", "Shift", "Alt", "Meta"].includes(event.key) && !(event.ctrlKey && isKillKey(event.key.toLowerCase()))) {
+      killRef.current = { ...killRef.current, chained: false };
+    }
     if (busy) {
       // Nothing reaches the editor or the shell (⌃D would send EOF) until the request settles.
       if (event.key === "Escape" || (event.ctrlKey && event.key.toLowerCase() === "c")) {
@@ -243,6 +250,20 @@ export function BlockInput({
       } else if (key === "l") {
         event.preventDefault();
         session.clear();
+      } else if (key === "p" || key === "n") {
+        // Like ↑/↓: only from the first/last line, else the caret moves a line natively.
+        const edge = key === "p" ? !value.slice(0, selectionStart).includes("\n") : !value.slice(selectionEnd).includes("\n");
+        if (collapsed && edge && step(key === "p" ? 1 : -1)) event.preventDefault();
+      } else if (key === "e" && suggested && collapsed && selectionEnd === value.length) {
+        event.preventDefault();
+        accept();
+      } else if (isKillKey(key) || key === "y") {
+        event.preventDefault();
+        const result = lineEdit(key, value, selectionStart, selectionEnd, killRef.current);
+        if (result) {
+          killRef.current = result.kill;
+          applyEdit(input, result.edit);
+        }
       }
     }
   };
