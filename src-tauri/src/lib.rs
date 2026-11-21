@@ -1,4 +1,5 @@
 mod ai;
+mod antigravity;
 mod claude;
 mod fs;
 mod menu;
@@ -101,6 +102,7 @@ pub fn run() {
         .manage(PtyManager::default())
         .manage(WatchManager::default())
         .manage(ai::AiManager::default())
+        .manage(antigravity::AntigravityManager::default())
         .manage(claude::ClaudeManager::default())
         .menu(menu::build)
         .register_asynchronous_uri_scheme_protocol(plugins::protocol::SCHEME, plugins::protocol::handle)
@@ -135,6 +137,7 @@ pub fn run() {
                 webview.state::<PtyManager>().kill_owned_by(&label);
                 webview.state::<WatchManager>().stop_owned_by(&label);
                 webview.state::<ai::AiManager>().acp.close_owned_by(&label);
+                webview.state::<antigravity::AntigravityManager>().close_owned_by(&label);
                 webview.state::<claude::ClaudeManager>().close_owned_by(&label);
             }
         })
@@ -196,6 +199,9 @@ pub fn run() {
             ai::commands::ai_key_delete,
             ai::commands::ai_key_status,
             ai::commands::ai_cli_status,
+            antigravity::antigravity_acp_open,
+            antigravity::antigravity_acp_send,
+            antigravity::antigravity_acp_close,
             claude::claude_bridge_open,
             claude::claude_bridge_send,
             claude::claude_bridge_close,
@@ -213,6 +219,7 @@ pub fn run() {
             app.state::<PtyManager>().kill_owned_by(&label);
             app.state::<WatchManager>().stop_owned_by(&label);
             app.state::<ai::AiManager>().acp.close_owned_by(&label);
+            app.state::<antigravity::AntigravityManager>().close_owned_by(&label);
             app.state::<claude::ClaudeManager>().close_owned_by(&label);
         }
         // The Dock icon was clicked: show the app again if it was hidden by
@@ -224,6 +231,7 @@ pub fn run() {
             app.state::<PtyManager>().kill_all();
             app.state::<WatchManager>().stop_all();
             app.state::<ai::AiManager>().acp.close_all();
+            app.state::<antigravity::AntigravityManager>().close_all();
             app.state::<claude::ClaudeManager>().close_all();
         }
         _ => {}

@@ -25,6 +25,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "theme-editor",
     "midterm",
     "agent",
+    "antigravity",
     "claude-code",
 ];
 /// A manifest larger than this is refused (bytes).
