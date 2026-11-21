@@ -69,3 +69,9 @@ describe("applyEdit", () => {
     expect(input.value).toBe("hello!");
   });
 });
+
+describe("⌃U at the very start", () => {
+  it("changes nothing, even before a newline", () => {
+    expect(lineEdit("u", "\necho hi", 0, 0, emptyKill)).toBeNull();
+  });
+});

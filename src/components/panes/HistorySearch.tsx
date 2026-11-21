@@ -39,7 +39,18 @@ export function HistorySearch({
       setSelected(0);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.isComposing || event.metaKey || event.altKey) return;
+      if (event.isComposing) return;
+      // Deleting with ⌥/⌘ edits the query, never the editor's draft underneath.
+      if ((event.altKey || event.metaKey) && (event.key === "Backspace" || event.key === "Delete")) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "Backspace") {
+          const query = state.current.query;
+          edit(event.metaKey ? "" : query.replace(/\S*\s*$/, ""));
+        }
+        return;
+      }
+      if (event.metaKey || event.altKey) return;
       const { query, selected, matches, onPick, onClose } = state.current;
       const key = event.key;
       const ctrl = event.ctrlKey;
@@ -63,7 +74,8 @@ export function HistorySearch({
       event.preventDefault();
       event.stopPropagation();
       const text = event.clipboardData?.getData("text/plain");
-      if (text) edit(state.current.query + oneLine(text));
+      // Kept as is (shown with ⏎) so a pasted multi-line command matches its entry.
+      if (text) edit(state.current.query + text);
     };
     input.addEventListener("keydown", onKey, true);
     input.addEventListener("paste", onPaste, true);
@@ -81,7 +93,7 @@ export function HistorySearch({
     <div className="blocks-search">
       <div className="blocks-search-query">
         <span className="text-fg-dim">history search: </span>
-        <span className="text-fg-bright">{query}</span>
+        <span className="text-fg-bright">{oneLine(query)}</span>
         <span className="blocks-search-caret" />
         {matches.length === 0 && <span className="ml-3 text-fg-faint">no match</span>}
       </div>

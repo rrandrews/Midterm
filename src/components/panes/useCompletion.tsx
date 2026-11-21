@@ -42,7 +42,18 @@ export function useCompletion({
   enabled: boolean;
   apply: (edit: Edit) => void;
 }) {
-  const [list, setList] = useState<ListState | null>(null);
+  const [list, setListState] = useState<ListState | null>(null);
+  /**
+   * The list as of the last change, read by `onEdit`: a key handler that
+   * closes the list (⌃W) is followed by a synchronous input event, which
+   * would otherwise still see the open list of this render and reopen it.
+   */
+  const current = useRef(list);
+  current.current = list;
+  const setList = (next: ListState | null) => {
+    current.current = next;
+    setListState(next);
+  };
   /** Bumped by every ⇥, so that only the latest lookup's result is used. */
   const lookup = useRef(0);
 
@@ -134,6 +145,7 @@ export function useCompletion({
 
   /** The line changed by typing: narrows the list by the word's new text, or closes it. */
   const onEdit = (line: string, caret: number) => {
+    const list = current.current;
     if (!list) return;
     const context = completionContext(line, caret);
     if (

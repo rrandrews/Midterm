@@ -60,7 +60,8 @@ export function lineEdit(key: LineKey, value: string, start: number, end: number
     from = start;
     to = end;
   } else if (key === "u") {
-    from = value.lastIndexOf("\n", start - 1) + 1;
+    // lastIndexOf clamps a negative start to 0, which would find a newline at 0.
+    from = start === 0 ? 0 : value.lastIndexOf("\n", start - 1) + 1;
     to = start;
   } else if (key === "w") {
     from = wordStart(value, start);
