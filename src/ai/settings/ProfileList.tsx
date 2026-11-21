@@ -1,8 +1,9 @@
 import { Copy, Pencil, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { confirm } from "../../components/ui/ConfirmDialog";
 import { providerInfo } from "../../ipc/ai";
-import { BUTTON } from "../../settings/controls";
+import { Tip } from "../../components/ui/Tooltip";
+import { BUTTON, Block, Group, ICON_BUTTON } from "../../settings/controls";
 import { AI_PROFILE_LIMIT, type AiProfile } from "../../settings/schema";
 import { useSettings } from "../../settings/settings";
 import { blankProfile, deleteProfile, deleteWarning, duplicateProfile, profileProblem } from "../profiles";
@@ -13,9 +14,6 @@ import { ProfileEditor } from "./ProfileEditor";
  * opened inline under the row (one at a time). A new profile is edited
  * under the list and only added on Save.
  */
-
-const ICON_BUTTON =
-  "flex size-6 flex-none items-center justify-center rounded-[5px] text-fg-dim outline-none hover:bg-hover hover:text-fg-bright focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
 
 function describe(profile: AiProfile): string {
   const provider = providerInfo(profile.provider)?.name ?? (profile.provider || "No provider");
@@ -37,24 +35,42 @@ export function ProfileList() {
   };
 
   return (
-    <div>
-      {profiles.length === 0 && !editing?.isNew && (
-        <div className="border-b border-line/60 py-2 text-meta text-fg-dim">No models yet. Add one to use the AI features.</div>
-      )}
+    <Group
+      title="Models"
+      actions={
+        !editing?.isNew && (
+          <button
+            type="button"
+            className={BUTTON}
+            disabled={profiles.length >= AI_PROFILE_LIMIT}
+            onClick={() => setEditing({ profile: blankProfile(), isNew: true })}
+          >
+            <Plus size={12} /> Add model
+          </button>
+        )
+      }
+    >
+      {profiles.length === 0 && !editing?.isNew && <Block className="text-meta text-fg-dim">No models yet.</Block>}
       {profiles.map((profile) => {
         const problem = profileProblem(profile);
         const open = editing?.profile.id === profile.id;
         return (
-          <div key={profile.id}>
-            <div data-ai-profile={profile.id} className="flex min-h-9 items-center gap-3 border-b border-line/60 py-1.5">
+          <Fragment key={profile.id}>
+            <div data-ai-profile={profile.id} className="settings-row flex min-h-10 items-center gap-3 px-3 py-1.5">
               <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
+                <div className="flex items-center gap-1.5">
                   <span className="truncate text-ui text-fg-soft">{profile.name}</span>
-                  {profile.id === defaultProfile && <span className="flex-none text-micro text-fg-dim">default</span>}
+                  {profile.id === defaultProfile && <span className="flex-none rounded-[4px] bg-accent-soft px-1 text-micro text-accent-fg">Default</span>}
                 </div>
-                <div className="truncate font-mono text-meta text-fg-dim">{describe(profile)}</div>
+                <div className="truncate text-meta text-fg-dim">{describe(profile)}</div>
               </div>
-              <span className={`flex-none text-meta ${problem ? "text-warn" : "text-ok"}`}>{problem ?? "Ready"}</span>
+              {problem ? (
+                <span className="min-w-0 max-w-[40%] flex-none truncate text-meta text-warn">{problem}</span>
+              ) : (
+                <Tip content="Ready">
+                  <span aria-label="Ready" className="size-1.5 flex-none rounded-full bg-ok" />
+                </Tip>
+              )}
               <div className="flex flex-none items-center">
                 <button
                   type="button"
@@ -81,26 +97,10 @@ export function ProfileList() {
               </div>
             </div>
             {open && <ProfileEditor key={profile.id} initial={profile} isNew={false} onDone={() => setEditing(null)} />}
-          </div>
+          </Fragment>
         );
       })}
-      {editing?.isNew && (
-        <div className="pt-2">
-          <ProfileEditor key={editing.profile.id} initial={editing.profile} isNew onDone={() => setEditing(null)} />
-        </div>
-      )}
-      {!editing?.isNew && (
-        <div className="pt-2">
-          <button
-            type="button"
-            className={`${BUTTON} flex items-center gap-1`}
-            disabled={profiles.length >= AI_PROFILE_LIMIT}
-            onClick={() => setEditing({ profile: blankProfile(), isNew: true })}
-          >
-            <Plus size={12} /> Add model
-          </button>
-        </div>
-      )}
-    </div>
+      {editing?.isNew && <ProfileEditor key={editing.profile.id} initial={editing.profile} isNew onDone={() => setEditing(null)} />}
+    </Group>
   );
 }

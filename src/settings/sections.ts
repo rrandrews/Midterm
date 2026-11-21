@@ -1,9 +1,10 @@
+import type { LucideIcon } from "lucide-react";
 import { type ComponentType, useSyncExternalStore } from "react";
 
 /*
  * The settings dialog's sections, registered by the modules that own them
- * (General and Keyboard in the dialog itself, Plugins, later Appearance and
- * AI). Each plugin also gets a section of its own, generated from the
+ * (General, Keyboard and Plugins in src/settings, Appearance in src/theme,
+ * AI in src/ai). Each plugin also gets a section of its own, generated from the
  * plugin registry (see SettingsDialog).
  */
 
@@ -13,6 +14,10 @@ export type SettingsSection = {
   /** Position in the list; lower first. */
   order: number;
   component: ComponentType;
+  /** Shown before the label in the dialog's list. */
+  icon?: LucideIcon;
+  /** Words the dialog's search also matches (setting names in the section). */
+  keywords?: readonly string[];
 };
 
 const sections = new Map<string, SettingsSection>();

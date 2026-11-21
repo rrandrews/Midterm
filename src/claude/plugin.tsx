@@ -36,8 +36,8 @@ export function validateClaudeData(raw: Record<string, unknown>): ClaudePaneData
 }
 
 const FIELDS: SettingField[] = [
-  { type: "text", key: "claudePath", label: "Claude Code executable", default: "", placeholder: "claude (from your login shell's PATH)", hint: "A path, ~/… or a name on the PATH. Applies when the bridge restarts." },
-  { type: "text", key: "nodePath", label: "Node executable", default: "", placeholder: "node (from your login shell's PATH)", hint: "Runs the bridge to Claude Code. Applies when the bridge restarts." },
+  { type: "text", key: "claudePath", label: "Claude Code executable", default: "", placeholder: "claude (from your login shell's PATH)", hint: "A path, ~/… or a name on the PATH. Applies on bridge restart." },
+  { type: "text", key: "nodePath", label: "Node executable", default: "", placeholder: "node (from your login shell's PATH)", hint: "Runs the bridge to Claude Code. Applies on bridge restart." },
   {
     type: "select",
     key: "defaultPermissionMode",
@@ -49,10 +49,10 @@ const FIELDS: SettingField[] = [
     type: "toggle",
     key: "allowBypassPermissions",
     label: "Allow bypass permissions",
-    hint: "Offer the bypass permissions mode, which runs every tool without asking. Applies to new sessions.",
+    hint: "Offers bypass permissions mode, which runs every tool without asking. Applies to new sessions.",
     default: false,
   },
-  { type: "toggle", key: "showThinking", label: "Show thinking", hint: "Claude's thinking, collapsed, in the transcript.", default: true },
+  { type: "toggle", key: "showThinking", label: "Show thinking", hint: "Shown collapsed in the transcript.", default: true },
 ];
 
 const PANELS: { panel: SidePanel; title: string }[] = [

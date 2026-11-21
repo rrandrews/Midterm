@@ -1,4 +1,6 @@
+import { MoreHorizontal, Plus } from "lucide-react";
 import { useState, useSyncExternalStore } from "react";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "../components/ui/Menu";
 import { revealInFileManager } from "../ipc/shell";
 import { pluginsDirectory } from "../ipc/plugins";
 import { importPluginInteractively, refreshInstalled, removePluginInteractively, useInstalledPlugins } from "../plugins/loader";
@@ -13,18 +15,14 @@ import {
 } from "../plugins/registry";
 import { usePluginSettings } from "../plugins/settings";
 import { allSkills, setSkillEnabled, skillProblems, skillsVersion, subscribeSkills } from "../plugins/skills";
-import { BUTTON, FieldRows, Row, SectionHeading, Toggle } from "./controls";
+import { BUTTON, Block, FieldRows, Group, ICON_BUTTON, Row, Toggle } from "./controls";
+import { openSettings } from "./SettingsDialog";
 import { useSettings } from "./settings";
 
 /*
  * Settings → Plugins (every installed plugin, import, remove) and the
  * section each plugin gets of its own (enable, its settings, its skills).
  */
-
-function sourceLabel(entry: RegisteredPlugin): string {
-  if (entry.source.type === "builtin") return "Built in";
-  return entry.source.author ? `Imported · ${entry.source.author}` : "Imported";
-}
 
 function useEnabled(id: string): boolean {
   return useSettings((state) => isPluginEnabled(id, state));
@@ -46,6 +44,10 @@ function errorOf(entry: RegisteredPlugin): string | undefined {
   return loadErrorOf(entry.plugin.id) ?? entry.error;
 }
 
+function ImportedBadge() {
+  return <span className="ml-1.5 rounded-[4px] bg-raised px-1 text-micro text-fg-dim">Imported</span>;
+}
+
 function PluginRow({ entry }: { entry: RegisteredPlugin }) {
   const { plugin, source } = entry;
   const error = errorOf(entry);
@@ -54,29 +56,31 @@ function PluginRow({ entry }: { entry: RegisteredPlugin }) {
     <Row
       label={
         <>
-          {plugin.name}
-          {plugin.version && <span className="ml-1.5 text-meta text-fg-dim">{plugin.version}</span>}
+          <button
+            type="button"
+            title="Open its settings"
+            onClick={() => openSettings(`plugin:${plugin.id}`)}
+            className="rounded-sm outline-none hover:text-fg-bright hover:underline hover:decoration-fg-faint hover:underline-offset-2 focus-visible:text-fg-bright"
+          >
+            {plugin.name}
+          </button>
+          {plugin.version && <span className="ml-1.5 font-mono text-micro text-fg-faint">{plugin.version}</span>}
+          {source.type === "imported" && <ImportedBadge />}
         </>
       }
-      hint={
-        error ? (
-          <span className="text-err">{error}</span>
-        ) : loading ? (
-          "Loading…"
-        ) : (
-          [sourceLabel(entry), plugin.description].filter(Boolean).join(" — ")
-        )
-      }
+      help={plugin.description}
+      hint={error ? <span className="text-err">{error}</span> : loading ? "Loading…" : undefined}
     >
       {source.type === "imported" && (
-        <>
-          <button type="button" className={BUTTON} onClick={() => revealInFileManager(source.dir)}>
-            Reveal
-          </button>
-          <button type="button" className={BUTTON} onClick={() => void removePluginInteractively(plugin.id).catch(reportError)}>
-            Remove
-          </button>
-        </>
+        <Menu>
+          <MenuTrigger className={ICON_BUTTON} aria-label={`${plugin.name} actions`}>
+            <MoreHorizontal size={14} />
+          </MenuTrigger>
+          <MenuContent className="min-w-[160px]">
+            <MenuItem onSelect={() => revealInFileManager(source.dir)}>Reveal in file manager</MenuItem>
+            <MenuItem onSelect={() => void removePluginInteractively(plugin.id).catch(reportError)}>Remove</MenuItem>
+          </MenuContent>
+        </Menu>
       )}
       <EnableToggle entry={entry} />
     </Row>
@@ -99,38 +103,45 @@ export function PluginsSection() {
   };
 
   return (
-    <>
-      <div className="flex items-center gap-1.5 pb-2">
-        <button type="button" className={BUTTON} onClick={() => run(importPluginInteractively("folder"))}>
-          Import folder…
-        </button>
-        <button type="button" className={BUTTON} onClick={() => run(importPluginInteractively("zip"))}>
-          Import .zip…
-        </button>
-        <div className="flex-1" />
-        <button
-          type="button"
-          className={BUTTON}
-          onClick={() => run(pluginsDirectory().then((dir) => dir && revealInFileManager(dir)))}
-        >
-          Open plugins folder
-        </button>
-        <button type="button" className={BUTTON} onClick={() => run(refreshInstalled())}>
-          Rescan
-        </button>
-      </div>
-      {problem && <div className="pb-2 text-meta text-err">{problem}</div>}
+    <Group
+      title="Installed"
+      help="Plugins add pane types. Imported plugins run with the app’s full access; only import plugins you trust."
+      actions={
+        <>
+          <Menu>
+            <MenuTrigger className={BUTTON}>
+              <Plus size={12} />
+              Import
+            </MenuTrigger>
+            <MenuContent className="min-w-[140px]">
+              <MenuItem onSelect={() => run(importPluginInteractively("folder"))}>Folder…</MenuItem>
+              <MenuItem onSelect={() => run(importPluginInteractively("zip"))}>.zip…</MenuItem>
+            </MenuContent>
+          </Menu>
+          <Menu>
+            <MenuTrigger className={ICON_BUTTON} aria-label="More plugin actions">
+              <MoreHorizontal size={14} />
+            </MenuTrigger>
+            <MenuContent className="min-w-[160px]">
+              <MenuItem onSelect={() => run(pluginsDirectory().then((dir) => dir && revealInFileManager(dir)))}>Open plugins folder</MenuItem>
+              <MenuItem onSelect={() => run(refreshInstalled())}>Rescan</MenuItem>
+            </MenuContent>
+          </Menu>
+        </>
+      }
+    >
+      {problem && (
+        <Block>
+          <div className="text-meta text-err">{problem}</div>
+        </Block>
+      )}
       {registered.map((entry) => (
         <PluginRow key={entry.plugin.id} entry={entry} />
       ))}
       {broken.map((id) => (
         <Row key={id} label={id} hint={<span className="text-err">{loadErrorOf(id)}</span>} />
       ))}
-      <p className="pt-3 text-meta text-fg-dim">
-        Plugins add pane types. Imported plugins run with the app’s full access; only import plugins you trust. See
-        docs/plugins.md for writing one.
-      </p>
-    </>
+    </Group>
   );
 }
 
@@ -141,40 +152,37 @@ function Skills({ pluginId }: { pluginId: string }) {
   const problems = skillProblems(pluginId);
   if (!skills.length && !problems.length) return null;
   return (
-    <>
-      <SectionHeading>Skills</SectionHeading>
-      <p className="pb-1 text-meta text-fg-dim">
-        What an AI agent will be able to do with this plugin. Tools marked “changes things” will ask before running.
-      </p>
+    <Group title="Skills" help="What an AI agent will be able to do with this plugin. Tools that change things ask before running.">
       {skills.map(({ skill, enabled }) => (
         <Row
           key={skill.id}
           label={skill.title}
+          help={skill.description}
           hint={
-            <>
-              <div>{skill.description}</div>
+            <div className="mt-0.5 flex flex-wrap gap-1">
               {skill.tools?.map((tool) => (
-                <div key={tool.name} className="font-mono text-micro">
+                <span
+                  key={tool.name}
+                  title={tool.effect === "write" ? "Changes things" : "Reads only"}
+                  className="inline-flex items-center gap-1 rounded-[4px] bg-raised px-1 font-mono text-micro text-fg-dim"
+                >
+                  <span className={`size-1.5 rounded-full ${tool.effect === "write" ? "bg-warn" : "bg-fg-faint"}`} />
                   {tool.name}
-                  <span className={tool.effect === "write" ? "text-warn" : "text-fg-faint"}>
-                    {" "}
-                    · {tool.effect === "write" ? "changes things" : "reads"}
-                  </span>
-                </div>
+                </span>
               ))}
-              {!skill.tools?.length && <div className="text-micro text-fg-faint">Guidance only</div>}
-            </>
+              {!skill.tools?.length && <span className="rounded-[4px] bg-raised px-1 text-micro text-fg-faint">Guidance only</span>}
+            </div>
           }
         >
           <Toggle label={`Skill ${skill.title}`} checked={enabled} onChange={(on) => setSkillEnabled(pluginId, skill.id, on)} />
         </Row>
       ))}
       {problems.map((problem) => (
-        <div key={problem} className="py-1 text-meta text-err">
-          {problem}
-        </div>
+        <Block key={problem}>
+          <div className="text-meta text-err">{problem}</div>
+        </Block>
       ))}
-    </>
+    </Group>
   );
 }
 
@@ -188,37 +196,34 @@ export function PluginSection({ pluginId }: { pluginId: string }) {
   const fields = plugin.settings?.fields ?? [];
   const Custom = plugin.settings?.section;
   const error = errorOf(entry);
+  const imported = source.type === "imported";
+  const status = error ? (
+    <span className="text-err">{error}</span>
+  ) : imported ? (
+    [plugin.version, source.author].filter(Boolean).join(" · ") || "Imported"
+  ) : undefined;
   return (
     <>
-      <div className="flex items-start gap-3 border-b border-line/60 pb-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-menu font-medium text-fg-bright">
-            {plugin.name}
-            {plugin.version && <span className="ml-1.5 text-meta font-normal text-fg-dim">{plugin.version}</span>}
-          </div>
-          <div className="text-meta text-fg-dim">{[sourceLabel(entry), plugin.description].filter(Boolean).join(" — ")}</div>
-          {error && <div className="text-meta text-err">{error}</div>}
-          {plugin.required && <div className="text-meta text-fg-faint">Always enabled.</div>}
-        </div>
-        {source.type === "imported" && (
-          <button type="button" className={BUTTON} onClick={() => void removePluginInteractively(pluginId).catch(reportError)}>
-            Remove
-          </button>
-        )}
-        <EnableToggle entry={entry} />
-      </div>
+      <Group>
+        <Row label="Enabled" help={plugin.required ? "Always enabled" : undefined} hint={status}>
+          {imported && (
+            <button type="button" className={BUTTON} onClick={() => void removePluginInteractively(pluginId).catch(reportError)}>
+              Remove
+            </button>
+          )}
+          <EnableToggle entry={entry} />
+        </Row>
+      </Group>
       {enabled && fields.length > 0 && (
-        <FieldRows
-          fields={fields}
-          values={values}
-          onChange={(patch) => useSettings.getState().updatePluginSettings(pluginId, patch)}
-        />
+        <Group title="Settings">
+          <FieldRows
+            fields={fields}
+            values={values}
+            onChange={(patch) => useSettings.getState().updatePluginSettings(pluginId, patch)}
+          />
+        </Group>
       )}
       {enabled && Custom && <Custom pluginId={pluginId} />}
-      {enabled && !fields.length && !Custom && (
-        <div className="py-2 text-meta text-fg-dim">This plugin has no settings.</div>
-      )}
-      {!enabled && <div className="py-2 text-meta text-fg-dim">Enable the plugin to change its settings.</div>}
       {enabled && <Skills pluginId={pluginId} />}
     </>
   );

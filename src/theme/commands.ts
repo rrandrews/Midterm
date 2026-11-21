@@ -1,3 +1,4 @@
+import { Palette } from "lucide-react";
 import { activePaneId, livePane, openPaneBeside, revealPane, updatePaneData } from "../actions";
 import { registerCommands } from "../commands/registry";
 import { openPicker } from "../palette/state";
@@ -66,7 +67,14 @@ let installed = false;
 export function installThemeCommands(): void {
   if (installed) return;
   installed = true;
-  registerSettingsSection({ id: "appearance", label: "Appearance", order: 10, component: AppearanceSection });
+  registerSettingsSection({
+    id: "appearance",
+    label: "Appearance",
+    order: 10,
+    icon: Palette,
+    component: AppearanceSection,
+    keywords: ["theme", "dark", "light", "font", "size", "accent", "color", "icons", "system"],
+  });
   registerPlugin(themeEditorPlugin);
   registerCommands([
     { id: "theme.select", title: "Theme: Select…", category: "View", run: pickTheme, menu: "View" },

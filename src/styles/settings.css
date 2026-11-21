@@ -1,0 +1,66 @@
+/* The settings dialog and its controls (src/settings/controls.tsx). */
+
+/* Hairlines between the rows of a group. */
+.settings-group > .settings-row + .settings-row,
+.settings-group > * + .settings-row,
+.settings-group > .settings-row + * {
+  border-top: 1px solid var(--color-line);
+}
+
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+@keyframes settings-in {
+  from {
+    opacity: 0;
+    /* The centering is on the separate translate property (Tailwind v4). */
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+.settings-dialog[data-state="open"] {
+  animation: settings-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-dialog[data-state="open"] {
+    animation: none;
+  }
+}
+
+/* react-colorful, in the color popover. */
+.color-popover .react-colorful {
+  width: 100%;
+  height: 150px;
+  gap: 8px;
+}
+.color-popover .react-colorful__saturation {
+  border-radius: 6px;
+  border-bottom: 0;
+  box-shadow: inset 0 0 0 1px var(--color-line-strong);
+}
+.color-popover .react-colorful__hue,
+.color-popover .react-colorful__alpha {
+  height: 10px;
+  border-radius: 5px;
+}
+.color-popover .react-colorful__last-control {
+  border-radius: 5px;
+}
+.color-popover .react-colorful__pointer {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+/* Number fields: no native spinners. */
+.settings-number::-webkit-inner-spin-button,
+.settings-number::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

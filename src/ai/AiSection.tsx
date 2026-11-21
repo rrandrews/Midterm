@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BUTTON, FIELD, Row, SectionHeading, Toggle } from "../settings/controls";
+import { BUTTON, Block, Group, NumberField, Row, Select, Toggle } from "../settings/controls";
 import { useSettings } from "../settings/settings";
 import { AI_CONTEXT_RANGE } from "../settings/schema";
 import { activeTerminal } from "../terminal/blockMode";
@@ -19,18 +19,13 @@ function Features() {
   const { profiles, defaultProfile, features } = settings.ai;
   // The agent's CLI profile: whether its ACP adapter is installed (featureProblem stays pure).
   const adapterProblem = useAgentAdapterProblem(profileFor("agent", settings));
-  if (!profiles.length) return <div className="border-b border-line/60 py-2 text-meta text-fg-dim">Add a model above, then choose which features use it.</div>;
+  if (!profiles.length) return null;
   const defaultName = profiles.find((p) => p.id === defaultProfile)?.name ?? "none";
+  const choices = profiles.map((profile) => ({ value: profile.id, label: profile.name }));
   return (
-    <>
-      <Row label="Default model" hint="Used by every feature that does not pick its own.">
-        <select aria-label="Default model" className={`${FIELD} w-56 pr-6`} value={defaultProfile} onChange={(event) => setDefaultProfile(event.target.value)}>
-          {profiles.map((profile) => (
-            <option key={profile.id} value={profile.id}>
-              {profile.name}
-            </option>
-          ))}
-        </select>
+    <Group title="Features">
+      <Row label="Default model" help="Used by every feature that does not pick its own.">
+        <Select label="Default model" className="w-56" value={defaultProfile} options={choices} onChange={setDefaultProfile} />
       </Row>
       {FEATURES.map((feature) => {
         const problem = featureProblem(feature.id, settings) ?? (feature.id === "agent" ? adapterProblem : null);
@@ -38,33 +33,26 @@ function Features() {
           <Row
             key={feature.id}
             label={feature.label}
+            help={feature.hint}
             hint={
               problem ? (
                 <span className="text-warn">
                   <ProblemText problem={problem} />
                 </span>
-              ) : (
-                feature.hint
-              )
+              ) : undefined
             }
           >
-            <select
-              aria-label={`Model for ${feature.label}`}
-              className={`${FIELD} w-56 pr-6`}
+            <Select
+              label={`Model for ${feature.label}`}
+              className="w-56"
               value={features[feature.id] ?? ""}
-              onChange={(event) => setFeatureProfile(feature.id, event.target.value || null)}
-            >
-              <option value="">Default ({defaultName})</option>
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name}
-                </option>
-              ))}
-            </select>
+              options={[{ value: "", label: `Default (${defaultName})` }, ...choices]}
+              onChange={(id) => setFeatureProfile(feature.id, id || null)}
+            />
           </Row>
         );
       })}
-    </>
+    </Group>
   );
 }
 
@@ -81,54 +69,45 @@ export function AiSection() {
 
   return (
     <div>
-      <div className="mb-3 rounded-[5px] bg-raised px-3 py-2 text-meta text-fg-mid">
-        Suggestions, /cmd, and Explain and fix send the current terminal’s own recent commands (never other terminals’), their output (cut to its start and end), the
-        directory, git branch, shell and OS to the model you choose. Values that look like secrets are replaced with [redacted] first. Nothing is sent
-        until you add a model, and a suggested or fixed command is only ever placed in the input editor, never run.
-        <span className="mt-1.5 block">
-          The agent sends your requests and whatever its tools read (recent commands and output, directory listings, open files) to its model, redacted the
-          same way. Tools that run commands or change files ask you first.
-        </span>
-      </div>
+      <Group
+        title="Suggestions"
+        help="Suggestions, /cmd and Explain and fix send the focused terminal’s recent commands, cut output, directory, git branch, shell and OS to your chosen model, with secrets redacted. The agent also sends what its tools read; nothing runs without asking, and nothing is sent until you add a model."
+      >
+        <Row label="Suggest next commands" help="In the block terminal, at an empty prompt of the focused terminal.">
+          <Toggle label="Suggest next commands" checked={ai.suggestions} onChange={(suggestions) => updateAi({ suggestions })} />
+        </Row>
+        <Row label="Context size" help="Finished commands (with their output) sent with each request.">
+          <NumberField
+            label="Context size"
+            value={ai.contextBlocks}
+            min={AI_CONTEXT_RANGE.min}
+            max={AI_CONTEXT_RANGE.max}
+            integer
+            onCommit={(contextBlocks) => updateAi({ contextBlocks })}
+          />
+        </Row>
+        <Row label="Context preview" help="What a request from the focused terminal would send right now.">
+          <button type="button" className={BUTTON} onClick={() => void showPreview()}>
+            Preview what is sent
+          </button>
+        </Row>
+        {preview !== null && (
+          <Block>
+            <div className="mb-1 flex items-center justify-between text-meta text-fg-dim">
+              <span>Sent for the focused terminal, as it is now:</span>
+              <button type="button" className={BUTTON} onClick={() => setPreview(null)}>
+                Hide
+              </button>
+            </div>
+            <pre data-ai-preview className="max-h-72 overflow-auto rounded-[5px] bg-field p-2 font-mono text-micro whitespace-pre-wrap text-fg-mid">
+              {preview}
+            </pre>
+          </Block>
+        )}
+      </Group>
 
-      <SectionHeading>Suggestions</SectionHeading>
-      <Row label="Suggest next commands" hint="In the block terminal, at an empty prompt of the focused terminal.">
-        <Toggle label="Suggest next commands" checked={ai.suggestions} onChange={(suggestions) => updateAi({ suggestions })} />
-      </Row>
-      <Row label="Context size" hint="Finished commands (with their output) sent with each request.">
-        <input
-          aria-label="Context size"
-          type="number"
-          min={AI_CONTEXT_RANGE.min}
-          max={AI_CONTEXT_RANGE.max}
-          className={`${FIELD} w-20`}
-          value={ai.contextBlocks}
-          onChange={(event) => updateAi({ contextBlocks: Number(event.target.value) })}
-        />
-      </Row>
-      <Row label="Context preview" hint="What a request from the focused terminal would send right now.">
-        <button type="button" className={BUTTON} onClick={() => void showPreview()}>
-          Preview what is sent
-        </button>
-      </Row>
-      {preview !== null && (
-        <div className="mt-2">
-          <div className="mb-1 flex items-center justify-between text-meta text-fg-dim">
-            <span>Sent for the focused terminal, as it is now:</span>
-            <button type="button" className={BUTTON} onClick={() => setPreview(null)}>
-              Hide
-            </button>
-          </div>
-          <pre data-ai-preview className="max-h-72 overflow-auto rounded-[5px] bg-field p-2 font-mono text-micro whitespace-pre-wrap text-fg-mid">
-            {preview}
-          </pre>
-        </div>
-      )}
-
-      <SectionHeading>Models</SectionHeading>
       <ProfileList />
 
-      <SectionHeading>Features</SectionHeading>
       <Features />
     </div>
   );

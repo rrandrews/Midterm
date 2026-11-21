@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Combobox } from "../../components/ui/Combobox";
+import { Help } from "../../components/ui/Tooltip";
 import {
   type AiTarget,
   type CliStatus,
@@ -17,7 +18,7 @@ import {
   providerInfo,
   toAiError,
 } from "../../ipc/ai";
-import { BUTTON, CommitField, FIELD, Row } from "../../settings/controls";
+import { BUTTON, BUTTON_PRIMARY, CommitField, FIELD, Row, Select } from "../../settings/controls";
 import { AI_PROFILE_NAME_MAX, type AiProfile, EFFORT_LEVELS, type EffortLevel } from "../../settings/schema";
 import { clearBackoff } from "../engine";
 import { AgentStatusLine } from "./AgentStatus";
@@ -168,7 +169,7 @@ function EffortRow({ draft, ready, onChange }: { draft: AiProfile; ready: boolea
   // A stored level the model does not offer stays selectable, so the select shows it.
   const listed: Effort[] = stored && stored !== "default" && !levels.includes(stored) ? [...levels, stored] : levels;
   const ordered = EFFORT_LEVELS.filter((level) => listed.includes(level));
-  let hint: ReactNode = "How long the model may think before it answers. Higher is slower and costs more.";
+  let hint: ReactNode = null;
   if (error) hint = <span className="text-err">{error}</span>;
   else if (options) {
     const effective = options.effective ? EFFORT_LABELS[options.effective] : null;
@@ -178,23 +179,23 @@ function EffortRow({ draft, ready, onChange }: { draft: AiProfile; ready: boolea
     if (options.note) hint = <>{hint} {options.note}</>;
   }
   return (
-    <Row label="Reasoning effort" hint={hint}>
-      <select
-        aria-label="Reasoning effort"
-        className={`${FIELD} w-56 pr-6`}
+    <Row label="Reasoning effort" help="How long the model may think before it answers. Higher is slower and costs more." hint={hint}>
+      <Select
+        label="Reasoning effort"
+        className="w-56"
         value={stored ?? ""}
         disabled={!ready}
-        onChange={(event) => onChange(event.target.value ? (event.target.value as EffortLevel) : undefined)}
-      >
-        <option value="">Automatic</option>
-        <option value="default">Provider default</option>
-        {ordered.map((level) => (
-          <option key={level} value={level}>
-            {EFFORT_LABELS[level]}
-            {levels.includes(level) ? "" : " (not offered)"}
-          </option>
-        ))}
-      </select>
+        options={[
+          { value: "", label: "Automatic" },
+          { value: "default", label: "Provider default" },
+          ...ordered.map((level) => ({
+            value: level,
+            label: EFFORT_LABELS[level],
+            detail: levels.includes(level) ? undefined : "not offered",
+          })),
+        ]}
+        onChange={(value) => onChange(value ? (value as EffortLevel) : undefined)}
+      />
     </Row>
   );
 }
@@ -229,13 +230,8 @@ function KeyRow({ config, status, recheck, isCustom }: { config: ProviderConfig;
   return (
     <Row
       label="API key"
-      hint={
-        error ? (
-          <span className="text-err">{error}</span>
-        ) : (
-          `Saved to the OS keychain at once and never shown again. Shared by every model using ${isCustom ? "this base URL" : name}.`
-        )
-      }
+      help={`Saved to the OS keychain at once and never shown again. Shared by every model using ${isCustom ? "this base URL" : name}.`}
+      hint={error ? <span className="text-err">{error}</span> : undefined}
     >
       <div className="flex items-center gap-1.5">
         <input
@@ -328,149 +324,135 @@ export function ProfileEditor({ initial, isNew, onDone }: { initial: AiProfile; 
   const problem = profileProblem(draft);
 
   return (
-    <div data-ai-profile-editor className="mb-2 rounded-[5px] bg-field/60 px-3 pb-2 shadow-[inset_0_0_0_1px_var(--color-line)]">
-      <Row label="Name" hint={nameError ? <span className="text-warn">{nameError}</span> : "How this model is listed under Features."}>
-        <input
-          aria-label="Name"
-          spellCheck={false}
-          maxLength={AI_PROFILE_NAME_MAX}
-          className={`${FIELD} w-56`}
-          value={draft.name}
-          onChange={(event) => patch({ name: event.target.value })}
-        />
-      </Row>
-
-      <Row
-        label="Provider"
-        hint={
-          info ? (
-            <>
-              <StatusLine status={status} needsKey={info.needsKey} />
-              <AgentStatusLine provider={info} agent={status?.kind === "cli" ? status.status.agent : undefined} />
-            </>
-          ) : (
-            "Where requests go."
-          )
-        }
-      >
-        <select
-          aria-label="Provider"
-          className={`${FIELD} w-56 pr-6`}
-          value={draft.provider}
-          onChange={(event) => {
-            // Model, effort, extra JSON, base URL and executable belong to the old provider.
-            patch({ provider: event.target.value, model: "", effort: undefined, extra: undefined, baseUrl: "", cliPath: "" });
-            setExtraText("");
-            setExtraError(null);
-          }}
-        >
-          <option value="">Choose…</option>
-          {draft.provider && !info && <option value={draft.provider}>Unknown ({draft.provider})</option>}
-          <optgroup label="APIs (your key)">
-            {PROVIDERS.filter((p) => p.type === "api").map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </optgroup>
-          <optgroup label="CLIs (their own login)">
-            {PROVIDERS.filter((p) => p.type === "cli").map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </optgroup>
-        </select>
-      </Row>
-
-      {info?.id === "custom" && (
-        <Row label="Base URL" hint="OpenAI-compatible, e.g. http://localhost:11434/v1. A key is kept per URL.">
-          <CommitField label="Base URL" className="w-72 font-mono" placeholder="https://…/v1" value={draft.baseUrl} onCommit={(baseUrl) => patch({ baseUrl: baseUrl.trim() })} />
-        </Row>
-      )}
-
-      {info?.type === "api" && config && <KeyRow config={config} status={status} recheck={recheck} isCustom={info.id === "custom"} />}
-
-      {info?.type === "cli" && (
-        <Row label="Executable" hint={`Leave empty to look up “${info.executable}” on the login shell’s PATH.`}>
-          <CommitField label="Executable path" className="w-72 font-mono" placeholder={info.executable} value={draft.cliPath} onCommit={(cliPath) => patch({ cliPath: cliPath.trim() })} />
-        </Row>
-      )}
-
-      {info && (
-        <Row label="Model" hint={info.type === "api" ? "Text models listed by the provider; any id can be typed." : "Leave empty for the CLI’s default."}>
-          <Combobox
-            label="Model"
-            className="w-72"
-            value={draft.model}
-            onCommit={(model) => patch({ model })}
-            options={modelList.models}
-            placeholder={info.type === "cli" ? "The CLI’s default" : "Model id"}
-            loading={modelList.loading}
-            error={modelList.error}
-            onRefresh={reachable ? modelList.reload : undefined}
-            emptyText={
-              info.type === "cli"
-                ? "This CLI does not list models; type one or leave empty for its default."
-                : reachable
-                  ? "No models listed; type an id."
-                  : "Set up the key to list models; or type an id."
-            }
-          />
-        </Row>
-      )}
-
-      {info && <EffortRow draft={draft} ready={reachable} onChange={(effort) => patch({ effort })} />}
-
-      {info?.type === "api" && (
-        <div className="flex flex-col gap-1 border-b border-line/60 py-1.5">
-          <div className="text-ui text-fg-soft">Extra request JSON</div>
-          <textarea
-            aria-label="Extra request JSON"
-            rows={4}
+    <div className="settings-row px-2 py-2">
+      <div data-ai-profile-editor className="overflow-hidden rounded-[6px] bg-app/40 [&>*+*]:border-t [&>*+*]:border-line">
+        <Row label="Name" hint={nameError ? <span className="text-warn">{nameError}</span> : undefined}>
+          <input
+            aria-label="Name"
             spellCheck={false}
-            placeholder={'{ "provider": { "order": ["…"] } }'}
-            className={`${FIELD} h-auto resize-y py-1 font-mono text-meta`}
-            value={extraText}
-            onChange={(event) => {
-              setExtraText(event.target.value);
-              if (extraError) setExtraError(null);
-            }}
-            onBlur={checkExtra}
+            maxLength={AI_PROFILE_NAME_MAX}
+            className={`${FIELD} w-56`}
+            value={draft.name}
+            onChange={(event) => patch({ name: event.target.value })}
           />
-          <div className="text-meta text-fg-dim">
-            {extraError ? (
-              <span className="text-err">{extraError}</span>
-            ) : (
-              "Merged into the request body. Sampling parameters are rejected by current Anthropic models."
-            )}
-          </div>
-        </div>
-      )}
+        </Row>
 
-      <div className="flex items-center gap-1.5 pt-2">
-        {info && (
-          <button type="button" className={BUTTON} disabled={test === "running" || !!problem || !!extraError} onClick={() => void runTest()}>
-            Test
-          </button>
+        <Row
+          label="Provider"
+          hint={
+            info ? (
+              <>
+                <StatusLine status={status} needsKey={info.needsKey} />
+                <AgentStatusLine provider={info} agent={status?.kind === "cli" ? status.status.agent : undefined} />
+              </>
+            ) : undefined
+          }
+        >
+          <Select
+            label="Provider"
+            className="w-56"
+            value={draft.provider}
+            options={[
+              { value: "", label: "Choose…" },
+              ...(draft.provider && !info ? [{ value: draft.provider, label: `Unknown (${draft.provider})` }] : []),
+              ...PROVIDERS.filter((p) => p.type === "api").map((p) => ({ value: p.id, label: p.name, group: "APIs" })),
+              ...PROVIDERS.filter((p) => p.type === "cli").map((p) => ({ value: p.id, label: p.name, group: "CLIs" })),
+            ]}
+            onChange={(provider) => {
+              // Model, effort, extra JSON, base URL and executable belong to the old provider.
+              patch({ provider, model: "", effort: undefined, extra: undefined, baseUrl: "", cliPath: "" });
+              setExtraText("");
+              setExtraError(null);
+            }}
+          />
+        </Row>
+
+        {info?.id === "custom" && (
+          <Row label="Base URL" help="OpenAI-compatible, e.g. http://localhost:11434/v1. A key is kept per URL.">
+            <CommitField label="Base URL" className="w-72 font-mono" placeholder="https://…/v1" value={draft.baseUrl} onCommit={(baseUrl) => patch({ baseUrl: baseUrl.trim() })} />
+          </Row>
         )}
-        <span className="min-w-0 flex-1 truncate text-meta">
-          {test === "running" ? (
-            <span className="text-fg-dim">Asking…</span>
-          ) : test ? (
-            <span className={test.ok ? "text-ok" : "text-err"} title={test.message}>
-              {test.message}
-            </span>
-          ) : problem && info ? (
-            <span className="text-fg-dim">{problem}</span>
-          ) : null}
-        </span>
-        <button type="button" className={BUTTON} onClick={onDone}>
-          Cancel
-        </button>
-        <button type="button" className={`${BUTTON} text-fg-bright`} disabled={!!nameError || !!extraError} onClick={save}>
-          {isNew ? "Add" : "Save"}
-        </button>
+
+        {info?.type === "api" && config && <KeyRow config={config} status={status} recheck={recheck} isCustom={info.id === "custom"} />}
+
+        {info?.type === "cli" && (
+          <Row label="Executable" help={`Leave empty to look up “${info.executable}” on the login shell’s PATH.`}>
+            <CommitField label="Executable path" className="w-72 font-mono" placeholder={info.executable} value={draft.cliPath} onCommit={(cliPath) => patch({ cliPath: cliPath.trim() })} />
+          </Row>
+        )}
+
+        {info && (
+          <Row label="Model" help={info.type === "api" ? "Text models listed by the provider; any id can be typed." : "Leave empty for the CLI’s default."}>
+            <Combobox
+              label="Model"
+              className="w-72"
+              value={draft.model}
+              onCommit={(model) => patch({ model })}
+              options={modelList.models}
+              placeholder={info.type === "cli" ? "The CLI’s default" : "Model id"}
+              loading={modelList.loading}
+              error={modelList.error}
+              onRefresh={reachable ? modelList.reload : undefined}
+              emptyText={
+                info.type === "cli"
+                  ? "This CLI does not list models; type one or leave empty for its default."
+                  : reachable
+                    ? "No models listed; type an id."
+                    : "Set up the key to list models; or type an id."
+              }
+            />
+          </Row>
+        )}
+
+        {info && <EffortRow draft={draft} ready={reachable} onChange={(effort) => patch({ effort })} />}
+
+        {info?.type === "api" && (
+          <div className="flex flex-col gap-1 px-3 py-2">
+            <div className="flex items-center gap-1 text-ui text-fg-soft">
+              Extra request JSON
+              <Help>Merged into the request body. Sampling parameters are rejected by current Anthropic models.</Help>
+            </div>
+            <textarea
+              aria-label="Extra request JSON"
+              rows={4}
+              spellCheck={false}
+              placeholder={'{ "provider": { "order": ["…"] } }'}
+              className={`${FIELD} h-auto resize-y py-1 font-mono text-meta!`}
+              value={extraText}
+              onChange={(event) => {
+                setExtraText(event.target.value);
+                if (extraError) setExtraError(null);
+              }}
+              onBlur={checkExtra}
+            />
+            {extraError && <div className="text-meta text-err">{extraError}</div>}
+          </div>
+        )}
+
+        <div className="flex items-center gap-1.5 px-3 py-2">
+          {info && (
+            <button type="button" className={BUTTON} disabled={test === "running" || !!problem || !!extraError} onClick={() => void runTest()}>
+              Test
+            </button>
+          )}
+          <span className="min-w-0 flex-1 truncate text-meta">
+            {test === "running" ? (
+              <span className="text-fg-dim">Asking…</span>
+            ) : test ? (
+              <span className={test.ok ? "text-ok" : "text-err"} title={test.message}>
+                {test.message}
+              </span>
+            ) : problem && info ? (
+              <span className="text-fg-dim">{problem}</span>
+            ) : null}
+          </span>
+          <button type="button" className={BUTTON} onClick={onDone}>
+            Cancel
+          </button>
+          <button type="button" className={BUTTON_PRIMARY} disabled={!!nameError || !!extraError} onClick={save}>
+            {isNew ? "Add" : "Save"}
+          </button>
+        </div>
       </div>
     </div>
   );

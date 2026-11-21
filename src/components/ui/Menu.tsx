@@ -38,6 +38,8 @@ const ITEM =
  * unless the command opened a text field (rename, new file), which keeps it.
  */
 function returnFocusToPane(event: Event): void {
+  // In a dialog (settings), focus goes back to the trigger, as Radix does by default.
+  if (document.querySelector("[role=dialog][data-owns-keyboard]")) return;
   event.preventDefault();
   if (document.activeElement instanceof HTMLInputElement) return;
   refocusPane();

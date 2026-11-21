@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import { openFile } from "../../../actions";
 import { Combobox } from "../../../components/ui/Combobox";
+import { Select } from "../../../components/ui/Select";
 import { create as createPath, stat, writeTextFile } from "../../../ipc/fs";
 import { homeDirectory } from "../../../ipc/system";
 import { CommitField, FIELD } from "../../../settings/controls";
@@ -415,18 +416,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 function PlainSelect({ label, value, options, onChange }: { label: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void }) {
-  const known = value === "" || options.some((option) => option.value === value);
-  return (
-    <select aria-label={label} className={`${FIELD} w-[148px] pr-6`} value={value} onChange={(event) => onChange(event.target.value)}>
-      <option value="">Not set</option>
-      {!known && <option value={value}>{value}</option>}
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  );
+  return <Select label={label} className="w-[148px]" value={value} options={[{ value: "", label: "Not set" }, ...options]} onChange={onChange} />;
 }
 
 function RuleList({ label, tone, rules, onAdd, onRemove }: { label: string; tone: "ok" | "warn" | "err"; rules: string[]; onAdd: (rule: string) => void; onRemove: (index: number) => void }) {

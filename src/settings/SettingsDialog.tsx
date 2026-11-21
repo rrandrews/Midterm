@@ -1,29 +1,35 @@
-import { RotateCcw, X } from "lucide-react";
-import { Dialog } from "radix-ui";
-import { useState, useSyncExternalStore } from "react";
-import { chordFromEvent, chordToString, formatBinding, parseChord } from "../commands/keys";
 import {
-  allCommands,
-  bindingsOf,
-  commandsVersion,
-  conflictsWith,
-  registerCommands,
-  subscribeCommands,
-} from "../commands/registry";
-import { confirm } from "../components/ui/ConfirmDialog";
-import { refocusPane } from "../layout/dock";
+  Asterisk,
+  Eye,
+  FileCode,
+  FolderTree,
+  Keyboard,
+  type LucideIcon,
+  Palette,
+  Puzzle,
+  Search,
+  Settings2,
+  Sparkles,
+  SquareTerminal,
+  X,
+} from "lucide-react";
+import { Dialog } from "radix-ui";
+import { useState } from "react";
 import { create } from "zustand";
-import { allPlugins, enabledPlugins, usePluginsVersion } from "../plugins/registry";
-import { CLASSIC_TERMINAL } from "../terminal/kinds";
-import { CommitField, FIELD, Row, Select } from "./controls";
+import { registerCommands } from "../commands/registry";
+import { refocusPane } from "../layout/dock";
+import { type RegisteredPlugin, allPlugins, isPluginEnabled, usePluginsVersion } from "../plugins/registry";
+import { GeneralSection } from "./GeneralSection";
+import { KeyboardSection } from "./KeyboardSection";
 import { PluginSection, PluginsSection } from "./PluginSettings";
-import { ACCENT_PRESETS, FONT_SIZE_RANGE, isHexColor } from "./schema";
 import { registerSettingsSection, useSettingsSections } from "./sections";
 import { useSettings } from "./settings";
 
 /*
  * The settings dialog (⌘,). Every change applies and saves at once; there
  * is no OK button. Text fields commit on Enter or when they lose focus.
+ * The list on the left has the app's sections, then one per plugin; its
+ * search narrows both by section name and the names of their settings.
  */
 
 const useSettingsDialog = create<{ open: boolean; section: string }>()(() => ({
@@ -36,6 +42,10 @@ export function openSettings(section = "general"): void {
   useSettingsDialog.setState({ open: true, section });
 }
 
+export function closeSettings(): void {
+  useSettingsDialog.setState({ open: false });
+}
+
 registerCommands([
   { id: "settings.open", title: "Settings", category: "App", keys: ["Cmd+,"], run: () => openSettings() },
   {
@@ -46,221 +56,92 @@ registerCommands([
   },
 ]);
 
-function General() {
-  const settings = useSettings();
-  const update = settings.updateSettings;
-  usePluginsVersion();
-  const kinds = enabledPlugins();
-  const terminals = kinds.filter((plugin) => plugin.terminal);
-  const others = kinds.filter((plugin) => !plugin.terminal);
-  const defaultTerminal = terminals.some((plugin) => plugin.id === settings.defaultTerminal)
-    ? settings.defaultTerminal
-    : CLASSIC_TERMINAL;
-  // A terminal kind in `defaultPaneKind` means "the default terminal" (stored as the classic id).
-  const defaultPane = others.some((plugin) => plugin.id === settings.defaultPaneKind)
-    ? settings.defaultPaneKind
-    : CLASSIC_TERMINAL;
-  const custom = !ACCENT_PRESETS.some((preset) => preset.toLowerCase() === settings.accent.toLowerCase());
-  return (
-    <>
-      <Row label="Accent color" hint="Active pane, cursor, selection, drop targets">
-        {ACCENT_PRESETS.map((preset) => (
-          <button
-            key={preset}
-            type="button"
-            aria-label={`Accent ${preset}`}
-            aria-pressed={settings.accent.toLowerCase() === preset.toLowerCase()}
-            onClick={() => update({ accent: preset })}
-            className="size-4 rounded-full outline-offset-2 aria-pressed:outline aria-pressed:outline-1 aria-pressed:outline-fg-mid"
-            style={{ background: preset }}
-          />
-        ))}
-        <label
-          className={`relative size-4 cursor-pointer overflow-hidden rounded-full outline-offset-2 ${custom ? "outline outline-1 outline-fg-mid" : ""}`}
-          title="Custom color"
-          style={{ background: custom ? settings.accent : "conic-gradient(red, yellow, lime, aqua, blue, magenta, red)" }}
-        >
-          <input
-            type="color"
-            aria-label="Custom accent color"
-            className="absolute inset-0 opacity-0"
-            value={settings.accent.toLowerCase()}
-            onChange={(event) => isHexColor(event.target.value) && update({ accent: event.target.value })}
-          />
-        </label>
-      </Row>
-      <Row label="Font family" hint="Terminals and the editor; empty for the bundled JetBrains Mono">
-        <CommitField
-          label="Font family"
-          placeholder="JetBrains Mono"
-          value={settings.fontFamily}
-          onCommit={(fontFamily) => update({ fontFamily })}
-        />
-      </Row>
-      <Row label="Font size" hint={`${FONT_SIZE_RANGE.min}–${FONT_SIZE_RANGE.max} px`}>
-        <CommitField
-          label="Font size"
-          type="number"
-          className="w-20"
-          value={String(settings.fontSize)}
-          onCommit={(value) => {
-            const fontSize = Number.parseFloat(value);
-            if (Number.isFinite(fontSize)) update({ fontSize });
-          }}
-        />
-      </Row>
-      <Row label="Default terminal" hint="New terminals open in it; a pane can be switched from its menu">
-        <Select
-          label="Default terminal"
-          value={defaultTerminal}
-          options={terminals.map((plugin) => plugin.id)}
-          labels={Object.fromEntries(terminals.map((plugin) => [plugin.id, plugin.name]))}
-          onChange={(value) => update({ defaultTerminal: value })}
-        />
-      </Row>
-      <Row label="New tabs and splits open" hint="Any pane can be changed to another type from its menu">
-        <Select
-          label="Default pane type"
-          value={defaultPane}
-          options={[CLASSIC_TERMINAL, ...others.map((plugin) => plugin.id)]}
-          labels={{
-            [CLASSIC_TERMINAL]: "Default terminal",
-            ...Object.fromEntries(others.map((plugin) => [plugin.id, plugin.name])),
-          }}
-          onChange={(defaultPaneKind) => update({ defaultPaneKind })}
-        />
-      </Row>
-    </>
-  );
+registerSettingsSection({
+  id: "general",
+  label: "General",
+  order: 0,
+  icon: Settings2,
+  component: GeneralSection,
+  keywords: ["default terminal", "new tabs", "splits", "pane type", "restore defaults", "reset"],
+});
+registerSettingsSection({
+  id: "plugins",
+  label: "Plugins",
+  order: 800,
+  icon: Puzzle,
+  component: PluginsSection,
+  keywords: ["import", "install", "enable", "disable"],
+});
+registerSettingsSection({
+  id: "keyboard",
+  label: "Keyboard",
+  order: 900,
+  icon: Keyboard,
+  component: KeyboardSection,
+  keywords: ["shortcuts", "keybindings", "keys", "hotkeys"],
+});
+
+/** Built-in plugins' lucide icon names. */
+const PLUGIN_ICONS: Record<string, LucideIcon> = {
+  "square-terminal": SquareTerminal,
+  "file-code": FileCode,
+  eye: Eye,
+  "folder-tree": FolderTree,
+  asterisk: Asterisk,
+  palette: Palette,
+  sparkles: Sparkles,
+};
+
+function PluginIcon({ icon }: { icon?: string }) {
+  if (icon && /^(https?:|data:|\/|asset:)/.test(icon)) return <img src={icon} alt="" className="size-3.5 flex-none" />;
+  const Icon = (icon && PLUGIN_ICONS[icon]) || Puzzle;
+  return <Icon size={14} strokeWidth={1.75} className="flex-none" />;
 }
-
-/** Records a chord: the next non-modifier key pressed. Escape cancels. */
-function KeyRecorder({ onRecord, onCancel }: { onRecord: (binding: string) => void; onCancel: () => void }) {
-  return (
-    <input
-      autoFocus
-      readOnly
-      aria-label="Press the new shortcut"
-      data-key-recorder
-      placeholder="Press keys…"
-      className={`${FIELD} w-32 text-center font-mono text-micro`}
-      onBlur={onCancel}
-      onKeyDown={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (event.key === "Escape" && !event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey) {
-          onCancel();
-          return;
-        }
-        const chord = chordFromEvent(event.nativeEvent);
-        if (!chord) return;
-        const spec = chordToString(chord);
-        if (parseChord(spec)) onRecord(spec);
-      }}
-    />
-  );
-}
-
-function Keyboard() {
-  useSyncExternalStore(subscribeCommands, commandsVersion);
-  const setKeybinding = useSettings((state) => state.setKeybinding);
-  const overrides = useSettings((state) => state.keybindings);
-  const [recording, setRecording] = useState<string | null>(null);
-  const [filter, setFilter] = useState("");
-  const commands = allCommands().filter(
-    (command) =>
-      !filter ||
-      `${command.category} ${command.title} ${command.id}`.toLowerCase().includes(filter.toLowerCase()),
-  );
-
-  return (
-    <>
-      <div className="sticky top-0 z-10 bg-popover pb-2">
-        <input
-          aria-label="Filter commands"
-          placeholder="Filter commands"
-          className={`${FIELD} w-full`}
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-        />
-      </div>
-      {commands.map((command) => {
-        const bindings = bindingsOf(command.id);
-        const conflicts = bindings.flatMap((spec) => {
-          const chord = parseChord(spec);
-          return chord ? conflictsWith(chord, command.id) : [];
-        });
-        const overridden = command.id in overrides;
-        return (
-          <Row
-            key={command.id}
-            label={command.title}
-            hint={conflicts.length ? `Also bound to: ${conflicts.map((other) => other.title).join(", ")}` : command.category}
-          >
-            {recording === command.id ? (
-              <KeyRecorder
-                onRecord={(spec) => {
-                  setKeybinding(command.id, [spec]);
-                  setRecording(null);
-                }}
-                onCancel={() => setRecording(null)}
-              />
-            ) : (
-              <button
-                type="button"
-                title="Click to change"
-                onClick={() => setRecording(command.id)}
-                className={`${FIELD} min-w-20 font-mono text-micro ${conflicts.length ? "text-warn" : "text-fg-mid"}`}
-              >
-                {bindings.length ? bindings.map(formatBinding).join("  ") : "—"}
-              </button>
-            )}
-            <button
-              type="button"
-              aria-label={`Remove the shortcut for ${command.title}`}
-              title="Remove shortcut"
-              disabled={bindings.length === 0}
-              onClick={() => setKeybinding(command.id, [])}
-              className="flex p-0.5 text-fg-dim hover:text-fg disabled:opacity-30"
-            >
-              <X size={12} />
-            </button>
-            <button
-              type="button"
-              aria-label={`Restore the default shortcut for ${command.title}`}
-              title="Restore default"
-              disabled={!overridden}
-              onClick={() => setKeybinding(command.id, null)}
-              className="flex p-0.5 text-fg-dim hover:text-fg disabled:opacity-30"
-            >
-              <RotateCcw size={12} />
-            </button>
-          </Row>
-        );
-      })}
-    </>
-  );
-}
-
-registerSettingsSection({ id: "general", label: "General", order: 0, component: General });
-registerSettingsSection({ id: "plugins", label: "Plugins", order: 800, component: PluginsSection });
-registerSettingsSection({ id: "keyboard", label: "Keyboard", order: 900, component: Keyboard });
 
 const NAV_ITEM =
-  "flex h-7 flex-none items-center rounded-[5px] px-2.5 text-left text-menu text-fg-muted outline-none hover:text-fg-soft aria-[current=page]:bg-selected aria-[current=page]:text-fg-bright";
+  "group flex h-7 w-full flex-none items-center gap-2 rounded-[6px] px-2 text-left text-menu text-fg-muted outline-none " +
+  "hover:bg-hover hover:text-fg-soft focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)] " +
+  "aria-[current=page]:bg-selected aria-[current=page]:text-fg-bright";
+
+function matches(query: string, ...texts: (string | undefined)[]): boolean {
+  return texts.some((text) => text?.toLowerCase().includes(query));
+}
+
+function pluginMatches(query: string, { plugin }: RegisteredPlugin): boolean {
+  const fields = plugin.settings?.fields ?? [];
+  return matches(query, plugin.name, plugin.description, ...fields.map((field) => field.label));
+}
 
 /** Mounted once, in App. */
 export function SettingsDialog() {
   const { open, section } = useSettingsDialog();
-  const resetSettings = useSettings((state) => state.resetSettings);
   const sections = useSettingsSections();
+  const pluginState = useSettings((state) => state);
   usePluginsVersion();
+  const [query, setQuery] = useState("");
+  const [scrolled, setScrolled] = useState(false);
   const plugins = allPlugins();
   const pluginId = section.startsWith("plugin:") ? section.slice("plugin:".length) : null;
-  const Current = sections.find((candidate) => candidate.id === section)?.component;
+  const current = sections.find((candidate) => candidate.id === section);
+  const Current = current?.component;
+  const title = pluginId ? (plugins.find((entry) => entry.plugin.id === pluginId)?.plugin.name ?? "Plugin") : (current?.label ?? "");
+
+  const q = query.trim().toLowerCase();
+  const shownSections = q ? sections.filter((item) => matches(q, item.label, ...(item.keywords ?? []))) : sections;
+  const shownPlugins = q ? plugins.filter((entry) => pluginMatches(q, entry)) : plugins;
+  const go = (next: string) => {
+    useSettingsDialog.setState({ section: next });
+    setScrolled(false);
+  };
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => useSettingsDialog.setState({ open: next })}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        useSettingsDialog.setState({ open: next });
+        if (!next) setQuery("");
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim" />
         <Dialog.Content
@@ -279,60 +160,88 @@ export function SettingsDialog() {
             // A field that handles Escape itself (a combobox closing its list or reverting).
             if (document.activeElement?.hasAttribute("data-escape-local")) event.preventDefault();
           }}
-          className="fixed top-1/2 left-1/2 z-50 flex h-[min(560px,calc(100vh-64px))] w-[min(720px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg bg-popover shadow-menu outline-none"
+          className="settings-dialog fixed top-1/2 left-1/2 z-50 flex h-[min(640px,calc(100vh-64px))] w-[min(860px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover shadow-menu outline-none"
         >
-          <nav className="flex w-40 flex-none flex-col gap-0.5 border-r border-line p-2" aria-label="Settings sections">
-            <Dialog.Title className="px-2.5 pt-1 pb-2 text-menu font-medium text-fg-bright">Settings</Dialog.Title>
-            {sections.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={section === item.id ? "page" : undefined}
-                onClick={() => useSettingsDialog.setState({ section: item.id })}
-                className={NAV_ITEM}
-              >
-                {item.label}
-              </button>
-            ))}
-            <div className="px-2.5 pt-3 pb-1 text-micro font-medium tracking-wide text-fg-faint uppercase">Panes</div>
-            <div className="flex min-h-0 flex-col gap-0.5 overflow-y-auto">
-              {plugins.map(({ plugin }) => (
-                <button
-                  key={plugin.id}
-                  type="button"
-                  aria-current={pluginId === plugin.id ? "page" : undefined}
-                  onClick={() => useSettingsDialog.setState({ section: `plugin:${plugin.id}` })}
-                  className={NAV_ITEM}
-                >
-                  <span className="truncate">{plugin.name}</span>
-                </button>
-              ))}
-            </div>
-            <div className="flex-1" />
-            <button
-              type="button"
-              onClick={async () => {
-                const ok = await confirm({
-                  title: "Restore all defaults?",
-                  message: "Every setting and keyboard shortcut goes back to its default. Which plugins are enabled is kept.",
-                  action: "Restore defaults",
-                });
-                if (ok) resetSettings();
-              }}
-              className="flex h-7 items-center rounded-[5px] px-2.5 text-left text-meta text-fg-dim outline-none hover:text-fg-soft"
-            >
-              Restore all defaults
-            </button>
-          </nav>
-          <div className="min-w-0 flex-1 overflow-y-auto px-5 pt-8 pb-3">
-            {pluginId ? <PluginSection pluginId={pluginId} /> : Current ? <Current /> : null}
-          </div>
-          <Dialog.Close
-            aria-label="Close settings"
-            className="absolute top-2 right-2 flex rounded-[5px] p-1 text-fg-dim outline-none hover:text-fg"
+          <nav
+            className="flex w-[200px] flex-none flex-col border-r border-line bg-app/45"
+            aria-label="Settings sections"
           >
-            <X size={14} />
-          </Dialog.Close>
+            <Dialog.Title className="sr-only">Settings</Dialog.Title>
+            <div className="p-2.5 pb-2">
+              <div className="relative">
+                <Search size={12} className="pointer-events-none absolute top-1/2 left-2 -translate-y-1/2 text-fg-faint" />
+                <input
+                  aria-label="Search settings"
+                  placeholder="Search"
+                  spellCheck={false}
+                  value={query}
+                  data-escape-local={query ? "" : undefined}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && query) {
+                      event.stopPropagation();
+                      setQuery("");
+                    } else if (event.key === "Enter") {
+                      const first = shownSections[0]?.id ?? (shownPlugins[0] && `plugin:${shownPlugins[0].plugin.id}`);
+                      if (first) go(first);
+                    }
+                  }}
+                  className="h-7 w-full rounded-[6px] bg-fg-bright/[0.04] pr-2 pl-7 text-ui text-fg outline-none placeholder:text-fg-faint shadow-[inset_0_0_0_1px_var(--color-line-strong)] focus:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+                />
+              </div>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5 pb-2.5">
+              {shownSections.map((item) => {
+                const Icon = item.icon ?? Settings2;
+                return (
+                  <button key={item.id} type="button" aria-current={section === item.id ? "page" : undefined} onClick={() => go(item.id)} className={NAV_ITEM}>
+                    <Icon size={14} strokeWidth={1.75} className="flex-none text-fg-dim group-aria-[current=page]:text-accent" />
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+              {shownPlugins.length > 0 && <div className="px-2 pt-4 pb-1 text-micro font-medium text-fg-faint">Panes</div>}
+              {shownPlugins.map(({ plugin }) => {
+                const enabled = isPluginEnabled(plugin.id, pluginState);
+                return (
+                  <button
+                    key={plugin.id}
+                    type="button"
+                    aria-current={pluginId === plugin.id ? "page" : undefined}
+                    onClick={() => go(`plugin:${plugin.id}`)}
+                    className={`${NAV_ITEM} ${enabled ? "" : "opacity-50"}`}
+                    title={enabled ? undefined : "Disabled"}
+                  >
+                    <span className="flex text-fg-dim group-aria-[current=page]:text-accent">
+                      <PluginIcon icon={plugin.icon} />
+                    </span>
+                    <span className="truncate">{plugin.name}</span>
+                  </button>
+                );
+              })}
+              {!shownSections.length && !shownPlugins.length && <div className="px-2 py-3 text-meta text-fg-dim">Nothing matches.</div>}
+            </div>
+          </nav>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <header
+              className={`flex h-12 flex-none items-center gap-2 border-b pr-3 pl-6 transition-colors ${scrolled ? "border-line" : "border-transparent"}`}
+            >
+              <h2 className="min-w-0 flex-1 truncate text-heading font-semibold tracking-[-0.01em] text-fg-bright">{title}</h2>
+              <Dialog.Close
+                aria-label="Close settings"
+                className="flex size-6 items-center justify-center rounded-[5px] text-fg-dim outline-none hover:bg-hover hover:text-fg focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
+              >
+                <X size={14} />
+              </Dialog.Close>
+            </header>
+            <div
+              key={section}
+              className="min-h-0 flex-1 overflow-y-auto px-6 pt-1 pb-6"
+              onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
+            >
+              {pluginId ? <PluginSection pluginId={pluginId} /> : Current ? <Current /> : null}
+            </div>
+          </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

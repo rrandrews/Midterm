@@ -15,10 +15,10 @@ const EXPLORER_FIELDS: SettingField[] = [
     key: "followTerminal",
     type: "toggle",
     label: "Follow the terminal",
-    hint: "New explorers show the directory of the terminal last focused in their tab (each can be pinned)",
+    hint: "New explorers open at the last focused terminal's directory (pin one to stop).",
     default: true,
   },
-  { key: "showHidden", type: "toggle", label: "Show hidden and ignored files", hint: "In new explorers", default: false },
+  { key: "showHidden", type: "toggle", label: "Show hidden and ignored files", default: false },
 ];
 
 /** File explorer panes: a live tree of a directory. */

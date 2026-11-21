@@ -1,56 +1,176 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { Minus, Plus } from "lucide-react";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { ColorPopover } from "../components/ui/ColorPicker";
+import { Select as Dropdown, type SelectOption } from "../components/ui/Select";
+import { Help } from "../components/ui/Tooltip";
 import { type SettingField, optionsOf } from "../plugins/fields";
-import { isHexColor, joinArgs, splitArgs } from "./schema";
+import { joinArgs, splitArgs } from "./schema";
 
 /*
  * Controls for the settings dialog, shared by its sections and used to
  * render plugins' declarative fields.
+ *
+ * A section is a stack of `Group`s (a titled, outlined list) holding
+ * `Row`s (label left, control right). A row's explanation goes behind a
+ * (?) (`help`); `hint` is for live status under the label (a problem, a
+ * version), never for prose that is always there.
  */
 
 export const FIELD =
-  "h-6 rounded-[5px] bg-field px-2 text-ui text-fg outline-none shadow-[inset_0_0_0_1px_var(--color-line)] focus:shadow-[inset_0_0_0_1px_var(--color-accent)]";
+  "h-6 rounded-[5px] bg-field px-2 text-ui text-fg outline-none placeholder:text-fg-faint shadow-[inset_0_0_0_1px_var(--color-line-strong)] focus:shadow-[inset_0_0_0_1px_var(--color-accent)] disabled:opacity-40";
 
 export const BUTTON =
-  "h-6 flex-none rounded-[5px] bg-raised px-2.5 text-meta text-fg-soft outline-none hover:text-fg-bright focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)] disabled:opacity-40";
+  "inline-flex h-6 flex-none items-center justify-center gap-1 rounded-[5px] bg-raised/70 px-2.5 text-meta font-medium text-fg-soft outline-none hover:bg-raised hover:text-fg-bright focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)] disabled:pointer-events-none disabled:opacity-40";
 
-export function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children?: ReactNode }) {
+/** The one button that matters in a group of them (Save, Add). */
+export const BUTTON_PRIMARY =
+  "inline-flex h-6 flex-none items-center justify-center gap-1 rounded-[5px] bg-accent/20 px-2.5 text-meta font-semibold text-accent-fg outline-none shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_50%,transparent)] hover:bg-accent/28 focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)] disabled:pointer-events-none disabled:opacity-40";
+
+/** A square icon-only button. */
+export const ICON_BUTTON =
+  "flex size-6 flex-none items-center justify-center rounded-[5px] text-fg-dim outline-none hover:bg-hover hover:text-fg-bright focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)] disabled:pointer-events-none disabled:opacity-30 data-[state=open]:bg-hover data-[state=open]:text-fg-bright";
+
+/** A titled, outlined list of rows. */
+export function Group({
+  title,
+  help,
+  actions,
+  children,
+  className = "",
+}: {
+  title?: ReactNode;
+  help?: ReactNode;
+  /** Buttons on the right of the title. */
+  actions?: ReactNode;
+  children?: ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="flex min-h-9 items-center gap-4 border-b border-line/60 py-1.5">
+    <section className={`mb-5 last:mb-0 ${className}`}>
+      {(title || actions) && (
+        <div className="flex min-h-6 items-end gap-1.5 px-1 pb-1.5">
+          {title && <h3 className="text-meta font-semibold text-fg-mid">{title}</h3>}
+          {help && <Help>{help}</Help>}
+          <div className="flex-1" />
+          {actions && <div className="flex items-center gap-1">{actions}</div>}
+        </div>
+      )}
+      <div className="settings-group overflow-hidden rounded-lg bg-fg-bright/[0.025] shadow-[inset_0_0_0_1px_var(--color-line-strong)]">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+export function Row({
+  label,
+  help,
+  hint,
+  children,
+  className = "",
+}: {
+  label: ReactNode;
+  /** Explanation, behind a (?). */
+  help?: ReactNode;
+  /** Status under the label (a problem, a version). */
+  hint?: ReactNode;
+  children?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`settings-row flex min-h-10 items-center gap-4 px-3 py-1.5 ${className}`}>
       <div className="min-w-0 flex-1">
-        <div className="text-ui text-fg-soft">{label}</div>
+        <div className="flex items-center gap-1 text-ui text-fg-soft">
+          <span className="min-w-0 truncate">{label}</span>
+          {help && <Help>{help}</Help>}
+        </div>
         {hint && <div className="text-meta text-fg-dim">{hint}</div>}
       </div>
-      <div className="flex flex-none items-center gap-2">{children}</div>
+      {children !== undefined && <div className="flex flex-none items-center gap-1.5">{children}</div>}
     </div>
   );
 }
 
-/** A heading between groups of rows. */
-export function SectionHeading({ children }: { children: ReactNode }) {
-  return <div className="pt-4 pb-1 text-meta font-medium tracking-wide text-fg-dim uppercase first:pt-0">{children}</div>;
+/** A full-width row for content that does not fit label-and-control (a list, a preview). */
+export function Block({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={`settings-row px-3 py-2.5 ${className}`}>{children}</div>;
 }
 
+/** A heading between rows that are not in a `Group`. */
+export function SectionHeading({ children }: { children: ReactNode }) {
+  return <h3 className="px-1 pt-5 pb-1.5 text-meta font-semibold text-fg-mid first:pt-0">{children}</h3>;
+}
+
+/** The settings dropdown, typed by its values. */
 export function Select<T extends string>({
   value,
   options,
   labels,
   onChange,
   label,
+  className,
+  disabled,
 }: {
   value: T;
-  options: readonly T[];
+  options: readonly T[] | readonly (SelectOption & { value: T })[];
   labels?: Partial<Record<T, string>>;
   onChange: (value: T) => void;
   label: string;
+  className?: string;
+  disabled?: boolean;
+}) {
+  const items: SelectOption[] = options.map((option) =>
+    typeof option === "string"
+      ? { value: option, label: labels?.[option as T] ?? option[0].toUpperCase() + option.slice(1) }
+      : option,
+  );
+  return <Dropdown label={label} value={value} options={items} onChange={(next) => onChange(next as T)} className={className} disabled={disabled} />;
+}
+
+/** A few mutually exclusive choices, all visible. */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  disabled,
+}: {
+  value: T;
+  options: readonly { value: T; label: ReactNode; title?: string }[];
+  onChange: (value: T) => void;
+  label: string;
+  disabled?: boolean;
 }) {
   return (
-    <select aria-label={label} className={`${FIELD} pr-6`} value={value} onChange={(event) => onChange(event.target.value as T)}>
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className={`flex h-6 flex-none items-center gap-px rounded-[6px] bg-field p-[2px] shadow-[inset_0_0_0_1px_var(--color-line-strong)] ${disabled ? "pointer-events-none opacity-40" : ""}`}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        const at = options.findIndex((option) => option.value === value);
+        const next = options[(at + (event.key === "ArrowRight" ? 1 : -1) + options.length) % options.length];
+        onChange(next.value);
+        (event.currentTarget.querySelector(`[data-value="${CSS.escape(next.value)}"]`) as HTMLElement | null)?.focus();
+      }}
+    >
       {options.map((option) => (
-        <option key={option} value={option}>
-          {labels?.[option] ?? option[0].toUpperCase() + option.slice(1)}
-        </option>
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          data-value={option.value}
+          aria-checked={option.value === value}
+          tabIndex={option.value === value ? 0 : -1}
+          title={option.title}
+          onClick={() => onChange(option.value)}
+          className="flex h-full items-center gap-1 rounded-[4px] px-2 text-meta font-medium text-fg-dim outline-none hover:text-fg-soft focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)] aria-checked:bg-raised aria-checked:text-fg-bright aria-checked:shadow-[0_1px_2px_var(--color-shadow)]"
+        >
+          {option.label}
+        </button>
       ))}
-    </select>
+    </div>
   );
 }
 
@@ -73,10 +193,10 @@ export function Toggle({
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-4 w-7 flex-none rounded-full transition-colors disabled:opacity-40 ${checked ? "bg-accent" : "bg-raised"}`}
+      className={`relative h-[18px] w-[30px] flex-none rounded-full outline-none transition-colors duration-150 focus-visible:shadow-[0_0_0_1px_var(--color-app),0_0_0_2px_var(--color-accent)] disabled:opacity-40 ${checked ? "bg-accent" : "bg-raised shadow-[inset_0_0_0_1px_var(--color-line-strong)]"}`}
     >
       <span
-        className={`absolute top-0.5 size-3 rounded-full bg-fg-bright transition-[left] ${checked ? "left-3.5" : "left-0.5"}`}
+        className={`absolute top-[2px] size-[14px] rounded-full shadow-[0_1px_2px_var(--color-shadow)] transition-[left] duration-150 ${checked ? "left-[14px] bg-app" : "left-[2px] bg-fg-mid"}`}
       />
     </button>
   );
@@ -90,13 +210,15 @@ export function CommitField({
   placeholder,
   className = "w-56",
   type = "text",
+  style,
 }: {
   value: string;
   onCommit: (value: string) => void;
   label: string;
   placeholder?: string;
   className?: string;
-  type?: "text" | "number" | "password";
+  type?: "text" | "password";
+  style?: CSSProperties;
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
@@ -105,9 +227,12 @@ export function CommitField({
       aria-label={label}
       type={type}
       spellCheck={false}
+      autoComplete="off"
       placeholder={placeholder}
       className={`${FIELD} ${className}`}
+      style={style}
       value={draft}
+      data-escape-local={draft !== value ? "" : undefined}
       onChange={(event) => setDraft(event.target.value)}
       onBlur={() => draft !== value && onCommit(draft)}
       onKeyDown={(event) => {
@@ -119,6 +244,116 @@ export function CommitField({
       }}
     />
   );
+}
+
+const STEPPER =
+  "flex h-full w-5 flex-none items-center justify-center text-fg-dim outline-none hover:bg-hover hover:text-fg-bright disabled:pointer-events-none disabled:opacity-30";
+
+/** A number with − and + (and the arrow keys); commits on Enter, blur or a step. Clamped to min/max. */
+export function NumberField({
+  value,
+  onCommit,
+  label,
+  min = -Infinity,
+  max = Infinity,
+  step = 1,
+  integer = false,
+  unit,
+  className = "w-[112px]",
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+  label: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  unit?: string;
+  className?: string;
+}) {
+  const format = (number: number) =>
+    integer ? (Math.abs(number) >= 10_000 ? Math.round(number).toLocaleString("en-US") : String(Math.round(number))) : String(number);
+  const [draft, setDraft] = useState(format(value));
+  // Whether the text was typed in since the value last showed; untouched text is never committed.
+  const edited = useRef(false);
+  const input = useRef<HTMLInputElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: format follows `integer` only
+  useEffect(() => {
+    setDraft(format(value));
+    edited.current = false;
+  }, [value]);
+  const clamp = (number: number) => {
+    const clamped = Math.min(max, Math.max(min, number));
+    return integer ? Math.round(clamped) : clamped;
+  };
+  const commit = (number: number) => {
+    const next = clamp(number);
+    edited.current = false;
+    setDraft(format(next));
+    if (next !== value) onCommit(next);
+  };
+  const revert = () => {
+    edited.current = false;
+    setDraft(format(value));
+  };
+  /** The typed number, or null when the text is not one (thousands separators only in their places). */
+  const parsed = (): number | null => {
+    const text = draft.trim();
+    if (!/^[-+]?(\d{1,3}(,\d{3})+|\d+)?(\.\d+)?$/.test(text) || !/\d/.test(text)) return null;
+    const number = Number(text.replace(/,/g, ""));
+    return Number.isFinite(number) ? number : null;
+  };
+  const commitDraft = () => {
+    if (!edited.current) return;
+    const number = parsed();
+    if (number === null) revert();
+    else commit(number);
+  };
+  return (
+    <div
+      className={`flex h-6 flex-none items-stretch overflow-hidden rounded-[5px] bg-field shadow-[inset_0_0_0_1px_var(--color-line-strong)] focus-within:shadow-[inset_0_0_0_1px_var(--color-accent)] ${className}`}
+    >
+      <button type="button" tabIndex={-1} aria-label={`Decrease ${label}`} className={STEPPER} disabled={value <= min} onClick={() => commit(value - step)}>
+        <Minus size={11} />
+      </button>
+      <div className="flex min-w-0 flex-1 items-center justify-center" onClick={() => input.current?.focus()}>
+        <input
+          ref={input}
+          aria-label={label}
+          inputMode="decimal"
+          spellCheck={false}
+          className="w-full min-w-0 bg-transparent text-center font-mono text-meta text-fg tabular-nums outline-none [field-sizing:content]"
+          value={draft}
+          data-escape-local={edited.current ? "" : undefined}
+          onChange={(event) => {
+            edited.current = true;
+            setDraft(event.target.value);
+          }}
+          onBlur={commitDraft}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commitDraft();
+            else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+              event.preventDefault();
+              const from = (edited.current ? parsed() : null) ?? value;
+              commit(from + (event.key === "ArrowUp" ? step : -step) * (event.shiftKey ? 10 : 1));
+            } else if (event.key === "Escape" && edited.current) {
+              event.stopPropagation();
+              revert();
+            }
+          }}
+        />
+        {unit && <span className="pl-1 text-micro text-fg-faint">{unit}</span>}
+      </div>
+      <button type="button" tabIndex={-1} aria-label={`Increase ${label}`} className={STEPPER} disabled={value >= max} onClick={() => commit(value + step)}>
+        <Plus size={11} />
+      </button>
+    </div>
+  );
+}
+
+/** Whether a select field reads best as a segmented control: few, short choices. */
+function segmentable(options: { label: string }[]): boolean {
+  return options.length <= 3 && options.reduce((sum, option) => sum + option.label.length, 0) <= 26;
 }
 
 /** The control for one declarative field. */
@@ -136,27 +371,21 @@ export function FieldControl({
       return <Toggle label={field.label} checked={value === true} onChange={onChange} />;
     case "select": {
       const options = optionsOf(field);
-      return (
-        <Select
-          label={field.label}
-          value={String(value)}
-          options={options.map((option) => option.value)}
-          labels={Object.fromEntries(options.map((option) => [option.value, option.label]))}
-          onChange={onChange}
-        />
-      );
+      if (segmentable(options)) return <Segmented label={field.label} value={String(value)} options={options} onChange={onChange} />;
+      return <Dropdown label={field.label} value={String(value)} options={options} onChange={onChange} />;
     }
     case "number":
       return (
-        <CommitField
+        <NumberField
           label={field.label}
-          type="number"
-          className="w-28"
-          value={String(value)}
-          onCommit={(text) => {
-            const number = Number.parseFloat(text);
-            if (Number.isFinite(number)) onChange(number);
-          }}
+          value={typeof value === "number" ? value : field.default}
+          min={field.min}
+          max={field.max}
+          integer={field.integer}
+          unit={field.unit}
+          step={field.integer && (field.max ?? 0) >= 10_000 ? 1000 : 1}
+          className={(field.max ?? 0) >= 10_000 ? "w-[128px]" : undefined}
+          onCommit={onChange}
         />
       );
     case "text":
@@ -165,25 +394,18 @@ export function FieldControl({
       return (
         <CommitField
           label={field.label}
+          className="w-56 font-mono text-meta!"
           placeholder={field.placeholder}
           value={joinArgs(Array.isArray(value) ? (value as string[]) : [])}
           onCommit={(text) => onChange(splitArgs(text))}
         />
       );
     case "color":
-      return (
-        <input
-          type="color"
-          aria-label={field.label}
-          className="h-6 w-10 cursor-pointer rounded-[5px] bg-transparent"
-          value={String(value).toLowerCase()}
-          onChange={(event) => isHexColor(event.target.value) && onChange(event.target.value)}
-        />
-      );
+      return <ColorPopover label={field.label} value={String(value).toLowerCase()} onChange={onChange} align="end" />;
   }
 }
 
-/** Rows for a list of declarative fields. */
+/** Rows for a list of declarative fields; put them in a `Group`. */
 export function FieldRows({
   fields,
   values,
@@ -196,7 +418,7 @@ export function FieldRows({
   return (
     <>
       {fields.map((field) => (
-        <Row key={field.key} label={field.label} hint={field.hint}>
+        <Row key={field.key} label={field.label} help={field.hint}>
           <FieldControl field={field} value={values[field.key]} onChange={(value) => onChange({ [field.key]: value })} />
         </Row>
       ))}

@@ -74,7 +74,8 @@ Fonts are bundled (`@fontsource-variable/*`), never fetched:
 | `text-crumb` | 11.5px | Breadcrumbs, drop indicator label |
 | `text-menu` | 12px | Menu items |
 | `text-ui` | 12.5px | Default UI text (set on `body`) |
-| `text-input` | 13px | Command input |
+| `text-input` | 13px | Command input, theme editor title |
+| `text-heading` | 15px | Settings page title |
 | `text-title` | 18px | Document headings in viewers |
 
 Terminal text is 12.5px JetBrains Mono on 19px rows (`src/terminal/theme.ts`).

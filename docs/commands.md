@@ -76,21 +76,42 @@ render and saved 200 ms after each change. Dev runs with `?mockup` or
 ## Settings dialog
 
 `src/settings/SettingsDialog.tsx` (⌘, or the app menu). Sections come from
-a registry (`src/settings/sections.ts`): General (font family and size, what
-new tabs and splits open), Appearance (themes and the accent; see
+a registry (`src/settings/sections.ts`; each has an icon and search
+keywords): General (`GeneralSection.tsx`: what new terminals and new
+tabs/splits open, restore all defaults), Appearance (a live preview, the
+theme gallery, font family and size, the accent, file icons; see
 [themes.md](themes.md#settings-and-gallery)), AI (see
-[ai.md](ai.md#settings--ai)), Plugins (`PluginSettings.tsx`:
-installed plugins, enable/disable, import, remove) and Keyboard (click a
-shortcut and press the new keys; ✕ unbinds, ↺ restores the default;
-conflicts are flagged). Below them, one section per pane plugin: Terminal
-(default mode, cursor, scrollback, copy-on-select, bell, background, shell
-and arguments, shell integration over ssh), Explorer (follow the terminal, hidden files), Editor (word
-wrap, tab size, line numbers), Viewer (Markdown rendered or as source),
-each with its skills. Controls are shared from `src/settings/controls.tsx`,
-which also renders plugins' declarative fields. Changes apply and save at once; text
-fields commit on Enter or blur. `src/settings/apply.ts` applies the fonts
-as CSS variables; colors (the accent included) come from the theme
-(`src/theme/apply.ts`).
+[ai.md](ai.md#settings--ai)), Plugins (`PluginSettings.tsx`: installed
+plugins, enable/disable, import, remove) and Keyboard
+(`KeyboardSection.tsx`: commands grouped by category, shortcuts as key caps;
+click one and press the new keys, hover for remove and restore; conflicts
+are flagged). Below them, one section per pane plugin with its settings and
+skills. The search box at the top of the list narrows sections by name,
+keywords, plugin descriptions and field labels; Enter opens the first.
+
+Controls (`src/settings/controls.tsx`), also used to render plugins'
+declarative fields:
+
+- A section is a stack of `Group`s (a titled, outlined list; optional
+  `help` and `actions`) holding `Row`s (label left, control right) and
+  `Block`s (full-width content).
+- Explanations go behind a (?) (`help`, a tooltip from
+  `src/components/ui/Tooltip.tsx`). A row's `hint` line is only for live
+  status (an error, a version, "Checking…"), never fixed prose.
+- No native form controls: `Select` (the custom dropdown in
+  `src/components/ui/Select.tsx`, a Radix Select), `Segmented` (a select
+  field with up to three short options renders as one), `NumberField`
+  (− / + stepper, arrow keys, clamped), `Toggle`, `CommitField`, and
+  `ColorPopover` (`src/components/ui/ColorPicker.tsx`, react-colorful in a
+  popover).
+- Buttons: `BUTTON`, `BUTTON_PRIMARY` (one per group of buttons),
+  `ICON_BUTTON`. Override a constant's utility with Tailwind's `!` suffix
+  (`size-5!`): the order of two utilities for the same property is not
+  defined by the class string.
+
+Changes apply and save at once; text fields commit on Enter or blur.
+`src/settings/apply.ts` applies the fonts as CSS variables; colors (the
+accent included) come from the theme (`src/theme/apply.ts`).
 
 A custom shell (`shell`, `shellArgs`) is run as given by `pty_spawn`
 (`shell_command` in `src-tauri/src/pty/shell.rs`), with the terminal

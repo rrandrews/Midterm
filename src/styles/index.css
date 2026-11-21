@@ -7,6 +7,7 @@
 @import "./agent.css";
 @import "./claude.css";
 @import "./claude-panels.css";
+@import "./settings.css";
 
 /*
  * Design tokens. These defaults are Midterm Dark's resolved values; the active
@@ -102,6 +103,7 @@
   --text-menu: 12px;
   --text-ui: 12.5px;
   --text-input: 13px;
+  --text-heading: 15px;
   --text-title: 18px;
 
   --shadow-menu: 0 0 0 1px var(--color-line-strong), 0 12px 32px var(--color-shadow);

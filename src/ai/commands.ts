@@ -1,3 +1,4 @@
+import { Sparkles } from "lucide-react";
 import { livePane, updatePaneData } from "../actions";
 import { registerCommands } from "../commands/registry";
 import type { MenuItemSpec } from "../plugins/types";
@@ -90,7 +91,14 @@ export function installAi(): void {
     if (!task) return "Say what the agent should do: /agent <task>";
     askAgentAbout(paneId, task);
   });
-  registerSettingsSection({ id: "ai", label: "AI", order: 700, component: AiSection });
+  registerSettingsSection({
+    id: "ai",
+    label: "AI",
+    order: 700,
+    icon: Sparkles,
+    component: AiSection,
+    keywords: ["models", "provider", "api key", "suggestions", "agent", "effort"],
+  });
   registerCommands([
     { id: "ai.toggleSuggestions", title: "AI: Toggle suggestions", category: "AI", run: toggleSuggestions },
     {
