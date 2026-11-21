@@ -314,6 +314,19 @@ describe("BlockTracker: nested shells (ssh)", () => {
     expect(t.tracker.commands).toEqual(["ssh box"]);
   });
 
+  it("leaves a remote prompt's line behind when ssh ends", async () => {
+    const t = await sshSession();
+    t.tracker.noteInput("rm -rf tmp");
+    await t.write("rm -rf tmp");
+    expect(t.tracker.typedPromptInput()).toBe("rm -rf tmp");
+    // The connection drops: the root shell's D arrives before its A/B, on the same row.
+    await t.write(local.D(255));
+    expect(t.tracker.snapshot()).toMatchObject({ nested: false, phase: "prompt" });
+    expect(t.tracker.promptInput()).toBe("");
+    expect(t.tracker.typedPromptInput()).toBe("");
+    expect(t.tracker.hasLeftoverInput()).toBe(false);
+  });
+
   it("ends a nested block still running with ssh's status", async () => {
     const t = await sshSession();
     expect(t.tracker.submit("sleep 100")).toBe(true);
@@ -461,19 +474,70 @@ describe("prompt input (typeahead)", () => {
     expect(u.tracker.promptInput()).toBe("");
   });
 
-  it("is takeable once until the shell clears the line", async () => {
+  it("takes only what was typed, once", async () => {
     const t = setup();
+    t.tracker.noteInput("ls");
     await t.write(`${PROMPT}ls`);
-    expect(t.tracker.takeablePromptInput()).toBe("ls");
+    expect(t.tracker.typedPromptInput()).toBe("ls");
     t.tracker.inputWasTaken();
-    // The shell has not processed ⌃E⌃U yet.
-    expect(t.tracker.takeablePromptInput()).toBe("");
+    // The shell has not processed ⌃E⌃U yet: not taken again, no second clear.
     expect(t.tracker.promptInput()).toBe("ls");
+    expect(t.tracker.typedPromptInput()).toBe("");
+    expect(t.tracker.hasLeftoverInput()).toBe(false);
     // Its redraw: back to the start of the input, erase.
     await t.write("\b\b\x1b[K");
-    expect(t.tracker.takeablePromptInput()).toBe("");
-    await t.write("cd");
-    expect(t.tracker.takeablePromptInput()).toBe("cd");
+    expect(t.tracker.hasLeftoverInput()).toBe(false);
+    expect(t.tracker.typedPromptInput()).toBe("");
+  });
+
+  it("does not take a background job's output on the prompt row", async () => {
+    const t = setup();
+    await t.write(`${PROMPT}echo SURPRISE`);
+    expect(t.tracker.promptInput()).toBe("echo SURPRISE");
+    expect(t.tracker.typedPromptInput()).toBe("");
+    // Typed something else: still not taken.
+    t.tracker.noteInput("ls\x7f\x7fpwd");
+    expect(t.tracker.typedPromptInput()).toBe("");
+  });
+
+  it("waits for the rest of an echo that arrives in pieces", async () => {
+    const t = setup({ settleMs: 20 });
+    const heard: string[] = [];
+    t.tracker.onPromptInput(() => heard.push(t.tracker.typedPromptInput()));
+    t.tracker.noteInput("echo tail");
+    await t.write(`${PROMPT}echo `);
+    await settle();
+    expect(heard).toEqual([""]);
+    t.tick(200);
+    await t.write("tail");
+    await settle();
+    expect(heard).toEqual(["", "echo tail"]);
+  });
+
+  it("forgets what was typed once a command line is entered or sent", async () => {
+    const t = setup();
+    t.tracker.noteInput("make\r");
+    await t.write(`${PROMPT}make`);
+    expect(t.tracker.typedPromptInput()).toBe("");
+    const u = setup();
+    u.tracker.noteInput("ls");
+    await u.write(PROMPT);
+    u.tracker.submit("pwd");
+    await u.write(`pwd\r\n${C}/\r\n${D(0)}${PROMPT}ls`);
+    expect(u.tracker.typedPromptInput()).toBe("");
+  });
+
+  it("sees leftover text before the cursor's position (⌃A in classic mode)", async () => {
+    const t = setup();
+    await t.write(PROMPT);
+    expect(t.tracker.hasLeftoverInput()).toBe(false);
+    t.tracker.noteInput("; echo HIDDEN\x01");
+    // Echoed, then the cursor moved back to the start of the input.
+    await t.write("; echo HIDDEN\x1b[13D");
+    expect(t.tracker.promptInput()).toBe("");
+    expect(t.tracker.typedPromptInput()).toBe("");
+    expect(t.tracker.promptLine()).toBe("; echo HIDDEN");
+    expect(t.tracker.hasLeftoverInput()).toBe(true);
   });
 
   it("tells listeners once output settles after a prompt", async () => {

@@ -675,28 +675,50 @@ so).
 - **Typeahead** (keys typed while a command ran) lands on the shell's own
   command line, which blocks mode hides; so does a line typed in classic
   mode before switching. The editor adopts it (`session.adoptPromptInput`,
-  wired in `BlockInput`): `tracker.promptInput()` reads the shell's line
-  from B to the **cursor**, soft-wrapped rows joined, so a right prompt
-  (RPROMPT, `fish_right_prompt`) and autosuggestions after the cursor are
-  left out; a row break on the way (a background job's output) means it is
-  not typed input. If there is text and the editor is empty (and no `/cmd`
-  or Fix request is pending for it), the text goes into the editor with the
-  caret at the end and the session sends ⌃E ⌃U (`CLEAR_LINE`) to clear the
-  shell's line. ⌃E⌃U works in zsh (emacs, and viins where ⌃E self-inserts
-  and vi-kill-line removes it), bash/readline (emacs and vi insert) and
-  fish; not in vi command mode or with rebound keys. Text after the cursor
-  (typeahead with ← in it) is cleared but not adopted.
+  wired in `BlockInput`):
+  - `tracker.promptInput()` reads the shell's line from B to the
+    **cursor**, soft-wrapped rows joined, so a right prompt (RPROMPT,
+    `fish_right_prompt`) and autosuggestions after the cursor are left
+    out; a row break on the way means it is not typed input.
+  - Only what the user **typed** is taken (`typedPromptInput`): the
+    session feeds every key sent from the terminal (`term.onData`, either
+    mode) to a `TypedLine` (`src/terminal/typedLine.ts`), a rough model of
+    the line since the last ⏎: printable characters append, DEL/⌃H/⌃W
+    erase, ⌃U/⌃C clear, escape sequences and other control keys are
+    ignored. The shell's text is taken only if what was typed ends with
+    it, so a background job's output on the prompt row (`(sleep 1; printf
+    x) &`) is not, nor the first part of an echo that arrives in pieces
+    (the next settle takes the whole). After ⌃A, ← or completion the model
+    no longer matches and nothing is taken; the next command clears the
+    line instead (below). The model resets at ⏎, `submit`, adoption, on
+    the alternate screen, and when a nested shell's scope is left. It does
+    not reset on C: typeahead typed right after ⏎ can come before it.
+  - If there is such text and the editor is empty (and no `/cmd` or Fix
+    request is pending for it), the text goes into the editor with the
+    caret at the end and the session sends ⌃E ⌃U (`CLEAR_LINE`) to clear
+    the shell's line. ⌃E⌃U works in zsh (emacs, and viins where ⌃E
+    self-inserts and vi-kill-line removes it), bash/readline (emacs and vi
+    insert) and fish; not in vi command mode or with rebound keys. In fish
+    ⌃E accepts a shown autosuggestion first, so it lands in the kill ring
+    (⌃A⌃K would avoid that but does nothing in zsh/bash vi insert mode).
+    Text after the cursor (typeahead with ← in it) is cleared, not adopted.
   - When: as the editor mounts at a prompt (covers the classic → blocks
     switch and a nested shell's prompt, whose line the keys reach through
     ssh), and when output settles (30 ms quiet) within 1 s of a B, since
     the shell may echo the typeahead in a later chunk. Later changes to the
-    line are the shell's own (the editor has the keyboard), so they are not
-    adopted. An editor with text is never overwritten.
-  - The tracker remembers a taken line until the shell is seen to clear it
-    (or the next prompt), so it is not taken twice. If text is still on the
-    shell's line when the editor runs a command (not cleared yet, or the
-    clear did not work), `runCommand` sends ⌃E⌃U in front of it, so it can
-    never run glued to the command (`ls` + `pwd` → `lspwd`).
+    line are the shell's own (the editor has the keyboard). An editor with
+    text is never overwritten.
+  - **Leftovers**: when the editor runs a command, `runCommand` sends
+    ⌃E⌃U in front of it if anything is after B on the prompt's line,
+    wherever the cursor is (`hasLeftoverInput`, `promptLine`): text typed
+    before ⌃A, text not adopted, a clear that did not work. So it never
+    runs glued to the command (`ls` + `pwd` → `lspwd`). A right prompt or
+    autosuggestion also counts, which only costs a redundant clear. Not
+    while an adoption's clear is in flight (no output since it was sent):
+    a second ⌃U on an empty line rings bash's bell.
+  - Leaving a nested shell's scope drops its prompt line, so a draft on a
+    remote prompt is never adopted or cleared into the local shell when
+    the root shell's D arrives before its next prompt.
   - Checked by hand against zsh 5.9 (emacs, vi + RPROMPT) and bash 3.2
     (emacs, vi) in a pty; fish only by its documented bindings.
 - `registerPaneFocuser` focuses the editor at a prompt, the terminal

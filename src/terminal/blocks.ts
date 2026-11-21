@@ -1,4 +1,5 @@
 import type { IBuffer, IDisposable, IEvent, IMarker } from "@xterm/xterm";
+import { TypedLine } from "./typedLine";
 
 /*
  * Blocks: the output of a terminal, cut into one block per command using the
@@ -210,8 +211,10 @@ export class BlockTracker {
   private inputStart: { marker: IMarker; col: number } | undefined;
   /** When the last B arrived (`now()`). */
   private inputStartAt = 0;
-  /** `takePromptInput` handed the line over and the shell has not cleared it yet. */
-  private inputTaken = false;
+  /** What the user typed into the terminal since the last command line was entered. */
+  private readonly typed = new TypedLine();
+  /** The line was taken and cleared, and the shell has printed nothing since. */
+  private clearPending = false;
   /** Commands run in this terminal, oldest first, with their scope. */
   private readonly commandList: { command: string; scope: CommandScope }[] = [];
 
@@ -244,9 +247,12 @@ export class BlockTracker {
         const alt = buffer.type === "alternate";
         if (alt === this.altScreen) return;
         this.altScreen = alt;
+        // Keys typed into a full-screen program are not a command line.
+        this.typed.reset();
         this.changed();
       }),
       term.onWriteParsed(() => {
+        this.clearPending = false;
         if (this.integration === "pending" && this.integrationTimer === undefined) {
           this.integrationTimer = setTimeout(() => {
             if (this.integration !== "pending") return;
@@ -318,19 +324,53 @@ export class BlockTracker {
   }
 
   /**
-   * `promptInput`, for moving it into the input editor; afterwards `""`
-   * until the shell's line is seen empty (the caller clears it) or the next
-   * prompt, so the same text is not taken twice. Call `inputWasTaken` once
-   * it was taken.
+   * Everything after B on the prompt's logical line, wherever the cursor
+   * is: text the shell still holds (typed before ⌃A, say) as well as a
+   * right prompt or an autosuggestion, so only for "is the line empty?".
    */
-  takeablePromptInput(): string {
-    const text = this.promptInput();
-    if (!text) this.inputTaken = false;
-    return this.inputTaken ? "" : text;
+  promptLine(): string {
+    const input = this.inputStart;
+    if (this.phase !== "prompt" || !input || input.marker.line < 0) return "";
+    if (this.term.buffer.active.type !== "normal") return "";
+    const buffer = this.term.buffer.normal;
+    let text = "";
+    for (let row = input.marker.line; ; row++) {
+      const line = buffer.getLine(row);
+      if (!line || (row > input.marker.line && !line.isWrapped)) break;
+      text += line.translateToString(false, row === input.marker.line ? input.col : 0);
+    }
+    return text.trim();
   }
 
+  /** Keys sent to the shell from the terminal (`term.onData`), to know what was typed. */
+  noteInput(data: string): void {
+    this.typed.feed(data);
+  }
+
+  /**
+   * `promptInput` if the user typed it (what was typed into the terminal
+   * since the last command line ends with it), else `""`: text a
+   * background job printed on the prompt row is not taken, nor the first
+   * part of an echo still arriving.
+   */
+  typedPromptInput(): string {
+    const text = this.promptInput();
+    return text && this.typed.text.endsWith(text) ? text : "";
+  }
+
+  /** The caller took `typedPromptInput` and is clearing the shell's line. */
   inputWasTaken(): void {
-    this.inputTaken = true;
+    this.typed.reset();
+    this.clearPending = true;
+  }
+
+  /**
+   * Whether the shell's line may hold text that would run in front of a
+   * command sent now. Not while a clear sent for taken input awaits the
+   * shell's redraw (a second ⌃U on an empty line rings bash's bell).
+   */
+  hasLeftoverInput(): boolean {
+    return !this.clearPending && this.promptLine() !== "";
   }
 
   /** The root shell's commands in this terminal, oldest first. */
@@ -395,6 +435,7 @@ export class BlockTracker {
     const start = this.term.registerMarker(0);
     if (!start) return false;
     this.dropInputStart();
+    this.typed.reset();
     this.phase = "running";
     if (!this.nested) this.innerLocation = undefined;
     this.addBlock(command, start, true);
@@ -498,7 +539,7 @@ export class BlockTracker {
   private dropInputStart(): void {
     this.inputStart?.marker.dispose();
     this.inputStart = undefined;
-    this.inputTaken = false;
+    this.clearPending = false;
   }
 
   /** A nested shell's first prompt (A with a foreign aid) while root command runs. */
@@ -542,6 +583,9 @@ export class BlockTracker {
   }
 
   private leaveNested(): void {
+    // The nested shell's prompt line and what was typed there are not the root shell's.
+    this.dropInputStart();
+    this.typed.reset();
     this.nested = false;
     this.outer = undefined;
     this.innerLocation = undefined;

@@ -54,7 +54,10 @@ const QUICK_EXIT_MS = 1500;
  * self-inserts and vi-kill-line removes it with the rest), bash (emacs:
  * end-of-line, unix-line-discard; vi insert: ⌃E self-inserts, ⌃U discards)
  * and fish (end-of-line, which also accepts an autosuggestion, then
- * backward-kill-line). Not in vi command mode or with rebound keys.
+ * backward-kill-line). Not in vi command mode or with rebound keys. In
+ * fish an autosuggestion accepted by ⌃E ends up in the kill ring (⌃Y).
+ * ⌃A ⌃K would avoid that but kills nothing in vi insert mode, where ⌃A
+ * and ⌃K self-insert in zsh and bash.
  */
 export const CLEAR_LINE = "\x05\x15";
 
@@ -156,7 +159,11 @@ export class TerminalSession {
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
 
-    this.term.onData((data) => this.send({ binary: false, data }));
+    this.term.onData((data) => {
+      // What the user types (in either mode): typeahead is adopted only if typed (MID-36).
+      this.blocks.noteInput(data);
+      this.send({ binary: false, data });
+    });
     // Reports that are bytes rather than text, e.g. legacy mouse encoding.
     this.term.onBinary((data) => this.send({ binary: true, data }));
     this.term.parser.registerOscHandler(7, (data) => {
@@ -398,9 +405,10 @@ export class TerminalSession {
    * readline and zle insert literally).
    */
   runCommand(command: string): boolean {
-    // Text still on the shell's line (not yet cleared after the editor took
-    // it, or it could not be) would run in front of the command.
-    const leftover = this.blocks.promptInput() !== "";
+    // Text still on the shell's line (typed before ⌃A in classic mode, not
+    // adopted, or a clear that did not work) would run in front of the
+    // command. A right prompt also counts: that only costs a redundant clear.
+    const leftover = this.blocks.hasLeftoverInput();
     if (!this.blocks.submit(command)) return false;
     const lines = command.split(/\r?\n/);
     const data =
@@ -418,13 +426,14 @@ export class TerminalSession {
    * last command ran, which went to the hidden terminal and that the shell
    * echoes after its prompt) or a line started in classic mode before
    * switching to blocks. Checked now (the editor just appeared at a prompt)
-   * and whenever output settles shortly after a prompt. `adopt` gets the
+   * and whenever output settles shortly after a prompt. Only text the user
+   * typed is taken (see `typedPromptInput`). `adopt` gets the
    * text and returns whether it took it (only an empty editor does).
    * Returns the unsubscribe.
    */
   adoptPromptInput(adopt: (text: string) => boolean): () => void {
     const check = () => {
-      const text = this.blocks.takeablePromptInput();
+      const text = this.blocks.typedPromptInput();
       if (!text || !adopt(text)) return;
       this.blocks.inputWasTaken();
       this.send({ binary: false, data: CLEAR_LINE });
