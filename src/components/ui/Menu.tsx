@@ -104,12 +104,16 @@ type MenuItemProps = ComponentProps<typeof DropdownPrimitive.Item> & {
   shortcut?: string;
   /** Shows a check mark; reserves its space when `false`. */
   checked?: boolean;
+  /** Destructive (delete): drawn in the theme's error color. */
+  danger?: boolean;
 };
 
-export function MenuItem({ children, shortcut, checked, className = "", ...props }: MenuItemProps) {
+const DANGER = "text-err! data-[highlighted]:bg-err/12";
+
+export function MenuItem({ children, shortcut, checked, danger, className = "", ...props }: MenuItemProps) {
   const Primitive = usePrimitive();
   return (
-    <Primitive.Item className={`${ITEM} ${className}`} {...props}>
+    <Primitive.Item className={`${ITEM} ${danger ? DANGER : ""} ${className}`} {...props}>
       {checked !== undefined && (
         <span className="flex w-3 flex-none text-fg-dim">{checked && <Check size={12} />}</span>
       )}
