@@ -84,7 +84,10 @@ Setting paths (`isOverridden`, `withoutOverride`, `Row`'s `setting`):
 The picker at the top of the dialog's list (`ScopePicker` in
 `SettingsDialog.tsx`) chooses the scope: **Default** (all workspaces) or a
 workspace, with its override count. `openSettings(section, scope)`
-(`src/settings/dialogState.ts`) opens it anywhere.
+(`src/settings/dialogState.ts`) opens it anywhere. Section, scope and
+open changes go through `changeSettingsDialog`, which first asks the
+shown section's leave guard, if it registered one (`guardSettingsLeave`;
+the theme editor does, to ask about unsaved edits).
 
 Sections read and write through `src/settings/scope.tsx`:
 `useScopedSettings(selector)`, `useScopedActions()` and `useOverride(path)`,
@@ -103,6 +106,8 @@ While a workspace is edited:
 - Sections the workspace overrides something in get an accent dot in the
   list; shared ones a globe and a note at the top.
 - The title reads `<workspace> › <section>`.
+- The theme editor is shared (custom themes are global), so it stays
+  reachable with the note.
 - Appearance's preview renders the edited scope's theme (its CSS variables
   set on the preview itself), not necessarily the one on screen.
 - **Workspace** section (`src/workspaces/WorkspaceSection.tsx`, only for a

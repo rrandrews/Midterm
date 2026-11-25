@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useSettings } from "../settings/settings";
 import { midtermDark } from "./bundled";
-import { claimEditor, discardDraft, releaseEditor, setKind, isDraftDirty, redo, saveDraft, setToken, startEditing, stopEditing, undo, useThemeDraft } from "./editor/draft";
+import { discardDraft, isDraftDirty, mayLeaveEditor, redo, saveDraft, setKind, setToken, startEditing, stopEditing, undo, useThemeDraft } from "./editor/draft";
 import { resolveTheme } from "./resolve";
 import { currentResolvedTheme, currentTheme, deleteTheme, duplicateTheme, findTheme, selectTheme, selectedThemeId, useThemeState, withAccent } from "./state";
 
@@ -72,11 +72,13 @@ describe("theme editor draft", () => {
     expect(useSettings.getState().themeDark).toBe("midterm-dark");
   });
 
-  it("gives the draft to one editor pane at a time", () => {
-    expect(claimEditor("a")).toBe(true);
-    expect(claimEditor("b")).toBe(false);
-    releaseEditor("a");
-    expect(claimEditor("b")).toBe(true);
+  it("lets the editor go at once without unsaved edits, and asks with them", async () => {
+    startEditing("dracula");
+    expect(mayLeaveEditor()).toBe(true);
+    setToken("fg", "#123456");
+    // No confirm dialog is mounted in tests, so asking declines: the draft stays.
+    expect(await mayLeaveEditor()).toBe(false);
+    expect(isDraftDirty()).toBe(true);
   });
 
   it("saves a bundled theme as a new custom theme and shows it", () => {

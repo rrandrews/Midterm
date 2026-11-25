@@ -41,7 +41,7 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src/plugins/` | The pane plugin contract, registry, API, pane host, skills and the imported-plugin loader; built-in plugins in `builtin/`. See [plugins.md](plugins.md). |
 | `src/ai/` | AI next-command suggestions: context builder and redaction, the suggestion engine, Settings → AI, commands. Requests go through the backend (`src/ipc/ai.ts`); the webview's CSP still allows nothing remote. See [ai.md](ai.md). |
 | `src/claude/` | The Claude Code pane: a full Claude Code session per pane, run by a Node bridge on the Agent SDK (`bridge/`), its protocol, store, reducer, UI and side panels. See [claude-code.md](claude-code.md). |
-| `src/theme/` | Themes: model, resolution, bundled themes, importers, applying the theme, the Appearance section and the theme editor pane. See [themes.md](themes.md). |
+| `src/theme/` | Themes: model, resolution, bundled themes, importers, applying the theme, the Appearance and Theme editor settings sections. See [themes.md](themes.md). |
 | `src/components/panes/` | The built-in panes' components. |
 | `src/components/ui/` | Menus (dropdown and right-click), inline edit, confirm dialog, icons. |
 | `src/terminal/` | xterm.js sessions and their registry; blocks mode model, rendering and history ([terminal.md](terminal.md)); file links in output. |

@@ -165,6 +165,21 @@ describe("snapshot and restore", () => {
     expect(listPanes(tab!.layout).map((pane) => pane.data.kind)).toEqual(["terminal"]);
   });
 
+  it("drops retired theme editor panes, and a tab left empty gets a fresh layout", () => {
+    const saved = roundTrip(snapshotState(sampleState()));
+    const tabs = saved.workspaces[0].tabs;
+    const root = tabs[0].layout.root;
+    const editorPaneId = root.children[1].tabs[0].id;
+    root.children[1].tabs[0].data = { kind: "theme-editor", themeId: "dracula" };
+    tabs[0].activePaneId = editorPaneId;
+    // A tab holding nothing but a theme editor.
+    tabs[1].layout.root.tabs[0].data = { kind: "theme-editor" };
+    const [first, second] = restoreState(saved)?.workspaces[0].tabs ?? [];
+    expect(listPanes(first.layout).map((pane) => pane.data)).toEqual([{ kind: "terminal", cwd: "/tmp" }]);
+    expect(first.activePaneId).toBeUndefined();
+    expect(listPanes(second.layout).map((pane) => pane.data.kind)).toEqual(["terminal"]);
+  });
+
   it("gives a pane fresh data when its plugin rejects what was saved", () => {
     setPaneDataValidator((kind, raw) => (kind === "picky" ? null : BUILTIN_VALIDATORS[kind]?.(raw)));
     const saved = roundTrip(snapshotState(sampleState()));

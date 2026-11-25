@@ -15,7 +15,8 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 /// The only plugin API version this build of Midterm supports.
 pub const API_VERSION: u64 = 1;
 /// Pane kinds of built-in plugins (and the app's own name): an imported
-/// plugin cannot take these ids.
+/// plugin cannot take these ids. `theme-editor` was a pane before the
+/// theme editor moved into Settings; old layouts may still name it.
 pub const RESERVED_IDS: &[&str] = &[
     "terminal",
     "block-terminal",

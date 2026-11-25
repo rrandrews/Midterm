@@ -21,9 +21,9 @@ the CSS variables, xterm, blocks rendering, CodeMirror and the window.
 | `state.ts` | Which theme is showing: settings, custom themes (`themes.json`), the palette's preview, the editor's draft; `currentResolvedTheme`, `withAccent`, theme management; `subscribeThemeApplied` / `useThemeRevision` |
 | `apply.ts` | `applyTheme`, `installThemes`, `appliedTheme` |
 | `files.ts` | Import and export through file dialogs |
-| `commands.ts` | Palette commands, the Appearance section and the theme editor plugin, registered by `installThemeCommands` |
+| `commands.ts` | Palette commands, `editTheme`, and the Appearance and Theme editor settings sections, registered by `installThemeCommands` |
 | `AppearanceSection.tsx` | Settings → Appearance |
-| `editor/` | The theme editor pane: `draft.ts` (draft, undo, save), `ThemeEditorPane.tsx`, `plugin.tsx` |
+| `editor/` | Settings → Theme editor: `draft.ts` (draft, undo, save, leave guard), `ThemeEditor.tsx` (the section), `tokens.tsx` (token rows and lists that don't depend on the draft) |
 | `importers/` | `importItermColors`, `importVSCodeTheme`, `importBase16`, `importMidtermTheme` / `exportTheme`, `detectThemeFormat`, `importThemeFile`; fixtures in `importers/fixtures/` |
 
 ## The model
@@ -60,7 +60,8 @@ is the flag for CodeMirror (`EditorView.theme({}, { dark })`) and
 
 ## Tokens
 
-Grouped as in `TOKEN_GROUPS` (the theme editor's groups). Every token is
+Grouped as in `TOKEN_GROUPS` (the theme editor's groups; `GROUP_LABELS` and
+`TOKEN_LABELS` in `editor/tokens.tsx` name them in words). Every token is
 published as `--color-<token>` except `terminal-solid`, which keeps its name
 `--terminal-solid`. "Mix" is an OKLab mix of `fg` toward `app` (negative =
 beyond `fg`). "Up n" is an OKLCH lightness step from the background: lighter
@@ -354,8 +355,8 @@ Settings → Appearance has the following:
   light themes. Each card is drawn from the resolved theme. Click one to
   apply it; while following the system, that sets the light or dark pick
   for its kind, and both picks are marked. A card's … menu has Edit
-  colors… (closes settings and opens the editor), Duplicate, Export…
-  (Midterm JSON), and for custom themes Rename and Delete.
+  colors… (goes to Settings → Theme editor on that theme), Duplicate,
+  Export… (Midterm JSON), and for custom themes Rename and Delete.
 - Import (Midterm JSON, `.itermcolors`, VS Code JSON, Base16/Base24 YAML).
   The imported theme gets a free id and name, and is shown.
 - Text: the font family and size (shared by terminals and the editor).
@@ -368,46 +369,80 @@ Palette commands:
 - **Theme: Select…** opens a palette picker (`openPicker` in
   `src/palette/state.ts`) and previews each theme as it is highlighted
   (`useThemeState.preview`). Escape restores the previous theme.
-- **Theme: Edit current**.
+- **Theme: Edit current**: opens Settings → Theme editor on the theme
+  showing.
 - **Theme: Toggle light/dark**: switches to the light or dark pick and turns
   off following the system.
 
-## Theme editor pane
+## Theme editor
 
-A built-in pane plugin (`theme-editor`, `src/theme/editor/`), so edits
-preview on the real terminals and files beside it. Its pane data is
-`{ themeId }`.
+Settings → **Theme editor** (section id `theme-editor`, right after
+Appearance; `src/theme/editor/`). It edits custom themes, which are global
+(`themes.json`), so the section is `scope: "shared"`: reachable while a
+workspace is edited, with the shared note. `editTheme(themeId)` (in
+`commands.ts`) starts editing a theme and opens the section; with no draft,
+the section starts on the theme showing. It used to be a pane plugin;
+saved layouts may still hold `theme-editor` panes, which restoring drops
+(`RETIRED_KINDS` in `src/state/persist.ts`). The id stays in the reserved
+plugin ids.
 
-- **Draft** (`draft.ts`): a copy of the edited theme with undo and redo.
-  Steps from a color drag are merged. While the draft differs from the
-  saved theme it is shown everywhere (`useThemeState.draft`).
+- **Draft** (`draft.ts`): a copy of the edited theme (`sourceId`) with undo
+  and redo. Steps from a color drag are merged. While the draft differs
+  from the saved theme it is shown everywhere (`useThemeState.draft`), so
+  the app behind the dialog's scrim previews it.
   - **Save** writes a custom theme. For a bundled theme it saves as a new
-    one, "Name (custom)", and shows it.
+    one, "Name (custom)", and shows it; the editor then edits the new
+    theme. Saving a kind change lets go of a light or dark pick that no
+    longer fits.
   - **Discard** goes back to the saved theme, and can be undone.
-  - Closing the last editor pane drops the draft; closing with unsaved edits
-    asks first (`closeBlockers`). Picking another theme in the editor, or
-    Edit on another theme, asks before discarding unsaved edits.
-  - One editor pane owns the draft (`claimEditor`); any other theme
-    editor pane says so and offers to show it. Edit reveals the editor
-    wherever it is (`revealPane`).
-  - After "Save as new" the pane edits the new theme. Saving a kind change
-    lets go of a light or dark pick that no longer fits.
-- **Layout:** a header with the theme picker (grouped dark/light),
-  dark/light, the name (editable in place), an unsaved-changes dot,
-  undo/redo, Discard and Save, then four pages:
+  - Picking another theme in the editor's picker, or Edit colors… on
+    another theme, asks before discarding unsaved edits (`mayEditAnother`).
+- **Leaving:** the section registers a leave guard with the dialog
+  (`guardSettingsLeave` in `src/settings/dialogState.ts`, the guard is
+  `mayLeaveEditor`). Going to another section, switching the scope or
+  closing the dialog (button, Escape, the scrim) asks through
+  `changeSettingsDialog`; with unsaved edits a confirmation offers to
+  discard them, and Cancel stays in the editor. Leaving the section or
+  closing the dialog drops the draft (`stopEditing`, from a
+  `useSettingsDialog` subscription in `commands.ts`); a scope switch with
+  nothing unsaved keeps it.
+- **Layout:** a header that stays at the top while the section scrolls,
+  with the theme picker (grouped dark/light), dark/light, the name
+  (editable in place), an unsaved-changes dot, undo/redo, Discard and
+  Save, then four pages:
   - **Palette**: a preview (a terminal using the ANSI, cursor and selection
     colors, a code sample in the syntax colors, UI states), the five base
     colors as tiles (cursor and selection show "auto" until set; their
     picker can derive them again), and the 16 ANSI colors as a normal and
     a bright row.
-  - **Interface**: every other token by group, named in words with the
-    token id beside it, filterable. A row shows the swatch (click for a
-    picker with alpha and a hex field), the value, and a reset to derived
-    when it is set by hand. Text, status and syntax tokens show a contrast
-    chip when their WCAG contrast against the window background is below
-    4.5:1 (body text) or 3:1.
+  - **Interface**: every other token by group (`TokenList`), named in words
+    with the token id beside it, filterable. A row (`TokenRow`) shows the
+    swatch (click for a picker with alpha and a hex field), the value, and
+    a reset to derived (its tooltip shows the derived color) when it is set
+    by hand. Text, status and syntax tokens show a contrast chip when their
+    WCAG contrast against the window background is below 4.5:1 (body text)
+    or 3:1 (`CONTRAST_TARGETS`).
   - **Panes**: a gradient card per built-in key and enabled plugin, with
     top and bottom stops, the angle, and a reset.
   - **Icons**: the theme's icon set or "From settings", with sample files.
-- **Keys:** ⌘Z / ⇧⌘Z undo and redo while focus is outside a text field. ⌘S
-  saves (the pane's `save` action).
+- **Keys:** ⌘Z / ⇧⌘Z undo and redo while focus is in the editor but outside
+  a text field. ⌘S saves while the section shows (a window keydown
+  listener: the dialog has `data-owns-keyboard`, so app shortcuts are off).
+  Escape in the name field reverts it, and Escape with a color picker open
+  closes the picker; neither closes the dialog.
+
+### Token components (`editor/tokens.tsx`)
+
+Props-based and independent of the draft, for anything else that overrides
+tokens (such as a plugin's own colors in its settings section):
+
+- `TokenRow({ token, value, derived?, overridden, onChange, contrastAgainst? })`:
+  one row. `onChange(color)` sets, `onChange(undefined)` goes back to
+  derived. `contrastAgainst` is the background for the contrast chip.
+- `TokenList({ resolved, overrides, onChange, filter?, groups?, derived? })`:
+  every group of `TOKEN_GROUPS` (or `groups`) with headings, as rows;
+  `onChange(token, color | undefined)`, contrast against
+  `resolved.tokens.app`.
+- `TOKEN_LABELS`, `GROUP_LABELS`, `tokenLabel(token)` (ANSI tokens read
+  "Bright red"), `CONTRAST_TARGETS`, `contrastWarning`, `tokenMatches`,
+  `TokenHeading`.

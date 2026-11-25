@@ -3,9 +3,9 @@ import { type ComponentType, useSyncExternalStore } from "react";
 
 /*
  * The settings dialog's sections, registered by the modules that own them
- * (General, Keyboard and Plugins in src/settings, Appearance in src/theme,
- * AI in src/ai). Each plugin also gets a section of its own, generated from the
- * plugin registry (see SettingsDialog).
+ * (General, Keyboard and Plugins in src/settings, Appearance and the theme
+ * editor in src/theme, AI in src/ai). Each plugin also gets a section of
+ * its own, generated from the plugin registry (see SettingsDialog).
  */
 
 export type SettingsSection = {

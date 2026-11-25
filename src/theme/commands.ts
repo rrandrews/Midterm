@@ -1,38 +1,27 @@
-import { Palette } from "lucide-react";
-import { activePaneId, livePane, openPaneBeside, revealPane, updatePaneData } from "../actions";
+import { Palette, SwatchBook } from "lucide-react";
 import { registerCommands } from "../commands/registry";
 import { openPicker } from "../palette/state";
-import { registerPlugin } from "../plugins/registry";
+import { openSettings, useSettingsDialog } from "../settings/dialogState";
 import { registerSettingsSection } from "../settings/sections";
 import { getSettings, useSettings } from "../settings/settings";
-import { selectAllPanes, useAppStore } from "../state/store";
 import { AppearanceSection } from "./AppearanceSection";
-import { mayEditAnother, useThemeDraft } from "./editor/draft";
-import { themeEditorPlugin } from "./editor/plugin";
+import { mayEditAnother, startEditing, stopEditing, useThemeDraft } from "./editor/draft";
+import { ThemeEditor } from "./editor/ThemeEditor";
 import { allThemes, currentTheme, findTheme, selectTheme, useThemeState } from "./state";
 
 /*
- * Theme commands for the palette and menus, the Appearance settings
- * section and the theme editor plugin.
+ * Theme commands for the palette and menus, and the Appearance and Theme
+ * editor settings sections.
  */
 
-/** Opens the theme editor on a theme: in the editor pane already open (wherever it is), else in a new pane beside the active one. */
+/** The theme editor's settings section. */
+export const THEME_EDITOR_SECTION = "theme-editor";
+
+/** Opens Settings → Theme editor on a theme (asking first if the editor has unsaved edits to another one). */
 export async function editTheme(themeId: string): Promise<void> {
-  const editors = selectAllPanes(useAppStore.getState()).filter((pane) => pane.data.kind === "theme-editor");
-  const owner = useThemeDraft.getState().ownerPaneId;
-  const existing = editors.find((pane) => pane.id === owner) ?? editors[0];
-  if (existing) {
-    if (!(await mayEditAnother(themeId))) return;
-    updatePaneData(existing.id, { themeId });
-    revealPane(existing.id);
-    return;
-  }
-  const from = activePaneId();
-  if (!from) return;
-  openPaneBeside("theme-editor", from);
-  // The new pane is the active one now.
-  const created = activePaneId();
-  if (created && livePane(created)?.data.kind === "theme-editor") updatePaneData(created, { themeId });
+  if (!findTheme(themeId) || !(await mayEditAnother(themeId))) return;
+  startEditing(themeId);
+  openSettings(THEME_EDITOR_SECTION);
 }
 
 /** "Theme: Select…": a picker over the themes, previewing each as it is highlighted. */
@@ -75,7 +64,20 @@ export function installThemeCommands(): void {
     component: AppearanceSection,
     keywords: ["theme", "dark", "light", "font", "size", "accent", "color", "icons", "system"],
   });
-  registerPlugin(themeEditorPlugin);
+  registerSettingsSection({
+    id: THEME_EDITOR_SECTION,
+    label: "Theme editor",
+    order: 11,
+    icon: SwatchBook,
+    component: ThemeEditor,
+    // Custom themes are global (themes.json), not per-workspace settings.
+    scope: "shared",
+    keywords: ["theme", "colors", "palette", "ansi", "tokens", "custom theme", "edit", "pane backgrounds"],
+  });
+  // The draft lives while the editor shows: leaving it (another section, or closing) drops it.
+  useSettingsDialog.subscribe(({ open, section }) => {
+    if ((!open || section !== THEME_EDITOR_SECTION) && useThemeDraft.getState().sourceId) stopEditing();
+  });
   registerCommands([
     { id: "theme.select", title: "Theme: Select…", category: "View", run: pickTheme, menu: "View" },
     { id: "theme.editCurrent", title: "Theme: Edit current", category: "View", run: () => void editTheme(currentTheme().id) },

@@ -25,6 +25,7 @@ import { suggestNow, useAiSuggestions } from "../ai/engine";
 import { runCommand } from "../commands/registry";
 import { bundledTheme } from "../theme/bundled";
 import { editTheme } from "../theme/commands";
+import { closeSettings } from "../settings/dialogState";
 import { svgDataUrl, sanitizeSvg } from "../icons/sanitize";
 import { loadIconSet } from "../icons/state";
 
@@ -403,7 +404,7 @@ async function nestedShellCheck(checks: Check[], session: TerminalSession): Prom
   });
 }
 
-/** Switching theme reaches CSS variables, a live terminal's palette, and the editor pane plugin opens. */
+/** Switching theme reaches CSS variables, a live terminal's palette, and Settings → Theme editor opens. */
 async function themeChecks(checks: Check[]): Promise<void> {
   const paneId = listPanes(selectActiveTab(useAppStore.getState()).layout)[0]?.id;
   const session = paneId ? peekSession(paneId) : undefined;
@@ -418,11 +419,10 @@ async function themeChecks(checks: Check[]): Promise<void> {
     ok: !!light && after.css === light.background && after.red === light.ansi.red && after.scheme === "light" && before.css !== after.css,
     detail: { before, after },
   });
-  editTheme("solarized-light");
-  const editor = await waitFor(() => document.querySelector('[data-pane-kind="theme-editor"] [data-base="foreground"]') !== null, 3000);
-  checks.push({ name: "themes: the theme editor pane opens", ok: editor });
-  const editorPane = (document.querySelector('[data-pane-kind="theme-editor"]') as HTMLElement | null)?.dataset.paneId;
-  if (editorPane) closePaneNow(editorPane);
+  void editTheme("solarized-light");
+  const editor = await waitFor(() => document.querySelector('.settings-dialog [data-theme-editor] [data-base="foreground"]') !== null, 3000);
+  checks.push({ name: "themes: the theme editor opens in Settings", ok: editor });
+  closeSettings();
   useSettings.getState().updateSettings({ theme: "midterm-dark" });
   await sleep(100);
 }

@@ -531,7 +531,7 @@ plugins (M8): the example plugin imported and loaded through `plugin://`,
 its pane opened from a generated command, its stylesheet, skills (code,
 `SKILL.md`, built in, a refused write, invalid input), the placeholder when
 disabled, and removal; themes (M9): switching theme updates a CSS variable
-and a live terminal's palette, and the theme editor pane opens; AI (M10,
+and a live terminal's palette, and Settings → Theme editor opens; AI (M10,
 with `&aistub=PORT` and `bun scripts/ai-stub.ts PORT` running): see
 [ai.md](ai.md#self-test).
 

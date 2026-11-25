@@ -11,7 +11,6 @@ import { BUTTON, Block, CommitField, Group, ICON_BUTTON, NumberField, OverrideMa
 import { useOverride } from "../settings/scope";
 import { activeSettings } from "../settings/settings";
 import { ACCENT_PRESETS, FONT_SIZE_RANGE, isHexColor } from "../settings/schema";
-import { closeSettings } from "../settings/SettingsDialog";
 import { useScopedActions, useScopedSettings, useSettingsScope } from "../settings/scope";
 import { BUNDLED_THEMES } from "./bundled";
 import { editTheme } from "./commands";
@@ -152,14 +151,7 @@ function ThemeCard({
           <MoreHorizontal size={12} />
         </MenuTrigger>
         <MenuContent className="min-w-[168px]" onCloseAutoFocus={stayInDialog}>
-          <MenuItem
-            onSelect={() => {
-              closeSettings();
-              void editTheme(theme.id);
-            }}
-          >
-            Edit colors…
-          </MenuItem>
+          <MenuItem onSelect={() => void editTheme(theme.id)}>Edit colors…</MenuItem>
           <MenuItem onSelect={() => duplicateTheme(theme.id)}>Duplicate</MenuItem>
           {!bundled && <MenuItem onSelect={() => setRenaming(true)}>Rename</MenuItem>}
           <MenuItem onSelect={() => run(exportThemeInteractively(theme.id))}>Export…</MenuItem>

@@ -177,6 +177,8 @@ Plugin entries live in `settings.plugins[id]`:
 The dialog's sections come from a registry (`registerSettingsSection` in
 `src/settings/sections.ts`), plus one section per plugin: enable/disable,
 remove (imported plugins), its fields, its skills with a switch each.
+A section with unsaved state can register a leave guard
+(`guardSettingsLeave`) that is asked before the dialog moves away from it.
 Settings → Plugins lists every plugin and has Import folder…, Import .zip…,
 Open plugins folder and Rescan.
 

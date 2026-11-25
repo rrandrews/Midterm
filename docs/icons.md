@@ -169,7 +169,7 @@ theme at it. Older builds ignore the key, so the format number stays 1.
 - Settings → Appearance → **File icons**: the set, Import… (Midterm icon set
   JSON), and Export… / Delete for a custom set. The hint says when the
   current theme overrides the choice.
-- Theme editor → **File icons**: "From settings" or a set, with sample
+- Settings → Theme editor → **Icons**: "From settings" or a set, with sample
   icons.
 
 ## Tests

@@ -1,27 +1,25 @@
-import { Redo2, RotateCcw, Search, TriangleAlert, Undo2 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { revealPane } from "../../actions";
-import { registerPaneActions } from "../../commands/registry";
+import { Redo2, RotateCcw, Search, Undo2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ColorPopover, Swatch } from "../../components/ui/ColorPicker";
+import { isConfirming } from "../../components/ui/ConfirmDialog";
 import { Dot, Select } from "../../components/ui/Select";
 import { Tip } from "../../components/ui/Tooltip";
 import { FileIcon } from "../../icons/FileIcon";
 import { activeIconSetId, allIconSets, knownIconSet, loadIconSet, useIconState } from "../../icons/state";
-import { registerPaneFocuser } from "../../layout/dock";
 import { enabledPlugins, getPlugin } from "../../plugins/registry";
 import { BUTTON, BUTTON_PRIMARY, FIELD, ICON_BUTTON, NumberField, Segmented } from "../../settings/controls";
-import { contrastRatio, resolveTheme } from "../resolve";
-import { allThemes, findTheme, isBundled, useThemeState } from "../state";
-import { type AnsiName, BUILTIN_PANES, type ResolvedTheme, TOKEN_GROUPS, type Theme, type TokenName } from "../types";
+import { guardSettingsLeave } from "../../settings/dialogState";
+import { resolveTheme } from "../resolve";
+import { allThemes, currentTheme, isBundled, useThemeState } from "../state";
+import { type AnsiName, BUILTIN_PANES, type ResolvedTheme, TOKEN_GROUPS, type Theme, type TokenGroup, type TokenName } from "../types";
 import {
   type BaseField,
-  claimEditor,
   discardDraft,
   editDraft,
   isDraftDirty,
   mayEditAnother,
+  mayLeaveEditor,
   redo,
-  releaseEditor,
   renameDraft,
   saveDraft,
   setAnsi,
@@ -34,96 +32,18 @@ import {
   undo,
   useThemeDraft,
 } from "./draft";
+import { TokenHeading as Heading, TokenList } from "./tokens";
 
 /*
- * The theme editor, a pane (the built-in `theme-editor` plugin) so edits
- * preview on the real terminals and files around it. Edits go to a draft
- * (./draft.ts) with undo and redo, shown live until saved or discarded.
+ * The theme editor, Settings → Theme editor. Edits go to a draft
+ * (./draft.ts) with undo and redo, shown live on the app behind the
+ * dialog until saved or discarded. Leaving the section with unsaved edits
+ * asks first (the dialog's leave guard); leaving drops the draft.
  *
  * Four pages: Palette (the base colors and the 16 ANSI colors, with a
  * preview), Interface (every derived token, overridable), Panes (the pane
  * background gradients) and Icons (the theme's file icon set).
  */
-
-/** Text tokens and the minimum contrast they should have against the window background (WCAG). */
-const CONTRAST_TARGETS: Partial<Record<TokenName, number>> = {
-  "fg-bright": 4.5,
-  fg: 4.5,
-  "fg-soft": 4.5,
-  "fg-mid": 4.5,
-  "fg-muted": 3,
-  "fg-dim": 3,
-  ok: 3,
-  warn: 3,
-  err: 3,
-  info: 3,
-  keyword: 3,
-  string: 3,
-  function: 3,
-  type: 3,
-  comment: 3,
-  "terminal-fg": 4.5,
-};
-
-const GROUP_LABELS: Record<string, string> = {
-  surfaces: "Surfaces",
-  lines: "Lines",
-  text: "Text",
-  accent: "Accent",
-  states: "States",
-  status: "Status",
-  syntax: "Syntax",
-  terminal: "Terminal",
-  tab: "Active tab",
-};
-
-/** What each token colors, in words. */
-const TOKEN_LABELS: Partial<Record<TokenName, string>> = {
-  app: "Window",
-  field: "Inputs",
-  popover: "Menus and dialogs",
-  raised: "Raised controls",
-  "terminal-solid": "Solid terminal background",
-  line: "Hairlines",
-  "line-menu": "Menu separators",
-  "line-strong": "Outlines",
-  "line-block": "Between blocks",
-  "line-input": "Above the block input",
-  "fg-bright": "Emphasized",
-  fg: "Default",
-  "fg-soft": "Soft",
-  "fg-mid": "Secondary",
-  "fg-muted": "Muted",
-  "fg-dim": "Hints",
-  "fg-faint": "Faint",
-  accent: "Accent",
-  "accent-soft": "Accent tint",
-  "accent-fg": "Text on accent tint",
-  hover: "Hover",
-  selected: "Selected",
-  scrim: "Modal backdrop",
-  shadow: "Shadow",
-  ok: "Success",
-  warn: "Warning",
-  err: "Error",
-  info: "Info",
-  keyword: "Keywords",
-  comment: "Comments",
-  string: "Strings",
-  function: "Functions",
-  type: "Types and numbers",
-  punctuation: "Punctuation",
-  "terminal-bg": "Background",
-  "terminal-fg": "Text",
-  "terminal-cursor": "Cursor",
-  "terminal-cursor-accent": "Text under the cursor",
-  "terminal-selection": "Selection",
-  "terminal-selection-inactive": "Unfocused selection",
-  "terminal-match": "Find matches",
-  "terminal-match-active": "Current find match",
-  "tab-active-from": "Top",
-  "tab-active-to": "Bottom",
-};
 
 const PANE_LABELS: Record<string, string> = {
   default: "Default",
@@ -144,16 +64,6 @@ const PAGES: { value: Page; label: string }[] = [
   { value: "panes", label: "Panes" },
   { value: "icons", label: "Icons" },
 ];
-
-/** A page's heading. */
-function Heading({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
-  return (
-    <div className="flex items-baseline gap-2 px-0.5 pb-2">
-      <h3 className="text-meta font-semibold text-fg-mid">{children}</h3>
-      {aside && <span className="text-micro text-fg-faint">{aside}</span>}
-    </div>
-  );
-}
 
 /** A large color tile for a base color. */
 function BaseTile({
@@ -311,72 +221,23 @@ function AnsiRow({ row, draft }: { row: "normal" | "bright"; draft: Theme }) {
   );
 }
 
-function TokenRow({
-  token,
-  value,
-  overridden,
-  warning,
-}: {
-  token: TokenName;
-  value: string;
-  overridden: boolean;
-  warning?: { ratio: number; target: number };
-}) {
-  const label = TOKEN_LABELS[token] ?? token;
-  return (
-    <div data-token={token} className="group/token flex h-8 items-center gap-2.5 px-2.5">
-      <ColorPopover label={label} value={value} onChange={(color) => setToken(token, color)} alpha side="right" align="start" onReset={overridden ? () => setToken(token, undefined) : undefined} resetLabel="Back to derived">
-        <button
-          type="button"
-          aria-label={`${label}: ${value}`}
-          className="flex rounded-[5px] outline-none focus-visible:shadow-[0_0_0_2px_var(--color-app),0_0_0_3px_var(--color-accent)]"
-        >
-          <Swatch color={value} className="size-[18px] rounded-[5px]" />
-        </button>
-      </ColorPopover>
-      <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span className={`truncate text-ui ${overridden ? "text-fg-bright" : "text-fg-soft"}`}>{label}</span>
-        <span className="truncate font-mono text-micro text-fg-faint">{token}</span>
-      </span>
-      {warning && (
-        <Tip content={`Contrast ${warning.ratio.toFixed(1)}:1 against the window; aim for ${warning.target}:1.`}>
-          <span className="flex flex-none items-center gap-1 rounded-[4px] bg-warn/12 px-1.5 py-px font-mono text-micro text-warn">
-            <TriangleAlert size={10} />
-            {warning.ratio.toFixed(1)}
-          </span>
-        </Tip>
-      )}
-      <span className="w-[68px] flex-none text-right font-mono text-micro text-fg-faint">{value}</span>
-      {overridden ? (
-        <button
-          type="button"
-          aria-label={`Reset ${token}`}
-          title="Back to derived"
-          onClick={() => setToken(token, undefined)}
-          className={`${ICON_BUTTON} size-5!`}
-        >
-          <RotateCcw size={11} />
-        </button>
-      ) : (
-        <span className="size-5 flex-none" />
-      )}
-    </div>
-  );
-}
+/** Every group but the ANSI colors, which the Palette page has. */
+const INTERFACE_GROUPS = (Object.keys(TOKEN_GROUPS) as TokenGroup[]).filter((group) => group !== "ansi");
 
-function InterfacePage({ draft, t }: { draft: Theme; t: ResolvedTheme["tokens"] }) {
+function InterfacePage({ draft, resolved }: { draft: Theme; resolved: ResolvedTheme }) {
   const [filter, setFilter] = useState("");
   const overrides = draft.overrides ?? {};
-  const query = filter.trim().toLowerCase();
-  const matches = (token: TokenName) => !query || token.includes(query) || (TOKEN_LABELS[token] ?? "").toLowerCase().includes(query);
-  const warningFor = (token: TokenName) => {
-    const target = CONTRAST_TARGETS[token];
-    if (!target) return undefined;
-    const ratio = contrastRatio(t[token], t.app);
-    return ratio < target ? { ratio, target } : undefined;
-  };
-  const groups = Object.entries(TOKEN_GROUPS).filter(([group]) => group !== "ansi");
   const count = Object.keys(overrides).length;
+  // What each overridden token would be without its override, for the reset.
+  const derived = useMemo(() => {
+    const values: Partial<Record<TokenName, string>> = {};
+    for (const token of Object.keys(draft.overrides ?? {}) as TokenName[]) {
+      const rest = { ...draft.overrides };
+      delete rest[token];
+      values[token] = resolveTheme({ ...draft, overrides: rest }).tokens[token];
+    }
+    return values;
+  }, [draft]);
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -388,25 +249,16 @@ function InterfacePage({ draft, t }: { draft: Theme; t: ResolvedTheme["tokens"] 
             spellCheck={false}
             className={`${FIELD} w-full pl-7`}
             value={filter}
+            data-escape-local={filter ? "" : undefined}
             onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && filter) setFilter("");
+            }}
           />
         </div>
         <span className="flex-none text-micro text-fg-faint">{count ? `${count} set by hand` : "All derived"}</span>
       </div>
-      {groups.map(([group, tokens]) => {
-        const shown = (tokens as readonly TokenName[]).filter(matches);
-        if (!shown.length) return null;
-        return (
-          <section key={group}>
-            <Heading>{GROUP_LABELS[group] ?? group}</Heading>
-            <div className="settings-group overflow-hidden rounded-lg bg-fg-bright/[0.025] shadow-[inset_0_0_0_1px_var(--color-line-strong)] [&>*+*]:border-t [&>*+*]:border-line">
-              {shown.map((token) => (
-                <TokenRow key={token} token={token} value={t[token]} overridden={token in overrides} warning={warningFor(token)} />
-              ))}
-            </div>
-          </section>
-        );
-      })}
+      <TokenList resolved={resolved} overrides={overrides} derived={derived} groups={INTERFACE_GROUPS} filter={filter} onChange={setToken} />
     </div>
   );
 }
@@ -530,74 +382,42 @@ function IconsPage({ theme, t }: { theme: Theme; t: ResolvedTheme["tokens"] }) {
   );
 }
 
-export function ThemeEditorPane({
-  paneId,
-  themeId,
-  onPick,
-  onSaved,
-}: {
-  paneId: string;
-  themeId?: string;
-  /** Another theme was picked (after confirming a dirty draft away). */
-  onPick: (id: string) => void;
-  /** The draft was saved as `id` (a bundled theme saves as a new one). */
-  onSaved: (id: string) => void;
-}) {
+/** Settings → Theme editor. Edits the draft's theme; with none, starts on the theme showing. */
+export function ThemeEditor() {
   const rootRef = useRef<HTMLDivElement>(null);
-  const { draft, sourceId, past, future, ownerPaneId } = useThemeDraft();
+  const { draft, sourceId, past, future } = useThemeDraft();
   useThemeState((state) => state.custom);
   const [page, setPage] = useState<Page>("palette");
-  const owner = ownerPaneId === paneId;
 
-  // One editor pane owns the draft; another one points to it.
   useEffect(() => {
-    if (ownerPaneId === null) claimEditor(paneId);
-  }, [ownerPaneId, paneId]);
-  useEffect(() => () => releaseEditor(paneId), [paneId]);
-
-  // The pane's theme, from its data: loaded when the data names another
-  // one (its picker and the Edit command confirm a dirty draft first).
-  const requested = useRef<string | undefined>(undefined);
+    if (!useThemeDraft.getState().draft) startEditing(currentTheme().id);
+  }, []);
+  // Leaving the section (another section, scope, or closing) with unsaved edits asks first.
+  useEffect(() => guardSettingsLeave(mayLeaveEditor), []);
+  // Focus the editor so its keys work at once, unless the settings search is being typed in.
   useEffect(() => {
-    if (!owner) {
-      requested.current = undefined;
-      return;
-    }
-    if (themeId === requested.current) return;
-    requested.current = themeId;
-    if (themeId && findTheme(themeId) && themeId !== useThemeDraft.getState().sourceId) startEditing(themeId);
-  }, [owner, themeId]);
-
-  const save = () => {
-    const saved = saveDraft();
-    if (saved) {
-      requested.current = saved.id;
-      onSaved(saved.id);
-    }
-  };
-  const saveRef = useRef(save);
-  saveRef.current = save;
-
-  useEffect(() => registerPaneFocuser(paneId, () => rootRef.current?.focus({ preventScroll: true })), [paneId]);
-  useEffect(() => registerPaneActions(paneId, { save: () => saveRef.current(), undo, redo }), [paneId]);
+    if (!(document.activeElement instanceof HTMLInputElement)) rootRef.current?.focus({ preventScroll: true });
+  }, []);
+  // ⌘S saves while the section shows. The dialog owns the keyboard (app shortcuts are off), so this is local.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "s" || isConfirming()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+      // A name being typed commits on blur, before saving.
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement && rootRef.current?.contains(active)) active.blur();
+      if (isDraftDirty()) saveDraft();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const resolved = useMemo(() => (draft ? resolveTheme(draft) : null), [draft]);
-  if (!owner) {
-    return (
-      <div ref={rootRef} tabIndex={-1} className="flex h-full flex-col items-center justify-center gap-2 text-meta text-fg-dim outline-none">
-        <span>The theme editor is open in another pane.</span>
-        {ownerPaneId && (
-          <button type="button" className={BUTTON} onClick={() => revealPane(ownerPaneId)}>
-            Show it
-          </button>
-        )}
-      </div>
-    );
-  }
-
   if (!draft || !resolved) {
     return (
-      <div ref={rootRef} tabIndex={-1} className="flex h-full items-center justify-center text-meta text-fg-dim outline-none">
+      <div ref={rootRef} tabIndex={-1} className="flex h-40 items-center justify-center text-meta text-fg-dim outline-none">
         Choose a theme to edit.
       </div>
     );
@@ -607,22 +427,24 @@ export function ThemeEditorPane({
   const bundled = !!sourceId && isBundled(sourceId);
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: ⌘Z / ⇧⌘Z from anywhere inside the editor
     <div
       ref={rootRef}
       tabIndex={-1}
-      className="flex h-full flex-col outline-none"
+      data-theme-editor=""
+      className="flex flex-col outline-none"
       onKeyDown={(event) => {
         const mod = event.metaKey || event.ctrlKey;
         if (!mod || event.key.toLowerCase() !== "z") return;
-        if ((event.target as HTMLElement).closest("input")) return;
+        if ((event.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
         event.preventDefault();
         event.stopPropagation();
         if (event.shiftKey) redo();
         else undo();
       }}
     >
-      <header className="flex flex-none flex-col gap-2.5 border-b border-line px-4 pt-3">
-        <div className="flex items-center gap-2 pr-14">
+      <header className="sticky top-0 z-10 -mx-6 flex flex-col gap-2.5 border-b border-line bg-popover px-6 pt-2">
+        <div className="flex items-center gap-2">
           <Select
             label="Theme to edit"
             className="w-auto! max-w-[220px] min-w-[150px]"
@@ -637,7 +459,7 @@ export function ThemeEditorPane({
                 detail: isBundled(theme.id) ? undefined : "custom",
               };
             })}
-            onChange={(id) => void mayEditAnother(id).then((ok) => ok && onPick(id))}
+            onChange={(id) => void mayEditAnother(id).then((ok) => ok && startEditing(id))}
           />
           <Segmented
             label="Light or dark"
@@ -662,8 +484,8 @@ export function ThemeEditorPane({
           <button type="button" className={BUTTON} disabled={!dirty} onClick={discardDraft}>
             Discard
           </button>
-          <Tip content={bundled ? "Built-in themes are saved as a new copy." : undefined}>
-            <button type="button" className={BUTTON_PRIMARY} disabled={!dirty} onClick={save}>
+          <Tip content={bundled ? "Built-in themes are saved as a new copy." : "Save (⌘S)"}>
+            <button type="button" className={BUTTON_PRIMARY} disabled={!dirty} onClick={() => saveDraft()}>
               {bundled ? "Save as new" : "Save"}
             </button>
           </Tip>
@@ -683,9 +505,9 @@ export function ThemeEditorPane({
           ))}
         </div>
       </header>
-      <div role="tabpanel" className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-6">
+      <div role="tabpanel" className="pt-4">
         {page === "palette" && <PalettePage draft={draft} t={t} />}
-        {page === "interface" && <InterfacePage draft={draft} t={t} />}
+        {page === "interface" && <InterfacePage draft={draft} resolved={resolved} />}
         {page === "panes" && <PanesPage draft={draft} resolved={resolved} />}
         {page === "icons" && <IconsPage theme={draft} t={t} />}
       </div>
@@ -703,6 +525,8 @@ function NameField({ name }: { name: string }) {
     <input
       aria-label="Theme name"
       spellCheck={false}
+      // Escape reverts the name rather than closing the settings.
+      data-escape-local=""
       value={text}
       onChange={(event) => setText(event.target.value)}
       onBlur={() => {

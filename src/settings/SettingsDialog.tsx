@@ -33,7 +33,7 @@ import type { Workspace } from "../state/types";
 import { EnvironmentSection } from "../workspaces/EnvironmentSection";
 import { WorkspaceBadge } from "../workspaces/WorkspaceBadge";
 import { WorkspaceSection, overrideEntries } from "../workspaces/WorkspaceSection";
-import { openSettings, setSettingsScope, useSettingsDialog } from "./dialogState";
+import { changeSettingsDialog, openSettings, setSettingsScope, useSettingsDialog } from "./dialogState";
 import { SettingsScopeProvider } from "./scope";
 import { type SettingsSection, registerSettingsSection, useSettingsSections } from "./sections";
 import { DEFAULT_SCOPE, useSettings, workspaceSettings } from "./settings";
@@ -261,17 +261,15 @@ export function SettingsDialog() {
   const q = query.trim().toLowerCase();
   const shownSections = q ? sections.filter((item) => matches(q, item.label, ...(item.keywords ?? []))) : sections;
   const shownPlugins = q ? plugins.filter((entry) => pluginMatches(q, entry)) : plugins;
-  const go = (next: string) => {
-    useSettingsDialog.setState({ section: next });
-    setScrolled(false);
-  };
+  // The shown section may ask first (the theme editor with unsaved edits).
+  const go = (next: string) => void changeSettingsDialog({ section: next }).then((ok) => ok && setScrolled(false));
 
   return (
     <Dialog.Root
       open={open}
       onOpenChange={(next) => {
-        useSettingsDialog.setState({ open: next });
-        if (!next) setQuery("");
+        if (next) useSettingsDialog.setState({ open: true });
+        else void changeSettingsDialog({ open: false }).then((closed) => closed && setQuery(""));
       }}
     >
       <Dialog.Portal>
@@ -291,6 +289,8 @@ export function SettingsDialog() {
             }
             // A field that handles Escape itself (a combobox closing its list or reverting).
             if (document.activeElement?.hasAttribute("data-escape-local")) event.preventDefault();
+            // An open color picker closes on its own; the dialog stays.
+            if (document.querySelector(".color-popover")) event.preventDefault();
           }}
           className="settings-dialog fixed top-1/2 left-1/2 z-50 flex h-[min(640px,calc(100vh-64px))] w-[min(860px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover shadow-menu outline-none"
         >

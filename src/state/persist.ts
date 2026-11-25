@@ -15,7 +15,8 @@ import type { Layout, PaneData, Tab, Workspace } from "./types";
  * Pane data belongs to the plugin of the pane's kind, which validates it
  * (`validatePaneData`, installed by the plugin layer). A pane whose plugin
  * is missing (not imported yet, removed) or disabled is kept with its data
- * as saved, and shows a placeholder until its plugin is back.
+ * as saved, and shows a placeholder until its plugin is back. Kinds that
+ * are no longer panes at all (`RETIRED_KINDS`) are dropped.
  */
 
 /** Bump when the saved shape changes incompatibly, and migrate in `restoreState`. */
@@ -73,8 +74,15 @@ export function setPaneDataValidator(validator: PaneDataValidator): void {
   validatePaneData = validator;
 }
 
+/**
+ * Pane kinds that are gone for good, dropped on restore rather than kept
+ * for a plugin that will never come back. `theme-editor`: the theme
+ * editor moved into Settings.
+ */
+const RETIRED_KINDS: ReadonlySet<string> = new Set(["theme-editor"]);
+
 function restorePaneData(data: unknown): PaneData | null {
-  if (!isRecord(data) || typeof data.kind !== "string" || !KIND.test(data.kind)) return null;
+  if (!isRecord(data) || typeof data.kind !== "string" || !KIND.test(data.kind) || RETIRED_KINDS.has(data.kind)) return null;
   const { kind, ...fields } = data;
   let valid: Omit<PaneData, "kind"> | null | undefined;
   try {
@@ -113,7 +121,8 @@ function restoreTab(saved: unknown): Tab {
     ...createTab({ title, layout }),
     id: nonEmptyString(saved.id) ? saved.id : createTab().id,
     titleLocked: saved.titleLocked === true || undefined,
-    activePaneId: nonEmptyString(saved.activePaneId) ? saved.activePaneId : undefined,
+    // A dropped pane can't be the active one.
+    activePaneId: nonEmptyString(saved.activePaneId) && listPanes(layout).some((pane) => pane.id === saved.activePaneId) ? saved.activePaneId : undefined,
   };
 }
 

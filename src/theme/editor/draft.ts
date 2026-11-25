@@ -6,16 +6,15 @@ import { findTheme, freeThemeId, freeThemeName, isBundled, saveTheme, selectThem
 import type { AnsiName, PaneBackground, Theme, TokenName } from "../types";
 
 /*
- * The theme editor's draft: a copy of the theme being edited, with undo
- * and redo. While it differs from the saved theme it is shown everywhere
- * (`useThemeState.draft`), so edits preview on real terminals and files.
+ * The theme editor's draft (Settings → Theme editor): a copy of the theme
+ * being edited (`sourceId`), with undo and redo. While it differs from the
+ * saved theme it is shown everywhere (`useThemeState.draft`), so edits
+ * preview on the real terminals and files behind the settings dialog.
  * Saving writes a custom theme (a bundled theme is saved as a new one);
  * discarding goes back to the saved theme.
  */
 
 type DraftState = {
-  /** The theme editor pane that owns the draft; other editor panes point to it. */
-  ownerPaneId: string | null;
   /** Id of the theme being edited; null when nothing is. */
   sourceId: string | null;
   draft: Theme | null;
@@ -25,18 +24,7 @@ type DraftState = {
 
 const HISTORY_LIMIT = 200;
 
-export const useThemeDraft = create<DraftState>()(() => ({ ownerPaneId: null, sourceId: null, draft: null, past: [], future: [] }));
-
-/** Makes `paneId` the editor pane if there is none. Returns whether it is the owner. */
-export function claimEditor(paneId: string): boolean {
-  const { ownerPaneId } = useThemeDraft.getState();
-  if (ownerPaneId === null) useThemeDraft.setState({ ownerPaneId: paneId });
-  return useThemeDraft.getState().ownerPaneId === paneId;
-}
-
-export function releaseEditor(paneId: string): void {
-  if (useThemeDraft.getState().ownerPaneId === paneId) useThemeDraft.setState({ ownerPaneId: null });
-}
+export const useThemeDraft = create<DraftState>()(() => ({ sourceId: null, draft: null, past: [], future: [] }));
 
 const sameTheme = (a: Theme | null | undefined, b: Theme | null | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -66,6 +54,24 @@ export async function mayEditAnother(themeId: string): Promise<boolean> {
   });
 }
 
+/**
+ * Asks before leaving the editor with unsaved edits. True at once when
+ * there are none; otherwise resolves to whether the user chose to discard
+ * them (the draft is dropped then).
+ */
+export function mayLeaveEditor(): true | Promise<boolean> {
+  const state = useThemeDraft.getState();
+  if (!isDraftDirty(state)) return true;
+  return confirm({
+    title: "Discard theme changes?",
+    message: `“${state.draft?.name ?? "The theme"}” has unsaved changes. Leaving the theme editor discards them.`,
+    action: "Discard",
+  }).then((ok) => {
+    if (ok) stopEditing();
+    return ok;
+  });
+}
+
 /** Starts editing a theme (keeping a draft already open for it). */
 export function startEditing(themeId: string): void {
   const state = useThemeDraft.getState();
@@ -78,7 +84,7 @@ export function startEditing(themeId: string): void {
 
 /** Stops editing, dropping unsaved edits. */
 export function stopEditing(): void {
-  useThemeDraft.setState({ ownerPaneId: null, sourceId: null, draft: null, past: [], future: [] });
+  useThemeDraft.setState({ sourceId: null, draft: null, past: [], future: [] });
   publish();
 }
 
@@ -176,7 +182,10 @@ export function setIconSet(id: string | undefined): void {
 
 export function renameDraft(name: string): void {
   const trimmed = name.trim();
-  if (trimmed) editDraft((theme) => void (theme.name = trimmed));
+  if (!trimmed) return;
+  editDraft((theme) => {
+    theme.name = trimmed;
+  });
 }
 
 /**
