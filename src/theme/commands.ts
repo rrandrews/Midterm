@@ -5,7 +5,8 @@ import { openSettings, useSettingsDialog } from "../settings/dialogState";
 import { registerSettingsSection } from "../settings/sections";
 import { getSettings, useSettings } from "../settings/settings";
 import { AppearanceSection } from "./AppearanceSection";
-import { mayEditAnother, startEditing, stopEditing, useThemeDraft } from "./editor/draft";
+import { registerAppCloseBlockers } from "../closing";
+import { isDraftDirty, mayEditAnother, startEditing, stopEditing, useThemeDraft } from "./editor/draft";
 import { ThemeEditor } from "./editor/ThemeEditor";
 import { allThemes, currentTheme, findTheme, selectTheme, useThemeState } from "./state";
 
@@ -73,6 +74,11 @@ export function installThemeCommands(): void {
     // Custom themes are global (themes.json), not per-workspace settings.
     scope: "shared",
     keywords: ["theme", "colors", "palette", "ansi", "tokens", "custom theme", "edit", "pane backgrounds"],
+  });
+  // Quitting or closing the window with unsaved theme edits asks first (and keeps them on Cancel).
+  registerAppCloseBlockers(() => {
+    const { draft } = useThemeDraft.getState();
+    return draft && isDraftDirty() ? [{ type: "other", name: `The theme “${draft.name}” has unsaved changes` }] : [];
   });
   // The draft lives while the editor shows: leaving it (another section, or closing) drops it.
   useSettingsDialog.subscribe(({ open, section }) => {

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { confirm } from "../../components/ui/ConfirmDialog";
-import { getSettings, useSettings } from "../../settings/settings";
+import { type SettingsScope, getSettings, settingsFor, useSettings } from "../../settings/settings";
 import { DEFAULT_LIGHT_THEME_ID, DEFAULT_THEME_ID } from "../bundled";
 import { findTheme, freeThemeId, freeThemeName, isBundled, saveTheme, selectTheme, selectedThemeId, useThemeState } from "../state";
 import type { AnsiName, PaneBackground, Theme, TokenName } from "../types";
@@ -193,27 +193,29 @@ export function renameDraft(name: string): void {
  * theme, as a new custom theme. The saved theme is shown if the edited one
  * was. Returns the saved theme.
  */
-export function saveDraft(): Theme | null {
+export function saveDraft(scope?: SettingsScope): Theme | null {
   const { draft, sourceId } = useThemeDraft.getState();
   if (!draft || !sourceId) return null;
-  const wasShowing = selectedThemeId() === sourceId;
+  // The theme itself is shared; which theme shows is the settings scope's (the one Settings is editing).
+  const settings = scope ? settingsFor(scope) : getSettings();
+  const wasShowing = selectedThemeId(settings) === sourceId;
   const saved = isBundled(sourceId)
     ? saveTheme({ ...draft, id: freeThemeId(`${draft.id}-custom`), name: freeThemeName(`${draft.name} (custom)`), author: undefined, source: undefined, license: undefined })
     : saveTheme(draft);
   useThemeDraft.setState({ sourceId: saved.id, draft: structuredClone(saved), past: [], future: [] });
-  if (wasShowing || isBundled(sourceId)) selectTheme(saved.id);
-  repairSystemPicks(saved);
+  if (wasShowing || isBundled(sourceId)) selectTheme(saved.id, scope);
+  repairSystemPicks(saved, scope);
   publish();
   return saved;
 }
 
 /** A theme whose kind changed may no longer be the light (or dark) pick for following the system. */
-function repairSystemPicks(theme: Theme): void {
-  const { themeLight, themeDark } = getSettings();
+function repairSystemPicks(theme: Theme, scope?: SettingsScope): void {
+  const { themeLight, themeDark } = scope ? settingsFor(scope) : getSettings();
   const patch: { themeLight?: string; themeDark?: string } = {};
   if (themeDark === theme.id && theme.kind !== "dark") patch.themeDark = DEFAULT_THEME_ID;
   if (themeLight === theme.id && theme.kind !== "light") patch.themeLight = DEFAULT_LIGHT_THEME_ID;
-  if (Object.keys(patch).length) useSettings.getState().updateSettings(patch);
+  if (Object.keys(patch).length) useSettings.getState().updateSettings(patch, scope);
 }
 
 /** Back to the saved theme (undoable). */

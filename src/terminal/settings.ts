@@ -177,8 +177,12 @@ function kindOfPane(paneId: string): string | undefined {
 
 /** The config for a pane's terminal: its kind's own theme (see src/theme/paneTheme.ts), else the app's. */
 export function terminalConfig(paneId?: string): TerminalConfig {
+  return terminalConfigForKind(paneId ? kindOfPane(paneId) : undefined);
+}
+
+/** The config for terminals of a pane kind (the app's theme without one). */
+export function terminalConfigForKind(kind: string | undefined): TerminalConfig {
   const { fontFamily, fontSize } = getSettings();
-  const kind = paneId ? kindOfPane(paneId) : undefined;
   const theme = (kind && paneResolvedTheme(kind)) || appliedTheme();
   return {
     ...terminalSettings(),

@@ -238,6 +238,7 @@ export class TerminalSession {
       if (key === "theme" || current[key] !== value) (this.term.options as Record<string, unknown>)[key] = value;
     }
     this.host.classList.toggle("is-solid", this.solid);
+    for (const listener of this.themeListeners) listener();
     // The WebGL renderer picks up transparency when it is created.
     if (transparencyChanged && this.webgl) {
       this.disableWebgl();
@@ -474,6 +475,14 @@ export class TerminalSession {
   get theme(): ITheme {
     return this.term.options.theme ?? {};
   }
+
+  private readonly themeListeners = new Set<() => void>();
+
+  /** Calls `listener` when the session's colors change (its pane kind may have a theme of its own). Returns an unsubscribe function. */
+  onThemeChange = (listener: () => void): (() => void) => {
+    this.themeListeners.add(listener);
+    return () => this.themeListeners.delete(listener);
+  };
 
   get cols(): number {
     return this.term.cols;

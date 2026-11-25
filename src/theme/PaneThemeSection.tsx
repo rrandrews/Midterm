@@ -6,7 +6,7 @@ import { useScopedActions, useScopedSettings, useSettingsScope } from "../settin
 import { TokenList } from "./editor/tokens";
 import { PANE_THEME_KEY, type PaneTheme, paneBaseTheme, paneThemeOf, withPaneOverrides } from "./paneTheme";
 import { composite, opaque } from "./color";
-import { resolveTheme } from "./resolve";
+import { paneBackground as paneBackgroundOf, resolveTheme } from "./resolve";
 import { allThemes, useThemeRevision, useThemeState } from "./state";
 import type { TokenName } from "./types";
 
@@ -71,7 +71,7 @@ export function PaneThemeSection({ pluginId }: { pluginId: string }) {
     })),
   ];
   const themeValue = paneTheme?.theme && themes.some((theme) => theme.id === paneTheme.theme) ? paneTheme.theme : SAME_AS_APP;
-  const paneBackground = resolved.panes[pluginId] ?? resolved.panes.default;
+  const paneBackground = paneBackgroundOf(resolved, pluginId);
   // Pane colors can be translucent over the window: show what is seen.
   const shownBackground = paneTheme?.background ?? opaque(composite(paneBackground.from, resolved.tokens.app));
 

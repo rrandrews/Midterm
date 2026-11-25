@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { Settings } from "../settings/schema";
 import { activeSettings, getSettings, useSettings } from "../settings/settings";
 import { normalizeHex } from "./color";
+import { appliedTheme } from "./apply";
 import { cssVariables, resolveTheme } from "./resolve";
 import { DEFAULT_THEME_ID, bundledTheme } from "./bundled";
 import {
@@ -116,7 +117,8 @@ export function resolvePaneTheme(kind: string, settings: Settings, systemDark: b
 
 /** The active workspace's theme for panes of `kind`, or `null` when they show the app's. */
 export function paneResolvedTheme(kind: string): ResolvedTheme | null {
-  return resolvePaneTheme(kind, getSettings(), useThemeState.getState().systemDark);
+  // `activeSettings()`, not `getSettings()`: the same object `scopeTheme` recognizes, so the app's preview and draft show beneath.
+  return resolvePaneTheme(kind, activeSettings(), useThemeState.getState().systemDark);
 }
 
 /** What a pane of `kind` is drawn with: its own theme, else the app's. */
@@ -132,6 +134,11 @@ export function paneThemeStyle(kind: string): Record<string, string> | undefined
   const style: Record<string, string> = {};
   if (resolved) {
     Object.assign(style, cssVariables(resolved));
+    // Pane backgrounds the app's theme has and this one does not would be
+    // inherited from <html>: `initial` unsets them, so `var()` fallbacks apply.
+    for (const name of Object.keys(cssVariables(appliedTheme()))) {
+      if (name.startsWith("--pane-") && !(name in style)) style[name] = "initial";
+    }
     // Inherited values were computed from the app's variables higher up.
     style.color = resolved.tokens.fg;
     style.colorScheme = resolved.dark ? "dark" : "light";
@@ -143,17 +150,19 @@ export function paneThemeStyle(kind: string): Record<string, string> | undefined
   return style;
 }
 
-const styleCache = new Map<string, { json: string; style: Record<string, string> | undefined }>();
+const styleCache = new Map<string, { json: string; custom: Theme[]; style: Record<string, string> | undefined }>();
 
 /** `paneThemeStyle` as a hook: follows the settings and the app's theme, stable while nothing changes. */
 export function usePaneThemeStyle(kind: string): Record<string, string> | undefined {
   // The raw saved value, plus the theme revision for the app theme beneath it.
   const raw = useSettings((state) => state.plugins[kind]?.settings?.[PANE_THEME_KEY]);
   const revision = useSyncExternalStore(subscribeThemeApplied, themeRevision);
+  // A custom theme the pane picked may be saved again.
+  const custom = useThemeState((state) => state.custom);
   const json = `${revision}:${JSON.stringify(raw ?? null)}`;
   const hit = styleCache.get(kind);
-  if (hit && hit.json === json) return hit.style;
+  if (hit && hit.json === json && hit.custom === custom) return hit.style;
   const style = paneThemeStyle(kind);
-  styleCache.set(kind, { json, style });
+  styleCache.set(kind, { json, custom, style });
   return style;
 }

@@ -7,7 +7,7 @@ import { selectAllPanes, useAppStore } from "../state/store";
 import { editorOptions, markdownMode } from "./settings";
 import { appliedTheme } from "../theme/apply";
 import { paneResolvedTheme } from "../theme/paneTheme";
-import { subscribeThemeApplied } from "../theme/state";
+import { subscribeThemeApplied, useThemeState } from "../theme/state";
 import { ViewerModel } from "../viewer/model";
 import { EditorModel } from "./model";
 
@@ -167,3 +167,4 @@ function applyDark(): void {
 }
 subscribeThemeApplied(applyDark);
 useSettings.subscribe(applyDark);
+useThemeState.subscribe(applyDark);

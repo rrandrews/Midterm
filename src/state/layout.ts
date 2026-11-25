@@ -71,11 +71,15 @@ export function paneIndexForDigit(digit: number): number {
   return (digit + 9) % 10;
 }
 
-/** Each numbered pane's id mapped to its label, in `listPanes` order (at most ten panes). */
-export function paneNumbers(layout: Layout): Record<string, string> {
+/**
+ * Each numbered pane's id mapped to its label, in `listPanes` order (at
+ * most ten panes). `labelOf` gives a position's label, or `null` for none.
+ */
+export function paneNumbers(layout: Layout, labelOf: (index: number) => string | null | undefined = paneNumberLabel): Record<string, string> {
   const numbers: Record<string, string> = {};
   for (const [index, pane] of listPanes(layout).entries()) {
-    const label = paneNumberLabel(index);
+    if (index > 9) break;
+    const label = labelOf(index);
     if (label) numbers[pane.id] = label;
   }
   return numbers;

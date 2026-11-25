@@ -35,8 +35,8 @@ async function blockersOf(paneIds: string[]): Promise<CloseBlocker[]> {
  * Whether it is fine to close these panes: nothing among them would be
  * lost, or the user agreed.
  */
-async function mayClose(paneIds: string[], title: string, action: string): Promise<boolean> {
-  const blockers = await blockersOf(paneIds);
+async function mayClose(paneIds: string[], title: string, action: string, extra: CloseBlocker[] = []): Promise<boolean> {
+  const blockers = [...(await blockersOf(paneIds)), ...extra];
   const names = (type: CloseBlocker["type"]) => [
     ...new Set(blockers.filter((blocker) => blocker.type === type).map((blocker) => blocker.name)),
   ];
@@ -115,10 +115,34 @@ export async function removeWorkspace(workspaceId: string): Promise<void> {
   }
 }
 
+/*
+ * Work outside any pane that quitting would lose (the theme editor's
+ * unsaved draft in Settings).
+ */
+const appBlockers = new Set<() => CloseBlocker[]>();
+
+/** Registers a check for work outside panes, asked when the window closes or the app quits. Returns an unregister function. */
+export function registerAppCloseBlockers(check: () => CloseBlocker[]): () => void {
+  appBlockers.add(check);
+  return () => appBlockers.delete(check);
+}
+
+function appBlockersNow(): CloseBlocker[] {
+  return [...appBlockers].flatMap((check) => {
+    try {
+      return check();
+    } catch (error) {
+      console.error("A close check failed:", error);
+      return [];
+    }
+  });
+}
+
 /** For closing the window or quitting: whether everything may be ended. */
 export async function mayCloseEverything(what: "window" | "app"): Promise<boolean> {
   const panes = paneIdsOf(store().workspaces.flatMap((workspace) => workspace.tabs));
+  const extra = appBlockersNow();
   return what === "app"
-    ? mayClose(panes, "Close midterm?", "Quit")
-    : mayClose(panes, "Close this window?", "Close window");
+    ? mayClose(panes, "Close midterm?", "Quit", extra)
+    : mayClose(panes, "Close this window?", "Close window", extra);
 }

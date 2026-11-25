@@ -9,6 +9,7 @@ import { activeIconSetId, allIconSets, knownIconSet, loadIconSet, useIconState }
 import { enabledPlugins, getPlugin } from "../../plugins/registry";
 import { BUTTON, BUTTON_PRIMARY, FIELD, ICON_BUTTON, NumberField, Segmented } from "../../settings/controls";
 import { guardSettingsLeave } from "../../settings/dialogState";
+import { useSettingsScope } from "../../settings/scope";
 import { resolveTheme } from "../resolve";
 import { allThemes, currentTheme, isBundled, useThemeState } from "../state";
 import { type AnsiName, BUILTIN_PANES, type ResolvedTheme, TOKEN_GROUPS, type Theme, type TokenGroup, type TokenName } from "../types";
@@ -385,6 +386,10 @@ function IconsPage({ theme, t }: { theme: Theme; t: ResolvedTheme["tokens"] }) {
 /** Settings → Theme editor. Edits the draft's theme; with none, starts on the theme showing. */
 export function ThemeEditor() {
   const rootRef = useRef<HTMLDivElement>(null);
+  // The scope Settings is editing: a saved theme becomes its selection.
+  const scope = useSettingsScope();
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const { draft, sourceId, past, future } = useThemeDraft();
   useThemeState((state) => state.custom);
   const [page, setPage] = useState<Page>("palette");
@@ -408,7 +413,7 @@ export function ThemeEditor() {
       // A name being typed commits on blur, before saving.
       const active = document.activeElement;
       if (active instanceof HTMLInputElement && rootRef.current?.contains(active)) active.blur();
-      if (isDraftDirty()) saveDraft();
+      if (isDraftDirty()) saveDraft(scopeRef.current);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -485,7 +490,7 @@ export function ThemeEditor() {
             Discard
           </button>
           <Tip content={bundled ? "Built-in themes are saved as a new copy." : "Save (⌘S)"}>
-            <button type="button" className={BUTTON_PRIMARY} disabled={!dirty} onClick={() => saveDraft()}>
+            <button type="button" className={BUTTON_PRIMARY} disabled={!dirty} onClick={() => saveDraft(scope)}>
               {bundled ? "Save as new" : "Save"}
             </button>
           </Tip>

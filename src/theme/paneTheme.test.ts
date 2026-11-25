@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useSettings } from "../settings/settings";
 import { pluginSettings } from "../plugins/settings";
 import { PANE_THEME_KEY, paneResolvedTheme, paneThemeStyle, validatePaneTheme } from "./paneTheme";
-import { currentResolvedTheme, useThemeState } from "./state";
+import { currentResolvedTheme, findTheme, useThemeState } from "./state";
 
 const setPaneTheme = (kind: string, value: unknown) => useSettings.getState().updatePluginSettings(kind, { [PANE_THEME_KEY]: value });
 
@@ -54,6 +54,12 @@ describe("pane themes", () => {
     expect(paneResolvedTheme("editor")?.tokens.accent).toBe("#f472b6");
     setPaneTheme("editor", { theme: "dracula" });
     expect(paneResolvedTheme("editor")?.tokens.accent).not.toBe("#f472b6");
+  });
+
+  it("lays overrides on the theme showing, the palette's preview included", () => {
+    setPaneTheme("editor", { overrides: { fg: "#ff0000" } });
+    useThemeState.setState({ preview: findTheme("nord") ?? null });
+    expect(paneResolvedTheme("editor")?.id).toBe("nord");
   });
 
   it("falls back to the app's theme for a theme that no longer exists", () => {

@@ -3,6 +3,7 @@ import { forgetWorkspace } from "./workspaces/settings";
 import { peekExplorer } from "./explorer/explorers";
 import { revealInFileManager } from "./ipc/shell";
 import { noteRecentFile } from "./palette/recent";
+import { shortcutLabel } from "./commands/registry";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { convertedData, defaultTerminalKind, fileHandlers, newPane, newPaneData } from "./plugins/panes";
 import { isPluginEnabled, paneSpec } from "./plugins/registry";
@@ -265,9 +266,16 @@ export function focusNeighbourPane(direction: Direction): void {
   if (best) focusPane(best.id);
 }
 
-/** The numbers shown on the active tab's panes (⌥1 … ⌥0), by pane id. */
+/**
+ * The labels shown on the active tab's panes while ⌥ is held, by pane id:
+ * each pane's `pane.selectN` shortcut as bound now (the key alone when it is
+ * ⌥ plus one key, as by default). Panes whose command has no binding get none.
+ */
 export function activePaneNumbers(): Record<string, string> {
-  return paneNumbers(activeLayout().layout);
+  return paneNumbers(activeLayout().layout, (index) => {
+    const label = shortcutLabel(`pane.select${index + 1}`);
+    return label && /^⌥.$/u.test(label) ? label.slice(1) : label;
+  });
 }
 
 /**

@@ -4,7 +4,8 @@ import { explainBlock } from "../../ai/blockNotes";
 import { featureReady } from "../../ai/profiles";
 import { useSettings } from "../../settings/settings";
 import { useThemeRevision } from "../../theme/state";
-import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import type { ITheme } from "@xterm/xterm";
 import { homeDirectory } from "../../ipc/system";
 import { type Line, type Run, formatDuration, logicalLines, renderRows, splitAtLinks } from "../../terminal/blockRender";
 import {
@@ -181,8 +182,9 @@ const FinishedBlock = memo(function FinishedBlock({
   aiReady: boolean;
 }) {
   const [limit, setLimit] = useState(INITIAL_LINES);
-  // Output is drawn with the theme's colors.
+  // Output is drawn with the session's colors: the app's theme, or its pane kind's own.
   const themeRevision = useThemeRevision();
+  const sessionTheme = useSessionTheme(session);
   const { lines, hidden } = useMemo(() => {
     const buffer = session.blocks.buffer;
     const rows = outputRows(block, buffer);
@@ -195,7 +197,7 @@ const FinishedBlock = memo(function FinishedBlock({
     while (rendered.length && rendered[rendered.length - 1].every((run) => !run.text.trim() && !run.bg)) rendered.pop();
     return { lines: rendered, hidden: logical.length - shown.length };
     // `themeRevision`: colors come from `session.theme`, which changes with the theme.
-  }, [session, block, limit, themeRevision]);
+  }, [session, block, limit, themeRevision, sessionTheme]);
 
   const failed = block.exitCode !== undefined && block.exitCode !== 0;
   const duration = block.endedAt !== undefined ? formatDuration(block.endedAt - block.startedAt) : "";
@@ -267,6 +269,7 @@ function RunningBlock({
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   const elapsed = useElapsed(block.startedAt);
   useThemeRevision();
+  useSessionTheme(session);
 
   // Redraw at most once a frame while output arrives.
   useEffect(() => {
@@ -465,4 +468,9 @@ function useBranch(cwd: string | undefined, refresh: number): string | null {
     };
   }, [cwd, refresh]);
   return branch;
+}
+
+/** The session's xterm colors; re-renders when they change. */
+function useSessionTheme(session: TerminalSession): ITheme {
+  return useSyncExternalStore(session.onThemeChange, () => session.theme);
 }

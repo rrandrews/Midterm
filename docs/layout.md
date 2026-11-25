@@ -72,7 +72,10 @@ The order is `listPanes` order (depth-first through the splits, then floating
 panes), not on-screen geometry, so a pane keeps its number while the user
 resizes. `paneNumbers`, `paneNumberLabel` and `paneIndexForDigit` in
 `src/state/layout.ts` are the single source of that mapping, for both the
-shortcuts and the overlay.
+shortcuts and the overlay. The overlay labels each pane with its command's
+binding as it is now (`activePaneNumbers`): the key alone for ⌥ plus one key
+(the default), the whole shortcut otherwise, and no badge for a command
+with no binding.
 
 Holding ⌥ alone for 250ms shows the number on each pane
 (`src/layout/paneNumbers.ts`, installed in `App.tsx`; drawn by

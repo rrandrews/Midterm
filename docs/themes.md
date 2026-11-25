@@ -401,13 +401,17 @@ not start with `$`, and `pluginSettings` leaves them out.
 - **CSS**: `PaneHost` sets `paneThemeStyle(kind)` on the `.pane` element:
   every `cssVariables()` entry, `color` and `color-scheme` (inherited values
   were computed from `<html>`'s variables), and `--pane-bg` /
-  `--pane-bg-active` for the background. Popovers and menus portalled out
+  `--pane-bg-active` for the background. Pane background variables the
+  app's theme sets and the pane's does not are set to `initial`, so they
+  are not inherited and `var()` fallbacks apply. Popovers and menus portalled out
   of the pane keep the app's theme.
 - **Terminals**: `terminalConfig(paneId)` uses the pane kind's theme for
   xterm colors, the solid background and find highlights; `sessions.ts`
-  applies each session's own config.
+  applies one config per kind to each session. Finished blocks redraw
+  when their session's colors change (`TerminalSession.onThemeChange`).
 - **Editors**: CodeMirror's dark flag follows the editor's or viewer's
-  kind (`darkFor` in `src/editor/registry.ts`).
+  kind (`darkFor` in `src/editor/registry.ts`); the model keeps it for the
+  state it creates when the file loads.
 
 ## Theme editor
 
@@ -440,7 +444,11 @@ plugin ids.
   discard them, and Cancel stays in the editor. Leaving the section or
   closing the dialog drops the draft (`stopEditing`, from a
   `useSettingsDialog` subscription in `commands.ts`); a scope switch with
-  nothing unsaved keeps it.
+  nothing unsaved keeps it. Quitting or closing the window with unsaved
+  edits asks too (`registerAppCloseBlockers` in `src/closing.ts`).
+- **Saving** (`saveDraft(scope)`): the theme itself is shared; when it
+  becomes the selection (it was showing, or a bundled theme saved as new),
+  that is the selection of the scope Settings is editing.
 - **Layout:** a header that stays at the top while the section scrolls,
   with the theme picker (grouped dark/light), dark/light, the name
   (editable in place), an unsaved-changes dot, undo/redo, Discard and

@@ -125,6 +125,13 @@ describe("pane numbers", () => {
     expect(paneNumbers(layout)).toEqual({ [a.id]: "1", [b.id]: "2", [c.id]: "3" });
   });
 
+  it("takes labels from a labeler, leaving out positions without one", () => {
+    const { layout, a, b, c } = threePanes();
+    const labels = ["2", "1", null];
+    expect(paneNumbers(layout, (index) => labels[index])).toEqual({ [a.id]: "2", [b.id]: "1" });
+    expect(c.id in paneNumbers(layout, (index) => labels[index])).toBe(false);
+  });
+
   it("leaves panes beyond the tenth unnumbered", () => {
     const panes = Array.from({ length: 11 }, () => createPane("terminal"));
     const layout = createLayout({

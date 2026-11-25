@@ -3,12 +3,12 @@ import { homeDirectory } from "../ipc/system";
 import { createPaneState } from "../plugins/paneState";
 import { refreshTabTitles } from "../plugins/tabTitles";
 import { useSettings } from "../settings/settings";
-import { subscribeThemeApplied } from "../theme/state";
+import { subscribeThemeApplied, useThemeState } from "../theme/state";
 import { findPane, listPanes } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
 import type { PaneNode } from "../state/types";
 import { TerminalSession } from "./session";
-import { type TerminalData, terminalConfig } from "./settings";
+import { type TerminalConfig, type TerminalData, terminalConfigForKind } from "./settings";
 import { forgetPathTargets } from "./pathTargets";
 import { terminalTitle } from "./titles";
 import { CLASSIC_TERMINAL, isSessionKind } from "./kinds";
@@ -113,19 +113,29 @@ const appliedConfig = new WeakMap<TerminalSession, string>();
 function applyConfig(): void {
   const state = useAppStore.getState();
   const workspace = state.workspaces.find((candidate) => candidate.id === state.activeWorkspaceId);
-  const shown = new Set(workspace?.tabs.flatMap((tab) => listPanes(tab.layout).map((pane) => pane.id)));
+  // Pane id → kind for the active workspace; one config per kind (its theme may be its own).
+  const kinds = new Map(workspace?.tabs.flatMap((tab) => listPanes(tab.layout).map((pane) => [pane.id, pane.data.kind] as const)));
+  const configs = new Map<string, { config: TerminalConfig; json: string }>();
   for (const [paneId, session] of sessions.entries()) {
-    if (!shown.has(paneId)) continue;
-    // Per pane: its kind may have a theme of its own.
-    const config = terminalConfig(paneId);
-    const json = JSON.stringify(config);
-    if (appliedConfig.get(session) === json) continue;
-    appliedConfig.set(session, json);
-    session.applySettings(config);
+    const kind = kinds.get(paneId);
+    if (kind === undefined) continue;
+    let entry = configs.get(kind);
+    if (!entry) {
+      const config = terminalConfigForKind(kind);
+      entry = { config, json: JSON.stringify(config) };
+      configs.set(kind, entry);
+    }
+    if (appliedConfig.get(session) === entry.json) continue;
+    appliedConfig.set(session, entry.json);
+    session.applySettings(entry.config);
   }
 }
 useSettings.subscribe(applyConfig);
 subscribeThemeApplied(applyConfig);
+// A custom theme a terminal kind picked (Settings → the plugin → Theme) may be saved again.
+useThemeState.subscribe((state, previous) => {
+  if (state.custom !== previous.custom) applyConfig();
+});
 // Panes moved into the active workspace, or a workspace switch that changed no setting.
 useAppStore.subscribe((state, previous) => {
   if (state.workspaces !== previous.workspaces || state.activeWorkspaceId !== previous.activeWorkspaceId) applyConfig();

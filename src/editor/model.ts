@@ -107,6 +107,8 @@ export class EditorModel {
   private readonly indent = new Compartment();
   private readonly options = new Compartment();
   private readonly darkness = new Compartment();
+  /** This editor's light/dark flag, once set (its pane kind's theme); else the app's. */
+  private dark: boolean | undefined;
   private optionValues: EditorOptions = { wordWrap: false, tabSize: 4, lineNumbers: true };
   private languageSupport: Extension = [];
   private languageName: string | null = null;
@@ -246,6 +248,8 @@ export class EditorModel {
   }
 
   setDark(dark: boolean): void {
+    // Kept for state created later (loading the file replaces the state).
+    this.dark = dark;
     this.view.dispatch({ effects: this.darkness.reconfigure(EditorView.theme({}, { dark })) });
   }
 
@@ -380,7 +384,7 @@ export class EditorModel {
         this.language.of(this.languageSupport),
         this.indent.of(indent ? indentUnit.of(indent) : []),
         this.options.of(optionExtensions(this.optionValues)),
-        this.darkness.of(EditorView.theme({}, { dark: darkTheme })),
+        this.darkness.of(EditorView.theme({}, { dark: this.dark ?? darkTheme })),
         this.readOnly ? EditorState.readOnly.of(true) : [],
         EditorView.updateListener.of((update) => {
           if (update.docChanged) this.updateDirty();
