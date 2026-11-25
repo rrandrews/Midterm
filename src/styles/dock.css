@@ -105,30 +105,24 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   translate: -50% -50%;
   border-radius: 8px;
   background: var(--color-popover);
   box-shadow: var(--shadow-menu);
   color: var(--color-fg-bright);
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   line-height: 1;
   pointer-events: none;
   user-select: none;
-  animation: pane-number-in 80ms ease-out;
 }
 .pane-number.is-active {
   /* The soft accent is translucent: lay it over the popover colour so text below doesn't show through. */
   background: linear-gradient(var(--color-accent-soft), var(--color-accent-soft)), var(--color-popover);
   box-shadow: var(--shadow-menu), inset 0 0 0 1px var(--color-accent);
   color: var(--color-accent-fg);
-}
-@keyframes pane-number-in {
-  from {
-    opacity: 0;
-  }
 }
 
 /* Hairline between panes, with an accent grip while hovered or dragged. */
