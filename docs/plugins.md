@@ -17,6 +17,7 @@ and run in the main window with the app's full access.
 | `src/plugins/PaneHost.tsx` | Renders a pane: plugin lookup, an error boundary per pane, the right-click menu, the placeholder, and the agent card of a one-off agent request (any kind of pane). |
 | `src/plugins/PluginPlaceholder.tsx` | Shown for a pane whose plugin is disabled, missing or still loading. |
 | `src/plugins/MenuItems.tsx` | Renders declarative `MenuItemSpec`s. |
+| `src/plugins/paneMenu.ts` | `hiddenMenuItems`: which built-in pane menu items a plugin leaves out. |
 | `src/plugins/paneState.ts` | `createPaneState`: per-pane state kept outside React (see below). |
 | `src/plugins/panes.ts` | Default kind, data for new panes, conversions, `directoryOf`, `fileHandlers`. |
 | `src/plugins/tabTitles.ts` | Automatic tab titles from the active pane's `tabTitle`. |
@@ -60,6 +61,8 @@ All `PaneSpec` members are optional:
 | `explorerFollows` | Unpinned explorers follow this pane's `directory` (terminals). |
 | `tabTitle(pane)` | Title of a tab whose active pane this is. Call `api.panes.refreshTitles()` when its inputs change. |
 | `menu(ctx)` | Right-click items, declared as data, shown above the items every pane has. |
+| `optionsMenu(ctx)` | The same for the pane's … (options) menu. |
+| `hideMenuItems` | Built-in menu items to leave out of both menus: a list of `splitRight`, `splitDown`, `changeType`, `agent`, `maximize`, `moveToTab` (`HIDEABLE_PANE_MENU_ITEMS`), or `(ctx) => list`. Unknown names are ignored. **Settings…** and **Close pane** are always shown. |
 | `fileHandler(path)` | `"default"`, `"option"` or `false`. `openFile` picks from the enabled plugins. |
 | `reveal(paneId, path, line, column?)` | Opening a file at a line (only handlers with `reveal` are asked). |
 | `splittable: false` | `openFile` avoids splitting this pane (explorers). |
@@ -107,6 +110,13 @@ all use this helper; plugins get it as `api.panes.createState`.
 
 ## Commands and menus
 
+- Every pane's … menu and right-click menu end with the same built-in
+  items (`src/components/layout/PaneMenuItems.tsx`): Split right, Split
+  down, Change pane type, Agent, Maximize, Move to tab, then **Settings…**
+  (opens the plugin's section in Settings) and **Close pane**. Above them
+  come the plugin's `optionsMenu` items (… menu) or `menu` items
+  (right-click). A plugin may hide any built-in item except the last two
+  (`pane.hideMenuItems`); the Agent pane hides "Agent".
 - `plugin.commands` are registered while the plugin is enabled.
   `CommandCategory` is any string. `command.menu` names a native menu bar
   submenu ("File", "Edit", "View", "Pane", "Window"); the command is listed

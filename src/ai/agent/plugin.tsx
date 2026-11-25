@@ -1,6 +1,14 @@
-import type { PanePlugin } from "../../plugins/types";
+import type { MenuItemSpec, PaneContext, PanePlugin } from "../../plugins/types";
 import { AgentPane } from "./AgentPane";
 import { AGENT_KIND, isRunning, newPaneConversation, paneConversationOf, stopConversation } from "./conversation";
+
+function conversationItems(ctx: PaneContext): MenuItemSpec[] {
+  const id = paneConversationOf(ctx.paneId);
+  return [
+    { label: "New conversation", commandId: "ai.agentNewConversation", run: () => newPaneConversation(ctx.paneId) },
+    { label: "Stop", disabled: !isRunning(id), run: () => id && stopConversation(id) },
+  ];
+}
 
 /** The built-in Agent pane (registered by `installAi`). */
 export const agentPlugin: PanePlugin = {
@@ -15,12 +23,9 @@ export const agentPlugin: PanePlugin = {
     tabTitle: () => "Agent",
     splittable: true,
     closeBlockers: async (paneId) => (isRunning(paneConversationOf(paneId)) ? [{ type: "running", name: "the agent" }] : []),
-    menu: (ctx) => {
-      const id = paneConversationOf(ctx.paneId);
-      return [
-        { label: "New conversation", commandId: "ai.agentNewConversation", run: () => newPaneConversation(ctx.paneId) },
-        { label: "Stop", disabled: !isRunning(id), run: () => id && stopConversation(id) },
-      ];
-    },
+    menu: conversationItems,
+    optionsMenu: conversationItems,
+    // Asking the agent about its own pane makes no sense.
+    hideMenuItems: ["agent"],
   },
 };

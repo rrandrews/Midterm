@@ -3,7 +3,10 @@ import { movePaneToNewTab, movePaneToTab, splitPane, toggleMaximizePane } from "
 import { changePaneKind, closePane } from "../../closing";
 import { shortcutLabel } from "../../commands/registry";
 import { getDock } from "../../layout/dock";
+import { hiddenMenuItems } from "../../plugins/paneMenu";
 import { enabledPlugins } from "../../plugins/registry";
+import { HIDEABLE_PANE_MENU_ITEMS, type HideablePaneMenuItem, type PaneContext } from "../../plugins/types";
+import { openSettings } from "../../settings/dialogState";
 import { countPanes, findPane, frameIdOf } from "../../state/layout";
 import { findTabOfPane, selectActiveWorkspace, useAppStore } from "../../state/store";
 import { MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger } from "../ui/Menu";
@@ -13,7 +16,7 @@ import { MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger } from
  * right-click menu. Menu content only mounts while the menu is open, so this
  * reads the store directly instead of subscribing.
  */
-export function PaneMenuItems({ paneId }: { paneId: string }) {
+export function PaneMenuItems({ paneId, ctx }: { paneId: string; ctx?: PaneContext }) {
   const state = useAppStore.getState();
   const tab = findTabOfPane(state, paneId);
   if (!tab) return null;
@@ -23,58 +26,77 @@ export function PaneMenuItems({ paneId }: { paneId: string }) {
   const alone = countPanes(layout) <= 1;
   const maximized = layout.maximizedTabsetId === frameIdOf(layout, paneId);
   const otherTabs = selectActiveWorkspace(state).tabs.filter((other) => other.id !== tab.id);
+  const hidden = hiddenMenuItems(kind, ctx);
+  const shown = (item: HideablePaneMenuItem) => !hidden.has(item);
+  const anyShown = HIDEABLE_PANE_MENU_ITEMS.some(shown);
 
   return (
     <>
-      <MenuItem shortcut={shortcutLabel("pane.splitRight")} onSelect={() => splitPane("right", paneId)}>
-        Split right
-      </MenuItem>
-      <MenuItem shortcut={shortcutLabel("pane.splitDown")} onSelect={() => splitPane("bottom", paneId)}>
-        Split down
-      </MenuItem>
-      <MenuSub>
-        <MenuSubTrigger>Change pane type</MenuSubTrigger>
-        <MenuSubContent>
-          {enabledPlugins().map((option) => (
-            <MenuItem
-              key={option.id}
-              checked={kind === option.id}
-              onSelect={() => void changePaneKind(paneId, option.id)}
-            >
-              {option.name}
+      {shown("splitRight") && (
+        <MenuItem shortcut={shortcutLabel("pane.splitRight")} onSelect={() => splitPane("right", paneId)}>
+          Split right
+        </MenuItem>
+      )}
+      {shown("splitDown") && (
+        <MenuItem shortcut={shortcutLabel("pane.splitDown")} onSelect={() => splitPane("bottom", paneId)}>
+          Split down
+        </MenuItem>
+      )}
+      {shown("changeType") && (
+        <MenuSub>
+          <MenuSubTrigger>Change pane type</MenuSubTrigger>
+          <MenuSubContent>
+            {enabledPlugins().map((option) => (
+              <MenuItem
+                key={option.id}
+                checked={kind === option.id}
+                onSelect={() => void changePaneKind(paneId, option.id)}
+              >
+                {option.name}
+              </MenuItem>
+            ))}
+          </MenuSubContent>
+        </MenuSub>
+      )}
+      {shown("agent") && (
+        <MenuSub>
+          <MenuSubTrigger>Agent</MenuSubTrigger>
+          <MenuSubContent>
+            <MenuItem shortcut={shortcutLabel("ai.askAgent")} onSelect={() => promptForAgent(paneId)}>
+              Ask the agent about this pane…
             </MenuItem>
-          ))}
-        </MenuSubContent>
-      </MenuSub>
-      <MenuSub>
-        <MenuSubTrigger>Agent</MenuSubTrigger>
-        <MenuSubContent>
-          <MenuItem shortcut={shortcutLabel("ai.askAgent")} onSelect={() => promptForAgent(paneId)}>
-            Ask the agent about this pane…
-          </MenuItem>
-          <MenuItem shortcut={shortcutLabel("ai.openAgent")} onSelect={() => openAgent(paneId)}>
-            Open the agent pane
-          </MenuItem>
-        </MenuSubContent>
-      </MenuSub>
-      <MenuItem shortcut={shortcutLabel("pane.toggleMaximize")} disabled={alone} onSelect={() => toggleMaximizePane(paneId)}>
-        {maximized ? "Restore pane" : "Maximize pane"}
-      </MenuItem>
-      <MenuSub>
-        <MenuSubTrigger>Move to tab</MenuSubTrigger>
-        <MenuSubContent>
-          {otherTabs.map((other) => (
-            <MenuItem key={other.id} onSelect={() => movePaneToTab(paneId, other.id)}>
-              {other.title}
+            <MenuItem shortcut={shortcutLabel("ai.openAgent")} onSelect={() => openAgent(paneId)}>
+              Open the agent pane
             </MenuItem>
-          ))}
-          {otherTabs.length > 0 && <MenuSeparator />}
-          <MenuItem disabled={alone} onSelect={() => movePaneToNewTab(paneId)}>
-            New tab
-          </MenuItem>
-        </MenuSubContent>
-      </MenuSub>
-      <MenuSeparator />
+          </MenuSubContent>
+        </MenuSub>
+      )}
+      {shown("maximize") && (
+        <MenuItem shortcut={shortcutLabel("pane.toggleMaximize")} disabled={alone} onSelect={() => toggleMaximizePane(paneId)}>
+          {maximized ? "Restore pane" : "Maximize pane"}
+        </MenuItem>
+      )}
+      {shown("moveToTab") && (
+        <MenuSub>
+          <MenuSubTrigger>Move to tab</MenuSubTrigger>
+          <MenuSubContent>
+            {otherTabs.map((other) => (
+              <MenuItem key={other.id} onSelect={() => movePaneToTab(paneId, other.id)}>
+                {other.title}
+              </MenuItem>
+            ))}
+            {otherTabs.length > 0 && <MenuSeparator />}
+            <MenuItem disabled={alone} onSelect={() => movePaneToNewTab(paneId)}>
+              New tab
+            </MenuItem>
+          </MenuSubContent>
+        </MenuSub>
+      )}
+      {anyShown && <MenuSeparator />}
+      {kind && (
+        // After the menu has closed and handed focus back, so the dialog keeps it.
+        <MenuItem onSelect={() => setTimeout(() => openSettings(`plugin:${kind}`), 0)}>Settings…</MenuItem>
+      )}
       <MenuItem shortcut={shortcutLabel("pane.close")} onSelect={() => void closePane(paneId)}>
         Close pane
       </MenuItem>

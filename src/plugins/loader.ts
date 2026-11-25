@@ -68,8 +68,12 @@ export function checkPluginExport(plugin: unknown, expectedId: string): string[]
   if (terminal !== undefined && typeof terminal !== "boolean") problems.push("`terminal` must be true or false");
   if (typeof pane !== "object" || pane === null) problems.push("the plugin has no pane");
   else {
-    const { component, mount } = pane as Record<string, unknown>;
+    const { component, mount, optionsMenu, hideMenuItems } = pane as Record<string, unknown>;
     if (typeof component !== "function" && typeof mount !== "function") problems.push("pane needs a component or a mount function");
+    if (optionsMenu !== undefined && typeof optionsMenu !== "function") problems.push("`pane.optionsMenu` must be a function");
+    if (hideMenuItems !== undefined && !Array.isArray(hideMenuItems) && typeof hideMenuItems !== "function") {
+      problems.push("`pane.hideMenuItems` must be a list or a function");
+    }
   }
   const fields = (settings as Record<string, unknown> | undefined)?.fields;
   if (fields !== undefined) problems.push(...checkFields(fields));

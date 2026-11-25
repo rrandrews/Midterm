@@ -1,5 +1,8 @@
+import { useMemo } from "react";
 import { TabsetDragHandle } from "react-resizable-panels";
 import { notePaneFocused } from "../../layout/dock";
+import { createPaneContext, PluginMenuItems } from "../../plugins/PaneHost";
+import { activePlugin } from "../../plugins/registry";
 import { useAppStore } from "../../state/store";
 import type { PaneNode } from "../../state/types";
 import { DotsIcon, GripIcon } from "../ui/icons";
@@ -8,6 +11,8 @@ import { PaneMenuItems } from "./PaneMenuItems";
 
 /** A pane's hover controls: the options menu, then the drag handle in the corner. */
 export function PaneToolbar({ pane }: { pane: PaneNode }) {
+  const { kind } = pane.data;
+  const ctx = useMemo(() => createPaneContext(pane.id, kind), [pane.id, kind]);
   return (
     <div className="flex gap-0.5">
       <Menu
@@ -25,7 +30,8 @@ export function PaneToolbar({ pane }: { pane: PaneNode }) {
           <DotsIcon />
         </MenuTrigger>
         <MenuContent aria-label="Pane options">
-          <PaneMenuItems paneId={pane.id} />
+          <PluginOptions kind={kind} ctx={ctx} />
+          <PaneMenuItems paneId={pane.id} ctx={ctx} />
         </MenuContent>
       </Menu>
       <TabsetDragHandle
@@ -37,4 +43,10 @@ export function PaneToolbar({ pane }: { pane: PaneNode }) {
       </TabsetDragHandle>
     </div>
   );
+}
+
+/** The plugin's own … menu items (looked up when the menu opens: content only mounts then). */
+function PluginOptions({ kind, ctx }: { kind: string; ctx: ReturnType<typeof createPaneContext> }) {
+  const plugin = activePlugin(kind);
+  return plugin ? <PluginMenuItems plugin={plugin} ctx={ctx} menu="optionsMenu" /> : null;
 }

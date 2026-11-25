@@ -72,6 +72,14 @@ export type MenuItemSpec =
   | { type: "separator" }
   | { type: "submenu"; label: string; items: MenuItemSpec[] };
 
+/**
+ * The items every pane's … and right-click menus have that a plugin may
+ * leave out (`PaneSpec.hideMenuItems`). "Settings…" and "Close pane" are
+ * always shown.
+ */
+export const HIDEABLE_PANE_MENU_ITEMS = ["splitRight", "splitDown", "changeType", "agent", "maximize", "moveToTab"] as const;
+export type HideablePaneMenuItem = (typeof HIDEABLE_PANE_MENU_ITEMS)[number];
+
 /** Something that makes closing a pane lose work. */
 export type CloseBlocker =
   /** A program still running (its name). */
@@ -123,6 +131,13 @@ export type PaneSpec = {
   tabTitle?(pane: PaneNode): string | undefined;
   /** Right-click items, shown above the items every pane has. */
   menu?(ctx: PaneContext): MenuItemSpec[];
+  /** Items for the pane's … (options) menu, shown above the items every pane has. */
+  optionsMenu?(ctx: PaneContext): MenuItemSpec[];
+  /**
+   * Items every pane has to leave out of this kind's … and right-click
+   * menus. "Settings…" and "Close pane" cannot be hidden.
+   */
+  hideMenuItems?: readonly HideablePaneMenuItem[] | ((ctx: PaneContext) => readonly HideablePaneMenuItem[]);
   /**
    * Whether panes of this kind can show a file: `"default"` to be picked
    * first, `"option"` to be offered, `false` (or no handler) not at all.

@@ -95,8 +95,8 @@ export const PaneHost = memo(function PaneHost({ pane }: { pane: PaneNode }) {
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent aria-label="Pane">
-        {plugin && <PluginMenuItems plugin={plugin} ctx={ctx} />}
-        <PaneMenuItems paneId={pane.id} />
+        {plugin && <PluginMenuItems plugin={plugin} ctx={ctx} menu="menu" />}
+        <PaneMenuItems paneId={pane.id} ctx={ctx} />
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -138,13 +138,13 @@ function MountedContent({ mount, ctx }: { mount: NonNullable<PanePlugin["pane"][
   return <div ref={ref} tabIndex={-1} className="h-full w-full overflow-auto outline-none" />;
 }
 
-/** The plugin's right-click items, with a separator after them. */
-function PluginMenuItems({ plugin, ctx }: { plugin: PanePlugin; ctx: PaneContext }) {
+/** The plugin's right-click (`menu`) or … menu (`optionsMenu`) items, with a separator after them. */
+export function PluginMenuItems({ plugin, ctx, menu }: { plugin: PanePlugin; ctx: PaneContext; menu: "menu" | "optionsMenu" }) {
   let items: MenuItemSpec[] = [];
   try {
-    items = plugin.pane.menu?.(ctx) ?? [];
+    items = plugin.pane[menu]?.(ctx) ?? [];
   } catch (error) {
-    console.error(`The ${plugin.id} plugin's menu failed:`, error);
+    console.error(`The ${plugin.id} plugin's ${menu} failed:`, error);
   }
   if (items.length === 0) return null;
   return (

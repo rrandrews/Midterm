@@ -35,19 +35,10 @@ const plugin = {
         stopSettings();
       };
     },
-    menu: (ctx) => [
-      {
-        label: "Clear notes",
-        disabled: !ctx.data().text,
-        run: async () => {
-          if (await ctx.api.ui.confirm({ title: "Clear the notes?", message: "This cannot be undone.", action: "Clear" })) {
-            ctx.updateData({ text: "" });
-            const area = document.querySelector(`[data-scratchpad="${ctx.paneId}"]`);
-            if (area instanceof HTMLTextAreaElement) area.value = "";
-          }
-        },
-      },
-    ],
+    menu: (ctx) => notesMenu(ctx),
+    // The … menu: the same items, and without the built-in "Agent" submenu.
+    optionsMenu: (ctx) => notesMenu(ctx),
+    hideMenuItems: ["agent"],
     tabTitle: () => "notes",
   },
   settings: {
@@ -94,6 +85,22 @@ const plugin = {
 
 /** @type {import("../../../src/plugins/api").MidtermApi | null} */
 let apiRef = null;
+
+function notesMenu(ctx) {
+  return [
+    {
+      label: "Clear notes",
+      disabled: !ctx.data().text,
+      run: async () => {
+        if (await ctx.api.ui.confirm({ title: "Clear the notes?", message: "This cannot be undone.", action: "Clear" })) {
+          ctx.updateData({ text: "" });
+          const area = document.querySelector(`[data-scratchpad="${ctx.paneId}"]`);
+          if (area instanceof HTMLTextAreaElement) area.value = "";
+        }
+      },
+    },
+  ];
+}
 
 function allNotes() {
   if (!apiRef) return [];
