@@ -20,6 +20,8 @@ export type PluginManifest = {
   skills: string[];
   description?: string;
   author?: string;
+  /** A lucide icon name (kebab-case) or a relative .svg/.png path. */
+  icon?: string;
 };
 
 export type InstalledPlugin = {

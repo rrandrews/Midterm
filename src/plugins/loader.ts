@@ -41,10 +41,32 @@ let generation = 0;
 /** The latest load started per plugin id; a load that finishes after a newer one (or a removal) is dropped. */
 const latestLoad = new Map<string, number>();
 
+/**
+ * The icon of an imported plugin: the module's own if it set one, else the
+ * manifest's. A relative path (has a `.` or `/` and no `scheme:`; a leading
+ * `/` is ignored) becomes a plugin file URL; a lucide name or an absolute
+ * URL is kept as is (the CSP allows images from the app, plugin files,
+ * `data:` and `blob:` only, so a remote URL shows the fallback icon).
+ */
+export function resolveIcon(id: string, icon: unknown, manifestIcon?: string, generation?: number): string | undefined {
+  const chosen = typeof icon === "string" && icon ? icon : manifestIcon;
+  if (!chosen) return undefined;
+  const relative = /[./]/.test(chosen) && !chosen.includes(":");
+  // A root-relative path is still a file of the plugin's.
+  return relative ? pluginFileUrl(id, chosen.replace(/^\/+/, ""), generation) : chosen;
+}
+
 function stubOf(info: InstalledPlugin): PanePlugin | null {
   const manifest = info.manifest;
   if (!manifest) return null;
-  return { id: manifest.id, name: manifest.name, version: manifest.version, description: manifest.description, pane: {} };
+  return {
+    id: manifest.id,
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    icon: resolveIcon(manifest.id, undefined, manifest.icon),
+    pane: {},
+  };
 }
 
 function fileSkillsOf(info: InstalledPlugin): { skills: Skill[]; problems: string[] } {
@@ -113,7 +135,11 @@ async function loadModule(info: InstalledPlugin): Promise<void> {
     if (problems.length) throw new Error(problems.join("; "));
     setStyle(id, manifest.style && isPluginEnabled(id) ? pluginFileUrl(id, manifest.style, version) : null);
     registerPlugin(
-      { ...(plugin as PanePlugin), version: manifest.version },
+      {
+        ...(plugin as PanePlugin),
+        version: manifest.version,
+        icon: resolveIcon(id, (plugin as PanePlugin).icon, manifest.icon, version),
+      },
       { type: "imported", dir: info.dir, author: manifest.author },
     );
   } catch (error) {

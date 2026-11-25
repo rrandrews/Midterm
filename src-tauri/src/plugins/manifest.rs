@@ -51,6 +51,9 @@ pub struct Manifest {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    /// A lucide icon name (kebab-case) or a relative `.svg`/`.png` path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// `manifest.json` as written; unknown fields are ignored. Fields are
@@ -67,6 +70,7 @@ struct RawManifest {
     skills: Option<serde_json::Value>,
     description: Option<serde_json::Value>,
     author: Option<serde_json::Value>,
+    icon: Option<serde_json::Value>,
 }
 
 /// Whether `id` has the shape of a plugin id, `^[a-z0-9][a-z0-9-]{0,62}$`
@@ -164,6 +168,10 @@ pub fn parse(json: &str, dir: &Path) -> Result<Manifest, String> {
             .collect::<Result<_, String>>()?,
         Some(other) => return Err(format!("skills must be an array of paths, not {other}")),
     };
+    let icon = optional_string(raw.icon, "icon")?;
+    if let Some(icon) = &icon {
+        check_icon(&root, icon)?;
+    }
     Ok(Manifest {
         id,
         name,
@@ -174,6 +182,7 @@ pub fn parse(json: &str, dir: &Path) -> Result<Manifest, String> {
         skills,
         description: optional_string(raw.description, "description")?,
         author: optional_string(raw.author, "author")?,
+        icon,
     })
 }
 
@@ -229,6 +238,28 @@ fn check_file(root: &Path, rel: &str, field: &str, extensions: &[&str]) -> Resul
         return Err(format!("{field} \"{rel}\" is not a file"));
     }
     Ok(())
+}
+
+/// An icon is a lucide-style name (`^[a-z0-9][a-z0-9-]{0,63}$`) or, when it
+/// contains `.` or `/`, a relative `.svg`/`.png` path inside the folder.
+fn check_icon(root: &Path, icon: &str) -> Result<(), String> {
+    if icon.contains(['.', '/']) {
+        return check_file(root, icon, "icon", &["svg", "png"]);
+    }
+    let bytes = icon.as_bytes();
+    let name_ok = !bytes.is_empty()
+        && bytes.len() <= 64
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if name_ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid icon \"{icon}\": use a lucide icon name in kebab-case (such as \"notebook-pen\") or a relative .svg or .png path"
+        ))
+    }
 }
 
 fn check_skill(root: &Path, rel: &str) -> Result<(), String> {
@@ -290,6 +321,7 @@ mod tests {
     fn minimal_manifest_serializes_without_optional_fields() {
         let out = serde_json::to_value(check(base()).unwrap()).unwrap();
         assert!(out.get("style").is_none());
+        assert!(out.get("icon").is_none());
         assert_eq!(out["skills"], json!([]));
     }
 
@@ -399,6 +431,32 @@ mod tests {
         fs::write(dir.path().join("skills/hello/notes.md"), "").unwrap();
         let m = with("skills", json!(["skills/hello/notes.md"]));
         assert!(parse(&m.to_string(), dir.path()).unwrap_err().contains("SKILL.md"));
+    }
+
+    #[test]
+    fn icons() {
+        let dir = folder();
+        fs::create_dir(dir.path().join("img")).unwrap();
+        fs::write(dir.path().join("icon.svg"), "<svg/>").unwrap();
+        fs::write(dir.path().join("img/Logo.PNG"), "").unwrap();
+        for good in ["notebook-pen", "a", "0", "x1-2", "icon.svg", "img/Logo.PNG"] {
+            let m = with("icon", json!(good));
+            let manifest = parse(&m.to_string(), dir.path()).unwrap_or_else(|e| panic!("{good}: {e}"));
+            assert_eq!(manifest.icon.as_deref(), Some(good));
+        }
+        for bad in [
+            "", "-a", "Notebook", "note_book", "note book", "é", &"a".repeat(65),
+            "missing.svg", "main.js", "style.css", "../icon.svg", "/icon.svg", "./icon.svg", "img//Logo.PNG", "img/", "a\\b.svg",
+        ] {
+            assert!(parse(&with("icon", json!(bad)).to_string(), dir.path()).is_err(), "{bad}");
+        }
+        assert!(parse(&with("icon", json!(&"a".repeat(64))).to_string(), dir.path()).is_ok());
+        assert!(check(with("icon", json!(5))).is_err());
+        let err = check(with("icon", json!("Bad Name"))).unwrap_err();
+        assert!(err.contains("icon"), "{err}");
+        // Absent or null: no icon.
+        assert!(check(with("icon", json!(null))).unwrap().icon.is_none());
+        assert!(check(base()).unwrap().icon.is_none());
     }
 
     #[test]

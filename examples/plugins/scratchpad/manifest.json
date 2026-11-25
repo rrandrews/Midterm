@@ -5,6 +5,7 @@
   "apiVersion": 1,
   "main": "main.js",
   "style": "style.css",
+  "icon": "notebook-pen",
   "skills": ["skills/notes/SKILL.md"],
   "description": "A plain-text notes pane, saved with the layout. An example plugin.",
   "author": "Midterm"

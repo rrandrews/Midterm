@@ -1,21 +1,12 @@
 import {
-  Asterisk,
   ChevronRight,
   ChevronsUpDown,
-  Eye,
-  FileCode,
-  FolderTree,
   Globe,
   Keyboard,
   LayoutGrid,
-  type LucideIcon,
-  Orbit,
-  Palette,
   Puzzle,
   Search,
   Settings2,
-  Sparkles,
-  SquareTerminal,
   Variable,
   X,
 } from "lucide-react";
@@ -24,6 +15,7 @@ import { useState } from "react";
 import { registerCommands } from "../commands/registry";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "../components/ui/Menu";
 import { refocusPane } from "../layout/dock";
+import { PluginIcon } from "../plugins/PluginIcon";
 import { type RegisteredPlugin, allPlugins, isPluginEnabled, usePluginsVersion } from "../plugins/registry";
 import { GeneralSection } from "./GeneralSection";
 import { KeyboardSection } from "./KeyboardSection";
@@ -110,24 +102,6 @@ registerSettingsSection({
   scope: "shared",
   keywords: ["shortcuts", "keybindings", "keys", "hotkeys"],
 });
-
-/** Built-in plugins' lucide icon names. */
-const PLUGIN_ICONS: Record<string, LucideIcon> = {
-  "square-terminal": SquareTerminal,
-  "file-code": FileCode,
-  eye: Eye,
-  "folder-tree": FolderTree,
-  asterisk: Asterisk,
-  orbit: Orbit,
-  palette: Palette,
-  sparkles: Sparkles,
-};
-
-function PluginIcon({ icon }: { icon?: string }) {
-  if (icon && /^(https?:|data:|\/|asset:)/.test(icon)) return <img src={icon} alt="" className="size-3.5 flex-none" />;
-  const Icon = (icon && PLUGIN_ICONS[icon]) || Puzzle;
-  return <Icon size={14} strokeWidth={1.75} className="flex-none" />;
-}
 
 const NAV_ITEM =
   "group flex h-7 w-full flex-none items-center gap-2 rounded-[6px] px-2 text-left text-menu text-fg-muted outline-none " +

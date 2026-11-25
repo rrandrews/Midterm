@@ -88,7 +88,7 @@ export const blockTerminalPlugin: PanePlugin = {
   id: BLOCK_TERMINAL,
   name: "Block terminal",
   description: "Shells with each command and its output as a block, an input editor and AI suggestions.",
-  icon: "square-terminal",
+  icon: "rows-3",
   terminal: true,
   pane: {
     ...terminalPaneSpec,

@@ -9,6 +9,7 @@
 const plugin = {
   id: "scratchpad",
   name: "Scratchpad",
+  icon: "notebook-pen",
   pane: {
     validateData: (raw) => (typeof raw.text === "string" ? { text: raw.text } : {}),
     mount(el, ctx) {
