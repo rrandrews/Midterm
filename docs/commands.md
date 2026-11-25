@@ -46,7 +46,7 @@ palette and the native menu bar are generated from it.
   command forwards to the active pane's action and is enabled only when
   there is one. `paneActionCommand` builds such a command for any action
   name (`PaneActions` is open to plugins).
-- `hidden` commands (⌘1–⌘9 tabs, ⌥1–⌥0 panes) keep their keys but stay out
+- `hidden` commands (⌘1–⌘9 tabs, ⌥1–⌥0 panes, ⇧⌘1–⇧⌘0 subtabs) keep their keys but stay out
   of the native menu. ⌥ digits also drive the pane number overlay; see
   [layout.md](layout.md#pane-numbers-and--digits).
 - A chord bound to two commands goes to the first enabled one.

@@ -52,8 +52,8 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
   opacity: 0.45;
 }
 
-/* Hover controls (drag handle + menu), top right. Each frame holds one pane,
-   so the library's tab list is never shown. */
+/* Hover controls (drag handle + menu), top right. A frame with one pane
+   shows no tab list; one with several shows them as subtabs (below). */
 .pane-header {
   position: absolute;
   top: 6px;
@@ -72,6 +72,150 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
 
 .pane-tablist {
   display: none;
+}
+
+/*
+ * Subtabs: a frame holding several panes shows a strip of them above the
+ * content, on the same line as the hover controls. The strip is a little
+ * darker than the content and has no line between them; subtabs are
+ * divided by short hairlines. Themes and plugins can restyle it through
+ * these variables (set on `.pane-frame` or above).
+ */
+.pane-frame {
+  --subtab-height: 24px;
+  --subtab-strip-bg: var(--color-app);
+  --subtab-selected-bg: color-mix(in oklab, var(--color-field) 55%, var(--color-app));
+  --subtab-hover-bg: var(--color-hover);
+  --subtab-divider: var(--color-line);
+  --subtab-fg: var(--color-fg-dim);
+  --subtab-selected-fg: var(--color-fg-bright);
+}
+
+.pane-frame.has-subtabs > .pane-header {
+  position: relative;
+  top: auto;
+  right: auto;
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  height: var(--subtab-height);
+  background: var(--subtab-strip-bg);
+  opacity: 1;
+  /* Always shown: no fade in when a frame gains its second pane. */
+  transition: none;
+}
+
+.pane-frame.has-subtabs > .pane-header > .pane-tablist {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/*
+ * The rest of the strip is the toolbar: an invisible drag handle for the
+ * frame filling the space (`.subtab-gap`), then the hover controls at the
+ * right end.
+ */
+.pane-frame.has-subtabs > .pane-header > [data-tabset-toolbar] {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  padding-right: 4px;
+}
+.subtab-gap {
+  flex: 1;
+  align-self: stretch;
+  min-width: 8px;
+  cursor: grab;
+}
+.pane-frame.has-subtabs > .pane-header > [data-tabset-toolbar] > div > :not(.subtab-gap) {
+  opacity: 0;
+  transition: opacity 80ms;
+}
+.pane-frame.has-subtabs:hover > .pane-header > [data-tabset-toolbar] > div > *,
+.pane-frame.has-subtabs:has(.pane.is-active) > .pane-header > [data-tabset-toolbar] > div > *,
+.pane-frame.has-subtabs > .pane-header > [data-tabset-toolbar]:focus-within > div > *,
+.pane-frame.has-subtabs > .pane-header > [data-tabset-toolbar]:has([data-state="open"]) > div > * {
+  opacity: 1;
+}
+
+.subtab {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  padding: 0 9px 0 8px;
+  color: var(--subtab-fg);
+  font-size: var(--text-meta);
+  white-space: nowrap;
+  cursor: default;
+  outline: none;
+  user-select: none;
+}
+.subtab.is-icon-only {
+  justify-content: center;
+  width: calc(var(--subtab-height) + 4px);
+  padding: 0;
+}
+.subtab:hover {
+  background: var(--subtab-hover-bg);
+  color: var(--color-fg-soft);
+}
+.subtab[aria-selected="true"] {
+  background: var(--subtab-selected-bg);
+  color: var(--subtab-selected-fg);
+}
+.subtab:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+.subtab[data-tab-dragging] {
+  opacity: 0.45;
+}
+.subtab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Hairlines between subtabs (and after the last), left out beside the selected one. */
+.subtab::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 0;
+  bottom: 6px;
+  width: 1px;
+  background: var(--subtab-divider);
+  pointer-events: none;
+}
+.subtab[aria-selected="true"]::after,
+.subtab:has(+ .subtab[aria-selected="true"])::after {
+  opacity: 0;
+}
+
+/* Where a dragged pane will land in the strip. */
+.subtab[data-drop-before]::before,
+.subtab[data-drop-after]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  z-index: 1;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-accent);
+  pointer-events: none;
+}
+.subtab[data-drop-before]::before {
+  left: -1px;
+}
+.subtab[data-drop-after]::before {
+  right: -1px;
 }
 
 /*
@@ -202,6 +346,9 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
 .pane-drop[data-region="bottom"]::after {
   content: "Split below";
 }
+.pane-drop[data-region="center"]::after {
+  content: "Add as subtab";
+}
 .pane-drop[data-edge="left"]::after {
   content: "Dock left";
 }
@@ -226,4 +373,7 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
   font-size: var(--text-meta);
   white-space: nowrap;
   pointer-events: none;
+}
+.subtab-gap[data-disabled] {
+  cursor: default;
 }

@@ -1,11 +1,14 @@
 import {
   activePaneId,
+  addSubtab,
+  cycleSubtab,
   cycleTab,
   focusNeighbourPane,
   movePaneToNewTab,
   newTab,
   newWorkspace,
   selectPaneByDigit,
+  selectSubtabByDigit,
   selectTabAt,
   splitPane,
   toggleMaximizePane,
@@ -59,6 +62,24 @@ export const CORE_COMMANDS: Command[] = [
       };
     },
   ),
+  // ⇧⌘1 … ⇧⌘9, ⇧⌘0: the subtabs of the active pane's frame, left to right.
+  ...Array.from(
+    { length: 10 },
+    (_, index): Command => {
+      const digit = (index + 1) % 10;
+      return {
+        id: `pane.subtab${index + 1}`,
+        title: `Go to subtab ${index + 1}`,
+        category: "Pane",
+        keys: [`Cmd+Shift+${digit}`],
+        hidden: true,
+        run: () => selectSubtabByDigit(digit),
+      };
+    },
+  ),
+  { id: "pane.newSubtab", title: "New subtab", category: "Pane", run: () => addSubtab() },
+  { id: "pane.nextSubtab", title: "Next subtab", category: "Pane", run: () => cycleSubtab(1) },
+  { id: "pane.previousSubtab", title: "Previous subtab", category: "Pane", run: () => cycleSubtab(-1) },
   { id: "pane.close", title: "Close pane", category: "Pane", keys: ["Cmd+W"], run: () => closePane() },
   {
     id: "pane.toggleMaximize",

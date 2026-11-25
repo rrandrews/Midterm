@@ -12,13 +12,14 @@
 
 const HOVER = "data-pane-drop-hover";
 
-let dragged: string | null = null;
+/** The panes being dragged: one pane (or subtab), or a frame's subtabs, shown one first. */
+let dragged: string[] | null = null;
 let hovered: HTMLElement | null = null;
-let onDrop: ((paneId: string, target: string) => void) | null = null;
+let onDrop: ((paneIds: string[], target: string) => void) | null = null;
 
 /** Called by the layout's drag preview, which only exists during a pane drag. */
-export function notePaneDrag(paneId: string): void {
-  dragged = paneId;
+export function notePaneDrag(paneIds: string[]): void {
+  dragged = paneIds;
 }
 
 function targetAt(x: number, y: number): HTMLElement | null {
@@ -42,10 +43,10 @@ function end(): void {
 }
 
 /**
- * Starts watching for pane drops; `drop` is called with the pane and the
+ * Starts watching for pane drops; `drop` is called with the panes and the
  * target's `data-pane-drop` value. Returns a function that stops.
  */
-export function installPaneDropTargets(drop: (paneId: string, target: string) => void): () => void {
+export function installPaneDropTargets(drop: (paneIds: string[], target: string) => void): () => void {
   onDrop = drop;
 
   const onPointerMove = (event: PointerEvent) => {
@@ -55,11 +56,11 @@ export function installPaneDropTargets(drop: (paneId: string, target: string) =>
     // The preview exists exactly while the library's drag does; without it
     // the drag was cancelled (e.g. the window lost focus) and this release
     // is an ordinary click.
-    const paneId = document.querySelector(".pane-drag-preview") ? dragged : null;
-    const target = paneId && targetAt(event.clientX, event.clientY)?.dataset.paneDrop;
+    const paneIds = document.querySelector(".pane-drag-preview") ? dragged : null;
+    const target = paneIds && targetAt(event.clientX, event.clientY)?.dataset.paneDrop;
     end();
     // After the library has finished (cancelling) its own drag.
-    if (paneId && target) setTimeout(() => onDrop?.(paneId, target), 0);
+    if (paneIds && target) setTimeout(() => onDrop?.(paneIds, target), 0);
   };
 
   window.addEventListener("pointermove", onPointerMove, true);

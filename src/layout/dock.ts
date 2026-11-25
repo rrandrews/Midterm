@@ -1,4 +1,5 @@
 import type { WorkspaceImperativeHandle } from "react-resizable-panels";
+import { frameOf, shownPane } from "../state/layout";
 import type { PaneData } from "../state/types";
 
 /*
@@ -70,8 +71,41 @@ export function registerPaneFocuser(paneId: string, focus: () => void): () => vo
  */
 export function focusPane(paneId: string | undefined): void {
   if (!paneId) return;
+  const revealed = showSubtab(paneId);
   wanted = paneId;
   if (!editingElsewhere()) focusers.get(paneId)?.();
+  // A subtab that was hidden can only take focus once the layout has shown it.
+  if (revealed) {
+    requestAnimationFrame(() => {
+      if (wanted === paneId && !editingElsewhere()) focusers.get(paneId)?.();
+    });
+  }
+}
+
+/**
+ * Shows a pane in the mounted layout holding it, if it is hidden behind
+ * another subtab of its frame (or another frame is maximized over it);
+ * says whether it was. (A layout that is not mounted shows
+ * the active pane's subtab: `setActivePane` selects it in the store.)
+ */
+export function showSubtab(paneId: string): boolean {
+  let revealed = false;
+  // Every one that has it: a stale layout may still be mounted beside its replacement.
+  for (const handle of docks.values()) {
+    const model = handle.getModel();
+    const frame = frameOf(model, paneId);
+    if (!frame) continue;
+    // Another frame maximized over it: restore the layout first.
+    if (model.maximizedTabsetId && model.maximizedTabsetId !== frame.id) {
+      handle.restoreTabset();
+      revealed = true;
+    }
+    if (shownPane(frame)?.id !== paneId) {
+      handle.selectTab(paneId);
+      revealed = true;
+    }
+  }
+  return revealed;
 }
 
 /** Records that a pane took focus by itself (a click, or tabbing into it). */

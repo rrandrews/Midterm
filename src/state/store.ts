@@ -1,5 +1,19 @@
 import { create } from "zustand";
-import { appendPane, createId, findPane, listPanes, removePane, singlePaneLayout } from "./layout";
+import {
+  appendPane,
+  createId,
+  createLayout,
+  findPane,
+  frameNode,
+  frameOf,
+  listPanes,
+  removePane,
+  removePanes,
+  selectPaneInLayout,
+  shownPane,
+  singlePaneLayout,
+  visiblePanes,
+} from "./layout";
 import { normalizeWorkspaceModel } from "react-resizable-panels";
 import type { Layout, PaneData, PaneNode, Tab, Workspace } from "./types";
 
@@ -38,12 +52,12 @@ export type AppActions = {
    */
   removePane: (paneId: string) => void;
   /** Moves a pane into a new tab of the same workspace and activates it. */
-  movePaneToNewTab: (paneId: string) => void;
+  movePaneToNewTab: (paneId: string | string[]) => void;
   /**
    * Moves a pane into another tab, to the right of everything there, and
    * activates that tab. Moving a tab's last pane out closes the tab.
    */
-  movePaneToTab: (paneId: string, tabId: string) => void;
+  movePaneToTab: (paneId: string | string[], tabId: string) => void;
   /** Moves a tab to `index` among its workspace's tabs. */
   moveTab: (tabId: string, index: number) => void;
   /**
@@ -98,13 +112,18 @@ function updateTab(state: AppState, tabId: string, update: (tab: Tab) => Tab): A
 function withLayout(tab: Tab, layout: Layout, options: { remount: boolean }): Tab {
   let { activePaneId } = tab;
   if (activePaneId && !findPane(layout, activePaneId)) {
+    // A subtab whose frame survives: the subtab that frame shows now.
+    const sibling = frameOf(tab.layout, activePaneId)?.tabs.find((pane) => findPane(layout, pane.id));
+    const frame = sibling && frameOf(layout, sibling.id);
     const before = listPanes(tab.layout);
     const index = before.findIndex((pane) => pane.id === activePaneId);
+    // Only a pane that is on screen now (not a hidden subtab).
+    const shown = new Set(visiblePanes(layout).map((pane) => pane.id));
     const survivor = before
       .slice(0, Math.max(index, 0))
       .reverse()
-      .find((pane) => findPane(layout, pane.id));
-    activePaneId = survivor?.id ?? listPanes(layout)[0]?.id;
+      .find((pane) => shown.has(pane.id));
+    activePaneId = (frame && shownPane(frame)?.id) ?? survivor?.id ?? visiblePanes(layout)[0]?.id;
   }
   return {
     ...tab,
@@ -112,6 +131,28 @@ function withLayout(tab: Tab, layout: Layout, options: { remount: boolean }): Ta
     activePaneId,
     layoutRev: tab.layoutRev + (options.remount ? 1 : 0),
   };
+}
+
+/**
+ * The panes a move takes, all from one tab: one pane, or several (a frame's
+ * subtabs, dragged by its grip), which travel together as one frame
+ * showing the one their frame showed. `null` when they are not all found
+ * in one tab.
+ */
+function movingPanes(
+  state: AppState,
+  paneIds: string | string[],
+): { source: Tab; panes: PaneNode[]; selectedId: string } | null {
+  const ids = typeof paneIds === "string" ? [paneIds] : paneIds;
+  const source = ids[0] ? findTabOfPane(state, ids[0]) : undefined;
+  if (!source) return null;
+  const panes = ids.map((id) => findPane(source.layout, id));
+  if (panes.some((pane) => !pane)) return null;
+  const found = panes as PaneNode[];
+  const frame = frameOf(source.layout, found[0].id);
+  const shown = frame && shownPane(frame);
+  const selectedId = shown && ids.includes(shown.id) ? shown.id : found[0].id;
+  return { source, panes: found, selectedId };
 }
 
 function withoutTab(state: AppState, tabId: string): AppState {
@@ -254,8 +295,12 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   setActivePane: (paneId) => {
     set((state) => {
       const tab = findTabOfPane(state, paneId);
-      if (!tab || tab.activePaneId === paneId) return state;
-      return updateTab(state, tab.id, (current) => ({ ...current, activePaneId: paneId }));
+      if (!tab) return state;
+      // A hidden subtab becomes its frame's selected one. (A mounted layout
+      // is told by `focusPane`, and reports the selection back.)
+      const layout = selectPaneInLayout(tab.layout, paneId);
+      if (tab.activePaneId === paneId && layout === tab.layout) return state;
+      return updateTab(state, tab.id, (current) => ({ ...current, activePaneId: paneId, layout }));
     });
   },
 
@@ -271,15 +316,15 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   movePaneToNewTab: (paneId) => {
     set((state) => {
-      const source = findTabOfPane(state, paneId);
-      const pane = source && findPane(source.layout, paneId);
-      if (!source || !pane) return state;
-      const remaining = removePane(source.layout, paneId);
+      const moving = movingPanes(state, paneId);
+      if (!moving) return state;
+      const { source, panes, selectedId } = moving;
+      const remaining = removePanes(source.layout, panes.map((pane) => pane.id));
       // Already alone in its tab: nothing to move.
       if (!remaining) return state;
       const tab = {
-        ...createTab({ title: source.title, layout: singlePaneLayout(pane) }),
-        activePaneId: pane.id,
+        ...createTab({ title: source.title, layout: createLayout(frameNode(panes, selectedId)) }),
+        activePaneId: selectedId,
       };
       const next = updateTab(state, source.id, (current) =>
         withLayout(current, remaining, { remount: true }),
@@ -299,14 +344,14 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
 
   movePaneToTab: (paneId, tabId) => {
     set((state) => {
-      const source = findTabOfPane(state, paneId);
-      const pane = source && findPane(source.layout, paneId);
+      const moving = movingPanes(state, paneId);
       const target = findTab(state, tabId);
-      if (!source || !pane || !target || source.id === target.id) return state;
-      const remaining = removePane(source.layout, paneId);
+      if (!moving || !target || moving.source.id === target.id) return state;
+      const { source, panes, selectedId } = moving;
+      const remaining = removePanes(source.layout, panes.map((pane) => pane.id));
       let next = updateTab(state, target.id, (current) => ({
-        ...withLayout(current, appendPane(current.layout, pane), { remount: true }),
-        activePaneId: pane.id,
+        ...withLayout(current, appendPane(current.layout, frameNode(panes, selectedId)), { remount: true }),
+        activePaneId: selectedId,
       }));
       next = remaining
         ? updateTab(next, source.id, (current) => withLayout(current, remaining, { remount: true }))

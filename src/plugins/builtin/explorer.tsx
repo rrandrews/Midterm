@@ -36,6 +36,7 @@ export const explorerPlugin: PanePlugin = {
       return model ? explorerMenu(model) : [];
     },
     splittable: false,
+    subtabIconOnly: true,
     background: "var(--pane-explorer)",
   },
   settings: { fields: EXPLORER_FIELDS },

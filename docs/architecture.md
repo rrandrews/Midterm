@@ -87,10 +87,12 @@ as a terminal's `cwd`) are saved to `state.json` in the app data directory
 through tauri-plugin-store, and restored before the first render.
 
 - `src/state/persist.ts`: pure `snapshotState` / `restoreState`. The saved
-  shape has a `version` (`SCHEMA_VERSION`, now 2); bump it and migrate in
+  shape has a `version` (`SCHEMA_VERSION`, now 3); bump it and migrate in
   `restoreState` when the shape changes. Version 1 files are still read:
   their terminal panes become `terminal` or `block-terminal` by their saved
-  mode. The settings are loaded before the state is restored, since that
+  mode. Versions 1 and 2 lose their pane titles (every pane was titled with
+  its kind; a title is now a subtab name, see
+  [layout.md](layout.md#subtabs)). The settings are loaded before the state is restored, since that
   migration reads them (`src/main.tsx`). Restoring validates everything:
   layouts go through `normalizeWorkspaceModel`, panes whose kind is not a
   plugin id are dropped, a tab with no valid panes becomes a fresh tab, duplicate ids are

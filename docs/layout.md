@@ -15,13 +15,15 @@ The library and the app use the same words for different things:
 |---|---|
 | workspace | one tab's pane layout (`Layout`) |
 | split | a split (horizontal or vertical) |
-| tabset | a pane's **frame**: the options menu, drag handle (rightmost) and drop target |
-| tab | a **pane** (`PaneNode`); its `data` is `PaneData` (`{ kind }`) |
+| tabset | a **frame**: one or more panes (as subtabs), the options menu, drag handle (rightmost) and drop target |
+| tab | a **pane** (`PaneNode`); its `data` is `PaneData` (`{ kind }`); in a frame with several, a **subtab** |
 
-Every frame holds exactly one pane. The library's per-tabset tab list is
-hidden, and drops that would stack a second pane into a frame are rejected
-(`rejectStacking` in `PaneLayout.tsx`). Allowed drops: the left/right/top/
-bottom of a frame (split it) and the edges of the whole layout (dock there).
+Most frames hold one pane, and then the library's tab list is hidden. A
+frame with several panes shows them as subtabs ([Subtabs](#subtabs)).
+Drops: the left/right/top/bottom of a frame (split it), its middle or its
+subtab strip (add as a subtab), and the edges of the whole layout (dock
+there). `disableDrop` in `PaneLayout.tsx` only refuses dropping a frame
+onto itself.
 
 ## Where the layout lives
 
@@ -61,6 +63,78 @@ clicks or focus inside a pane. `PaneHost` (`src/plugins/PaneHost.tsx`) marks its
 pointer-down (`setActivePane` in the store) and gets the `is-active` class;
 CSS in `src/styles/dock.css` styles the frame from that with `:has()`.
 
+## Subtabs
+
+Any frame can hold several panes, shown one at a time as **subtabs**: the
+library's tabs, drawn by `renderTab` (`src/components/layout/Subtab.tsx`).
+A frame with more than one pane gets the class `has-subtabs`, and its
+header turns from floating hover controls into a strip above the content:
+subtabs on the left, the … menu and drag handle at the right (still shown
+on hover or while active), and between them an invisible drag handle
+(`.subtab-gap`, a second `TabsetDragHandle`: the library only starts a
+frame drag from one) so the empty space drags the whole frame.
+One-pane frames keep the floating controls and lose no space.
+
+- **Making them**: the pane menu's **New subtab ›** (any enabled plugin),
+  the palette's "New subtab" (`pane.newSubtab`, the default kind) and "New
+  X subtab" (`pane.newSubtab.<kind>`), or dragging a pane onto the middle
+  of another or onto a subtab strip. Dragging a subtab out of the strip
+  splits it off or docks it, like any pane; the grip drags all of them.
+  `addSubtab` in `src/actions.ts`. Dropping a frame's grip on a top-level
+  tab or `+` moves all its subtabs together (`notePaneDrag` records them,
+  the shown one first; the store's `movePaneToTab` / `movePaneToNewTab`
+  take a list).
+- **What a subtab shows**: the plugin's `icon` (`PluginIcon`), then the
+  name the user gave it, else the pane's `tabTitle`, else the plugin's
+  name. A plugin with `pane.subtabIconOnly` (the explorer) gets an
+  icon-only square unless the user names it. Labels follow `tabTitle`
+  through `subscribeTitles` in `src/plugins/tabTitles.ts`.
+- **Naming**: right-click → Rename subtab… (or double-click). The name is
+  the pane's `title` (`renameSubtab`, `paneName` in `src/state/layout.ts`);
+  an empty name goes back to the automatic label. The menu acts on that
+  pane by id; opening it does not select the subtab. Panes get no title
+  otherwise: older builds titled every pane with its kind, and
+  `restoreState` drops all titles from files before version 3. The rest of the right-click menu is
+  the pane's.
+- **⇧⌘1 … ⇧⌘9, ⇧⌘0** show the first to tenth subtab of the active pane's
+  frame (`pane.subtab1` … `pane.subtab10`, `selectSubtabByDigit`); "Next
+  subtab" / "Previous subtab" are in the palette, unbound. Note that macOS
+  takes ⇧⌘3, ⇧⌘4 and ⇧⌘5 for screenshots unless they are turned off in
+  System Settings → Keyboard → Keyboard Shortcuts.
+- **Active pane**: only a shown pane can be active (`activePaneId` falls
+  back to the subtab its frame shows). `focusPane` shows a hidden pane in
+  the mounted layout first (`showSubtab` in `src/layout/dock.ts`: selects
+  its subtab, and restores the layout if another frame is maximized), then
+  focuses it again on the next frame; `setActivePane` selects it in the
+  stored layout (`selectPaneInLayout`), for tabs that are not mounted. In
+  `onModelChanged`, a subtab the user selected (pointer or keyboard)
+  becomes the active pane and the focus target (`notePaneFocused`), even
+  when keyboard focus stays on the strip; when a drop hides the active
+  pane, its frame's shown subtab takes over. Clicking a subtab also
+  focuses its pane.
+- **Closing** the shown subtab shows the one after it (else before it)
+  and focuses it (`closingNeighbour`). Store-side removals do the same
+  (`removePanes` picks the successor before the library tidies the
+  layout; `withLayout` makes it active). The library's Delete/Backspace
+  on a focused subtab is turned into `closePane` (`onBeforeModelChange`),
+  so it asks like any close.
+- Hidden subtabs stay mounted in the library's hidden parking element, so
+  terminals keep running (`fitNow` skips a host with no size). Their
+  `getBoundingClientRect` is empty, so ⌥⌘arrows skip them.
+- A frame's size limits come from the pane it shows; switching subtabs
+  re-syncs them.
+
+### Styling
+
+In `dock.css`, from variables on `.pane-frame` that a theme or a plugin's
+CSS can override: `--subtab-height` (24px), `--subtab-strip-bg` (the app
+background, a little darker than pane content), `--subtab-selected-bg`,
+`--subtab-hover-bg`, `--subtab-divider` (the hairlines between subtabs,
+left out beside the selected one), `--subtab-fg`, `--subtab-selected-fg`.
+There is no line between the strip and the content. A drop position in
+the strip is an accent bar on the subtab (`data-drop-before` /
+`data-drop-after`); a drop on a frame's middle reads "Add as subtab".
+
 ## Pane numbers and ⌥ digits
 
 ⌥1 … ⌥9 focus the first to ninth pane of the active tab and ⌥0 the tenth
@@ -68,8 +142,8 @@ CSS in `src/styles/dock.css` styles the frame from that with `:has()`.
 running `selectPaneByDigit` in `src/actions.ts`). A number with no pane does
 nothing. If another pane is maximized, the layout is restored first.
 
-The order is `listPanes` order (depth-first through the splits, then floating
-panes), not on-screen geometry, so a pane keeps its number while the user
+The order is `visiblePanes` order (depth-first through the splits, then
+floating panes, counting each frame's shown subtab only), not on-screen geometry, so a pane keeps its number while the user
 resizes. `paneNumbers`, `paneNumberLabel` and `paneIndexForDigit` in
 `src/state/layout.ts` are the single source of that mapping, for both the
 shortcuts and the overlay. The overlay labels each pane with its command's
@@ -97,7 +171,9 @@ The library renders unstyled elements. Class names are assigned in
 | Class | Element |
 |---|---|
 | `pane-frame` | a pane's frame |
-| `pane-header` | hover controls, floated over the top-right of the pane |
+| `pane-header` | hover controls, floated over the top-right of the pane; the subtab strip in a `has-subtabs` frame |
+| `pane-tablist` | the subtabs (hidden in a one-pane frame) |
+| `subtab` | one subtab (`Subtab.tsx`); `is-icon-only` for the icon-only square |
 | `pane-separator` | 1px hairline between panes, accent grip on hover/drag |
 | `pane-drop` | the drop indicator (label comes from its `data-region` / `data-edge`) |
 | `pane-drag-preview` | chip that follows the pointer during a drag |
@@ -124,7 +200,9 @@ Run `bun run dev` and open `localhost:1420/?mockup`:
 
 1. Drag a pane by its grip onto each side of another pane, and onto an edge
    of the window. The indicator names the result; dropping does it.
-2. Drag onto the middle of a pane: no indicator, nothing happens.
+2. Drag onto the middle of a pane: "Add as subtab"; dropping stacks it.
+   Drag a subtab out of the strip onto another pane's side: it splits off.
+   ⇧⌘1/⇧⌘2 switch subtabs; right-click a subtab → Rename.
 3. ⌘D, ⇧⌘D, ⌘W, ⌥⌘arrows: the new or neighbouring pane has focus each time.
 4. Drag a separator; panes resize and terminals refit.
 5. Pane menu → Move to new tab, then switch back: both tabs are intact.

@@ -20,7 +20,7 @@ import type { Layout, PaneData, Tab, Workspace } from "./types";
  */
 
 /** Bump when the saved shape changes incompatibly, and migrate in `restoreState`. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 type SavedTab = Pick<Tab, "id" | "title" | "titleLocked" | "layout" | "activePaneId">;
 type SavedWorkspace = Pick<Workspace, "id" | "name" | "icon" | "activeTabId"> & { tabs: SavedTab[] };
@@ -102,7 +102,10 @@ export function restoreLayout(saved: unknown): Layout | null {
     layout = normalizeWorkspaceModel<PaneData>(saved as Layout, {
       mapTab: (pane) => {
         const data = restorePaneData(pane.data);
-        return data ? { ...pane, data } : null;
+        if (!data) return null;
+        // A title is the name the user gave the pane's subtab.
+        const { title, ...rest } = pane;
+        return typeof title === "string" && title.trim() ? { ...rest, title, data } : { ...rest, data };
       },
     });
   } catch {
@@ -166,11 +169,33 @@ function migrateV1Layout(layout: unknown, legacyBlocksDefault: boolean): void {
 }
 
 function migrateV1Panes(workspaces: unknown, legacyBlocksDefault: boolean): void {
+  forEachLayout(workspaces, (layout) => migrateV1Layout(layout, legacyBlocksDefault));
+}
+
+function forEachLayout(workspaces: unknown, visit: (layout: unknown) => void): void {
   if (!Array.isArray(workspaces)) return;
   for (const workspace of workspaces) {
     if (!isRecord(workspace) || !Array.isArray(workspace.tabs)) continue;
-    for (const tab of workspace.tabs) if (isRecord(tab)) migrateV1Layout(tab.layout, legacyBlocksDefault);
+    for (const tab of workspace.tabs) if (isRecord(tab)) visit(tab.layout);
   }
+}
+
+/**
+ * Versions 1 and 2 titled every pane with its kind when it was made (and
+ * kept that title when its kind changed). Version 3 gives a pane a title
+ * only when the user names its subtab, so the old titles go. In place.
+ */
+function dropPaneTitles(layout: unknown): void {
+  const visit = (node: unknown): void => {
+    if (!isRecord(node)) return;
+    if (node.type === "split" && Array.isArray(node.children)) node.children.forEach(visit);
+    if (node.type === "tabset" && Array.isArray(node.tabs)) {
+      for (const tab of node.tabs) if (isRecord(tab)) delete tab.title;
+    }
+  };
+  if (!isRecord(layout)) return;
+  visit(layout.root);
+  if (Array.isArray(layout.floating)) layout.floating.forEach(visit);
 }
 
 export type RestoreOptions = {
@@ -186,12 +211,15 @@ export type RestoreOptions = {
  * if it cannot be used at all (missing, unknown version, no workspaces).
  */
 export function restoreState(saved: unknown, { legacyBlocksDefault = false }: RestoreOptions = {}): AppState | null {
-  if (!isRecord(saved) || (saved.version !== SCHEMA_VERSION && saved.version !== 1) || !Array.isArray(saved.workspaces)) {
+  if (!isRecord(saved) || ![1, 2, SCHEMA_VERSION].includes(saved.version as number) || !Array.isArray(saved.workspaces)) {
     return null;
   }
-  if (saved.version === 1) {
+  if (saved.version !== SCHEMA_VERSION) {
+    const version = saved.version;
     saved = structuredClone(saved) as Record<string, unknown>;
-    migrateV1Panes((saved as Record<string, unknown>).workspaces, legacyBlocksDefault);
+    const { workspaces } = saved as Record<string, unknown>;
+    if (version === 1) migrateV1Panes(workspaces, legacyBlocksDefault);
+    forEachLayout(workspaces, dropPaneTitles);
   }
   if (!isRecord(saved) || !Array.isArray(saved.workspaces)) return null;
   const workspaces = saved.workspaces

@@ -10,7 +10,11 @@ import type { SettingField } from "./fields";
  * pane kind saved in layouts. See docs/plugins.md.
  */
 
-/** An icon: a lucide icon name (built-ins), or an SVG/image URL. */
+/**
+ * An icon: a lucide icon name in kebab-case ("square-terminal"), or an
+ * SVG/image URL. Every plugin should have one: it is drawn on its panes'
+ * subtabs and in the settings.
+ */
 export type IconSpec = string;
 
 /** Props given to a plugin's React component. */
@@ -77,7 +81,7 @@ export type MenuItemSpec =
  * leave out (`PaneSpec.hideMenuItems`). "Settings…" and "Close pane" are
  * always shown.
  */
-export const HIDEABLE_PANE_MENU_ITEMS = ["splitRight", "splitDown", "changeType", "agent", "maximize", "moveToTab"] as const;
+export const HIDEABLE_PANE_MENU_ITEMS = ["splitRight", "splitDown", "newSubtab", "changeType", "agent", "maximize", "moveToTab"] as const;
 export type HideablePaneMenuItem = (typeof HIDEABLE_PANE_MENU_ITEMS)[number];
 
 /**
@@ -164,6 +168,12 @@ export type PaneSpec = {
    * Explorers say no (it squeezes the tree).
    */
   splittable?: boolean;
+  /**
+   * Subtabs of this kind show only the plugin's icon (its name in a
+   * tooltip) unless the user names them. By default a subtab shows the icon
+   * and the pane's `tabTitle` (or the plugin's name).
+   */
+  subtabIconOnly?: boolean;
   /** CSS background of the pane; defaults to the generic pane background token. */
   background?: string;
   /** CSS background of the pane while active, if different. */

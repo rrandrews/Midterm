@@ -1,17 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  countFrames,
   countPanes,
   createLayout,
   createPane,
   findPane,
   frameIdOf,
+  frameOf,
+  isShown,
   listPanes,
   paneIndexForDigit,
+  paneName,
   paneNode,
   paneNumberLabel,
   paneNumbers,
   removePane,
+  selectPaneInLayout,
+  shownPane,
   singlePaneLayout,
+  visiblePanes,
 } from "./layout";
 import type { Layout } from "./types";
 
@@ -143,5 +150,71 @@ describe("pane numbers", () => {
     expect(Object.keys(numbers)).toHaveLength(10);
     expect(numbers[panes[9].id]).toBe("0");
     expect(numbers[panes[10].id]).toBeUndefined();
+  });
+});
+
+describe("subtabs", () => {
+  function stacked() {
+    const a = createPane("terminal");
+    const b = createPane("editor");
+    const c = createPane("explorer");
+    const d = createPane("viewer");
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: [paneNode(c), { type: "tabset", tabs: [a, b, d], selectedId: b.id }],
+    });
+    return { layout, a, b, c, d };
+  }
+
+  it("lists the pane each frame shows", () => {
+    const { layout, b, c } = stacked();
+    expect(visiblePanes(layout).map((pane) => pane.id)).toEqual([c.id, b.id]);
+    expect(countFrames(layout)).toBe(2);
+    expect(countPanes(layout)).toBe(4);
+  });
+
+  it("numbers only the panes on screen", () => {
+    const { layout, b, c } = stacked();
+    expect(paneNumbers(layout)).toEqual({ [c.id]: "1", [b.id]: "2" });
+  });
+
+  it("knows which subtab is shown", () => {
+    const { layout, a, b, c } = stacked();
+    expect(isShown(layout, b.id)).toBe(true);
+    expect(isShown(layout, a.id)).toBe(false);
+    expect(isShown(layout, c.id)).toBe(true);
+    expect(frameOf(layout, a.id)?.tabs).toHaveLength(3);
+    expect(shownPane({ tabs: [a, b], selectedId: undefined })?.id).toBe(a.id);
+  });
+
+  it("selects a hidden subtab, leaving the layout alone when it already shows", () => {
+    const { layout, a, b } = stacked();
+    expect(selectPaneInLayout(layout, b.id)).toBe(layout);
+    expect(selectPaneInLayout(layout, "missing")).toBe(layout);
+    const next = selectPaneInLayout(layout, a.id);
+    expect(isShown(next, a.id)).toBe(true);
+    expect(isShown(next, b.id)).toBe(false);
+    expect(isShown(layout, a.id)).toBe(false);
+  });
+
+  it("shows the next subtab when the shown one is removed", () => {
+    const { layout, a, b, d } = stacked();
+    const next = removePane(layout, b.id);
+    expect(next && isShown(next, d.id)).toBe(true);
+    // The last one gives way to the one before it.
+    const last = removePane(selectPaneInLayout(layout, d.id), d.id);
+    expect(last && isShown(last, b.id)).toBe(true);
+    // Removing a hidden one leaves the selection alone.
+    const hidden = removePane(layout, a.id);
+    expect(hidden && isShown(hidden, b.id)).toBe(true);
+  });
+
+  it("names a pane only when the user did", () => {
+    const pane = createPane("terminal");
+    expect(pane.title).toBeUndefined();
+    expect(paneName(pane)).toBeUndefined();
+    expect(paneName({ ...pane, title: "  " })).toBeUndefined();
+    expect(paneName({ ...pane, title: " build " })).toBe("build");
   });
 });

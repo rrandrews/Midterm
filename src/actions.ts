@@ -8,14 +8,18 @@ import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { convertedData, defaultTerminalKind, fileHandlers, newPane, newPaneData } from "./plugins/panes";
 import { isPluginEnabled, paneSpec } from "./plugins/registry";
 import {
+  countFrames,
   countPanes,
   createPane,
   findPane,
   frameIdOf,
+  frameOf,
   listPanes,
   paneIndexForDigit,
   paneNumbers,
+  shownPane,
   singlePaneLayout,
+  visiblePanes,
 } from "./state/layout";
 import {
   findTabOfPane,
@@ -40,11 +44,16 @@ function activeLayout(): { dock: DockHandle | null; layout: Layout } {
   return { dock, layout: dock?.getModel() ?? tab.layout };
 }
 
-/** The pane that last had focus in the active tab (its first pane if none has yet). */
+/**
+ * The pane that last had focus in the active tab (its first pane on screen
+ * if none has yet). A remembered pane hidden behind another subtab of its
+ * frame gives way to the one shown.
+ */
 export function activePaneId(): string | undefined {
   const { activePaneId: remembered } = selectActiveTab(store());
-  const panes = listPanes(activeLayout().layout);
-  return panes.find((pane) => pane.id === remembered)?.id ?? panes[0]?.id;
+  const { layout } = activeLayout();
+  const frame = remembered ? frameOf(layout, remembered) : undefined;
+  return (frame && shownPane(frame)?.id) ?? visiblePanes(layout)[0]?.id;
 }
 
 export function focusActivePane(): void {
@@ -174,11 +183,8 @@ export function closePaneNow(paneId = activePaneId()): void {
     return;
   }
 
-  // Focus moves to the pane before the closed one (or after, for the first).
-  const panes = listPanes(layout);
-  const index = panes.findIndex((pane) => pane.id === paneId);
-  const neighbour = panes[index > 0 ? index - 1 : 1]?.id;
   const focused = activePaneId();
+  const neighbour = closingNeighbour(layout, paneId);
 
   if (dock) dock.closeTab(paneId);
   else store().removePane(paneId);
@@ -186,11 +192,28 @@ export function closePaneNow(paneId = activePaneId()): void {
   if (wasActive) focusPane(focused === paneId ? neighbour : focused);
 }
 
+/**
+ * The pane that takes focus when `paneId` closes: the subtab its frame shows
+ * next (the one after it, else before it), or for a frame's only pane the
+ * pane shown before it (after it, for the first).
+ */
+function closingNeighbour(layout: Layout, paneId: string): string | undefined {
+  const frame = frameOf(layout, paneId);
+  if (frame && frame.tabs.length > 1) {
+    if (shownPane(frame)?.id !== paneId) return shownPane(frame)?.id;
+    const index = frame.tabs.findIndex((pane) => pane.id === paneId);
+    return (frame.tabs[index + 1] ?? frame.tabs[index - 1])?.id;
+  }
+  const panes = visiblePanes(layout);
+  const index = panes.findIndex((pane) => pane.id === paneId);
+  return panes[index > 0 ? index - 1 : 1]?.id;
+}
+
 /** Maximizes a pane within its tab, or restores the layout if it is maximized. */
 export function toggleMaximizePane(paneId = activePaneId()): void {
   const { dock, layout } = activeLayout();
   const frameId = paneId && frameIdOf(layout, paneId);
-  if (!dock || !frameId || countPanes(layout) <= 1) return;
+  if (!dock || !frameId || countFrames(layout) <= 1) return;
   if (layout.maximizedTabsetId === frameId) dock.restoreTabset();
   else dock.maximizeTabset(frameId);
   focusPane(paneId);
@@ -220,10 +243,16 @@ export function movePaneToTab(paneId: string, tabId: string): void {
   focusPane(paneId);
 }
 
-/** A pane dropped on a tab (`target` is its id) or on the new-tab button (`"new"`). */
-export function dropPaneOnTab(paneId: string, target: string): void {
-  if (target === "new") movePaneToNewTab(paneId);
-  else movePaneToTab(paneId, target);
+/**
+ * Panes dropped on a tab (`target` is its id) or on the new-tab button
+ * (`"new"`): one pane, or a frame's subtabs (dragged by its grip), which
+ * stay together. The first is the one their frame showed.
+ */
+export function dropPaneOnTab(paneIds: string[], target: string): void {
+  if (paneIds.length === 0) return;
+  if (target === "new") store().movePaneToNewTab(paneIds);
+  else store().movePaneToTab(paneIds, target);
+  focusPane(paneIds[0]);
 }
 
 export type Direction = "left" | "right" | "up" | "down";
@@ -244,6 +273,8 @@ export function focusNeighbourPane(direction: Direction): void {
     const id = el.dataset.paneId;
     if (!id || id === current) continue;
     const rect = el.getBoundingClientRect();
+    // A hidden subtab has no box.
+    if (!rect.width || !rect.height) continue;
     // Distance to travel along the direction's axis; panes behind us don't count.
     const gap = horizontal
       ? forward
@@ -280,11 +311,11 @@ export function activePaneNumbers(): Record<string, string> {
 
 /**
  * Focuses the pane a digit key (1 … 9, 0 for the tenth) selects, counting
- * in `listPanes` order. Restores a maximized layout if the pane is hidden by it.
+ * in `visiblePanes` order. Restores a maximized layout if the pane is hidden by it.
  */
 export function selectPaneByDigit(digit: number): void {
   const { dock, layout } = activeLayout();
-  const pane = listPanes(layout)[paneIndexForDigit(digit)];
+  const pane = visiblePanes(layout)[paneIndexForDigit(digit)];
   if (!pane) return;
   const hidden = layout.maximizedTabsetId && layout.maximizedTabsetId !== frameIdOf(layout, pane.id);
   if (dock && hidden) dock.restoreTabset();
@@ -292,6 +323,54 @@ export function selectPaneByDigit(digit: number): void {
   focusPane(pane.id);
   // A pane revealed by the restore can only take focus once it is visible again.
   if (hidden) restoreFocusSoon(pane.id);
+}
+
+/**
+ * Shows and focuses the subtab a digit key (1 … 9, 0 for the tenth) selects
+ * in the active pane's frame. A number with no subtab does nothing.
+ */
+export function selectSubtabByDigit(digit: number): void {
+  const { layout } = activeLayout();
+  const id = activePaneId();
+  const pane = id && frameOf(layout, id)?.tabs[paneIndexForDigit(digit)];
+  if (!pane) return;
+  store().setActivePane(pane.id);
+  focusPane(pane.id);
+}
+
+/** Shows the next (`1`) or previous (`-1`) subtab of the active pane's frame, wrapping around. */
+export function cycleSubtab(delta: 1 | -1): void {
+  const { layout } = activeLayout();
+  const id = activePaneId();
+  const tabs = (id && frameOf(layout, id)?.tabs) || [];
+  if (tabs.length < 2) return;
+  const index = tabs.findIndex((pane) => pane.id === id);
+  const next = tabs[(index + delta + tabs.length) % tabs.length];
+  store().setActivePane(next.id);
+  focusPane(next.id);
+}
+
+/**
+ * Adds a pane of `kind` (the default kind when not given) as a new subtab of
+ * a pane's frame, after the frame's other subtabs, and shows it.
+ */
+export function addSubtab(kind?: PaneKind, paneId = activePaneId()): void {
+  const { dock, layout } = activeLayout();
+  const frame = paneId ? frameOf(layout, paneId) : undefined;
+  if (!dock || !frame || !paneId) return;
+  const pane = newPane(kind, findPane(layout, paneId));
+  if (dock.addTab(pane, { target: { tabsetId: frame.id, index: frame.tabs.length } })) {
+    store().setActivePane(pane.id);
+    focusPane(pane.id);
+  }
+}
+
+/** Names a pane's subtab; an empty name goes back to the automatic one. */
+export function renameSubtab(paneId: string, name: string): void {
+  const tab = findTabOfPane(store(), paneId);
+  const dock = tab && getDock(tab);
+  if (!dock) return;
+  dock.updateTab(paneId, { title: name.trim() || undefined });
 }
 
 function restoreFocusSoon(paneId: string): void {

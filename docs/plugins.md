@@ -17,6 +17,7 @@ and run in the main window with the app's full access.
 | `src/plugins/PaneHost.tsx` | Renders a pane: plugin lookup, an error boundary per pane, the right-click menu, the placeholder, and the agent card of a one-off agent request (any kind of pane). |
 | `src/plugins/PluginPlaceholder.tsx` | Shown for a pane whose plugin is disabled, missing or still loading. |
 | `src/plugins/MenuItems.tsx` | Renders declarative `MenuItemSpec`s. |
+| `src/plugins/PluginIcon.tsx` | Draws a plugin's `icon`: bundled lucide icons for built-ins, any other lucide name loaded on first use (`lucide-react/dynamic`, itself a lazy chunk), a URL as an image, else a puzzle piece. |
 | `src/plugins/paneMenu.ts` | `hiddenMenuItems`: which built-in pane menu items a plugin leaves out. |
 | `src/plugins/paneState.ts` | `createPaneState`: per-pane state kept outside React (see below). |
 | `src/plugins/panes.ts` | Default kind, data for new panes, conversions, `directoryOf`, `fileHandlers`. |
@@ -62,10 +63,11 @@ All `PaneSpec` members are optional:
 | `tabTitle(pane)` | Title of a tab whose active pane this is. Call `api.panes.refreshTitles()` when its inputs change. |
 | `menu(ctx)` | Right-click items, declared as data, shown above the items every pane has. |
 | `optionsMenu(ctx)` | The same for the pane's … (options) menu. |
-| `hideMenuItems` | Built-in menu items to leave out of both menus: a list of `splitRight`, `splitDown`, `changeType`, `agent`, `maximize`, `moveToTab` (`HIDEABLE_PANE_MENU_ITEMS`), or `(ctx) => list`. Unknown names are ignored. **Settings…** and **Close pane** are always shown. |
+| `hideMenuItems` | Built-in menu items to leave out of both menus: a list of `splitRight`, `splitDown`, `newSubtab`, `changeType`, `agent`, `maximize`, `moveToTab` (`HIDEABLE_PANE_MENU_ITEMS`), or `(ctx) => list`. Unknown names are ignored. **Settings…** and **Close pane** are always shown. |
 | `fileHandler(path)` | `"default"`, `"option"` or `false`. `openFile` picks from the enabled plugins. |
 | `reveal(paneId, path, line, column?)` | Opening a file at a line (only handlers with `reveal` are asked). |
 | `splittable: false` | `openFile` avoids splitting this pane (explorers). |
+| `subtabIconOnly` | The pane's subtab shows only the plugin's icon (name in a tooltip) unless the user names it. The explorer does this. See [layout.md](layout.md#subtabs). |
 | `size` | `{ minWidth?, minHeight?, maxWidth?, maxHeight? }` in pixels, for the pane's frame. Clamped by the host (`PANE_SIZE_BOUNDS` in `src/layout/paneSize.ts`): minimums to 96–800 wide and 56–600 high, maximums to at least 160 wide / 100 high and the minimum. See [layout.md](layout.md#pane-size-limits). |
 | `background`, `activeBackground` | CSS background, set as `--pane-bg` / `--pane-bg-active`. The default is `--pane-default`. |
 | `ownsContextMenu(paneId, event)` | Leave a right-click to the content (a terminal program reading the mouse). |
@@ -113,7 +115,7 @@ all use this helper; plugins get it as `api.panes.createState`.
 
 - Every pane's … menu and right-click menu end with the same built-in
   items (`src/components/layout/PaneMenuItems.tsx`): Split right, Split
-  down, Change pane type, Agent, Maximize, Move to tab, then **Settings…**
+  down, New subtab ›, Change pane type, Agent, Maximize, Move to tab, then **Settings…**
   (opens the plugin's section in Settings) and **Close pane**. Above them
   come the plugin's `optionsMenu` items (… menu) or `menu` items
   (right-click). A plugin may hide any built-in item except the last two
@@ -125,8 +127,8 @@ all use this helper; plugins get it as `api.panes.createState`.
 - `paneActionCommand({ id, title, … }, actionName, activePaneId)` makes a
   command that forwards to the active pane's registered action. A plugin
   can add its own action names (`PaneActions` is open).
-- For every enabled plugin, the palette gets "New X pane",
-  "New X in new tab" and "Change pane to X". Their ids are stable and their
+- For every enabled plugin, the palette gets "New X pane", "New X subtab"
+  (`pane.newSubtab.<kind>`), "New X in new tab" and "Change pane to X". Their ids are stable and their
   shortcuts can be rebound.
 - The `defaultTerminal` setting (General → Default terminal) is the
   terminal new terminals open in: any enabled plugin with `terminal: true`
@@ -275,7 +277,7 @@ A plugin is a folder with a manifest and an ES module:
 ```json
 {
   "id": "scratchpad", "name": "Scratchpad", "version": "1.0.0", "apiVersion": 1,
-  "main": "main.js", "style": "style.css",
+  "main": "main.js", "style": "style.css", "icon": "notebook-pen",
   "skills": ["skills/notes/SKILL.md"],
   "description": "…", "author": "…"
 }
@@ -283,6 +285,12 @@ A plugin is a folder with a manifest and an ES module:
 
 - Paths are plain relative paths (no `./`, `..` or absolute paths) and must
   exist.
+- `icon` (every plugin should declare one) is a lucide icon name in
+  kebab-case (`notebook-pen`) or a relative `.svg`/`.png` path inside the
+  folder (`assets/icon.svg`; a name has no `.` or `/`). The manifest's icon
+  is known before the module loads (stubs); the module's own `icon`
+  overrides it. Relative paths are resolved to `plugin://` URLs by the
+  loader (`resolveIcon`). Without an icon, a generic puzzle icon is shown.
 - The id may not be a built-in one (`terminal`, `block-terminal`,
   `explorer`, `editor`, `viewer`, `theme-editor`, `agent`, `antigravity`,
   `claude-code`, `midterm`; `RESERVED_IDS` in `src-tauri/src/plugins/manifest.rs`).

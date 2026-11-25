@@ -73,6 +73,25 @@ describe("snapshot and restore", () => {
     ]);
   });
 
+  it("keeps subtab names", () => {
+    const named = { ...createPane("terminal"), title: "build" };
+    const blank = { ...createPane("editor"), title: "  " };
+    const layout = createLayout({ type: "tabset", tabs: [named, blank] });
+    const restored = restoreLayout(roundTrip(layout));
+    expect(restored && listPanes(restored).map((pane) => pane.title)).toEqual(["build", undefined]);
+  });
+
+  it("drops the titles version 2 gave every pane", () => {
+    const pane = { ...createPane("sizetest"), title: "terminal" };
+    const saved = roundTrip(snapshotState({ workspaces: [createWorkspace("w", [createTab({ layout: createLayout({ type: "tabset", tabs: [pane] }) })])], activeWorkspaceId: "" }));
+    const v2 = { ...(saved as object), version: 2 };
+    const restored = restoreState(v2);
+    expect(restored && listPanes(restored.workspaces[0].tabs[0].layout).map((p) => p.title)).toEqual([undefined]);
+    // The current version keeps them.
+    const current = restoreState(saved);
+    expect(current && listPanes(current.workspaces[0].tabs[0].layout).map((p) => p.title)).toEqual(["terminal"]);
+  });
+
   it("turns version 1 terminal modes into terminal kinds", () => {
     const v1 = (legacyBlocksDefault: boolean) => {
       const panes = [

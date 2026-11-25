@@ -9,12 +9,17 @@ import { DotsIcon, GripIcon } from "../ui/icons";
 import { Menu, MenuContent, MenuTrigger } from "../ui/Menu";
 import { PaneMenuItems } from "./PaneMenuItems";
 
-/** A pane's hover controls: the options menu, then the drag handle in the corner. */
-export function PaneToolbar({ pane }: { pane: PaneNode }) {
+/**
+ * A pane's hover controls: the options menu, then the drag handle in the
+ * corner. In a subtab strip (`strip`), the empty space before them drags
+ * the frame too: the library only starts a frame drag from a drag handle.
+ */
+export function PaneToolbar({ pane, strip = false }: { pane: PaneNode; strip?: boolean }) {
   const { kind } = pane.data;
   const ctx = useMemo(() => createPaneContext(pane.id, kind), [pane.id, kind]);
   return (
-    <div className="flex gap-0.5">
+    <div className={strip ? "flex flex-1 items-center gap-0.5 self-stretch" : "flex gap-0.5"}>
+      {strip && <TabsetDragHandle aria-hidden="true" tabIndex={-1} title="" className="subtab-gap" />}
       <Menu
         onOpenChange={(open) => {
           // Opening a pane's menu makes it the active pane.

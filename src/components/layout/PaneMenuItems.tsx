@@ -1,5 +1,5 @@
 import { openAgent, promptForAgent } from "../../ai/agent/actions";
-import { movePaneToNewTab, movePaneToTab, splitPane, toggleMaximizePane } from "../../actions";
+import { addSubtab, movePaneToNewTab, movePaneToTab, splitPane, toggleMaximizePane } from "../../actions";
 import { changePaneKind, closePane } from "../../closing";
 import { shortcutLabel } from "../../commands/registry";
 import { getDock } from "../../layout/dock";
@@ -7,8 +7,9 @@ import { hiddenMenuItems } from "../../plugins/paneMenu";
 import { enabledPlugins } from "../../plugins/registry";
 import { HIDEABLE_PANE_MENU_ITEMS, type HideablePaneMenuItem, type PaneContext } from "../../plugins/types";
 import { openSettings } from "../../settings/dialogState";
-import { countPanes, findPane, frameIdOf } from "../../state/layout";
+import { countFrames, countPanes, findPane, frameIdOf } from "../../state/layout";
 import { findTabOfPane, selectActiveWorkspace, useAppStore } from "../../state/store";
+import { PluginIcon } from "../../plugins/PluginIcon";
 import { MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger } from "../ui/Menu";
 
 /**
@@ -22,8 +23,9 @@ export function PaneMenuItems({ paneId, ctx }: { paneId: string; ctx?: PaneConte
   if (!tab) return null;
   const layout = getDock(tab)?.getModel() ?? tab.layout;
   const kind = findPane(layout, paneId)?.data.kind;
-  // Alone in its tab: nothing to maximize over and nowhere to move from.
+  // Alone in its tab: nowhere to move from. The only frame: nothing to maximize over.
   const alone = countPanes(layout) <= 1;
+  const onlyFrame = countFrames(layout) <= 1;
   const maximized = layout.maximizedTabsetId === frameIdOf(layout, paneId);
   const otherTabs = selectActiveWorkspace(state).tabs.filter((other) => other.id !== tab.id);
   const hidden = hiddenMenuItems(kind, ctx);
@@ -41,6 +43,25 @@ export function PaneMenuItems({ paneId, ctx }: { paneId: string; ctx?: PaneConte
         <MenuItem shortcut={shortcutLabel("pane.splitDown")} onSelect={() => splitPane("bottom", paneId)}>
           Split down
         </MenuItem>
+      )}
+      {shown("newSubtab") && (
+        <MenuSub>
+          <MenuSubTrigger>New subtab</MenuSubTrigger>
+          <MenuSubContent>
+            {enabledPlugins().map((option) => (
+              <MenuItem
+                key={option.id}
+                shortcut={shortcutLabel(`pane.newSubtab.${option.id}`)}
+                onSelect={() => addSubtab(option.id, paneId)}
+              >
+                <span className="flex items-center gap-2">
+                  <PluginIcon icon={option.icon} size={13} className="text-fg-dim" />
+                  {option.name}
+                </span>
+              </MenuItem>
+            ))}
+          </MenuSubContent>
+        </MenuSub>
       )}
       {shown("changeType") && (
         <MenuSub>
@@ -72,7 +93,7 @@ export function PaneMenuItems({ paneId, ctx }: { paneId: string; ctx?: PaneConte
         </MenuSub>
       )}
       {shown("maximize") && (
-        <MenuItem shortcut={shortcutLabel("pane.toggleMaximize")} disabled={alone} onSelect={() => toggleMaximizePane(paneId)}>
+        <MenuItem shortcut={shortcutLabel("pane.toggleMaximize")} disabled={onlyFrame} onSelect={() => toggleMaximizePane(paneId)}>
           {maximized ? "Restore pane" : "Maximize pane"}
         </MenuItem>
       )}

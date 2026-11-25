@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { countPanes, createLayout, createPane, listPanes, paneNode } from "./layout";
+import { countPanes, createLayout, createPane, isShown, listPanes, paneNode } from "./layout";
 import {
   createTab,
   createWorkspace,
@@ -151,6 +151,75 @@ describe("panes", () => {
 
     store().movePaneToNewTab(a.id);
     expect(selectActiveTab(store()).activePaneId).toBe(a.id);
+  });
+
+  it("shows a hidden subtab when it becomes the active pane", () => {
+    const a = createPane("terminal");
+    const b = createPane("editor");
+    const c = createPane("viewer");
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: [paneNode(c), { type: "tabset", tabs: [a, b], selectedId: a.id }],
+    });
+    store().addTab({ layout });
+    store().setActivePane(b.id);
+    const tab = selectActiveTab(store());
+    expect(tab.activePaneId).toBe(b.id);
+    expect(isShown(tab.layout, b.id)).toBe(true);
+    expect(tab.layoutRev).toBe(0);
+  });
+
+  it("re-points the active pane at a pane on screen, not a hidden subtab", () => {
+    const a = createPane("terminal");
+    const b = createPane("editor");
+    const c = createPane("viewer");
+    const hidden = createPane("explorer");
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: [{ type: "tabset", tabs: [hidden, a], selectedId: a.id }, paneNode(b), paneNode(c)],
+    });
+    store().addTab({ layout });
+    store().setActivePane(b.id);
+    store().removePane(b.id);
+    expect(selectActiveTab(store()).activePaneId).toBe(a.id);
+  });
+
+  it("moves a frame's subtabs together, keeping the one shown", () => {
+    const a = createPane("terminal");
+    const b = createPane("editor");
+    const c = createPane("viewer");
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: [paneNode(c), { type: "tabset", tabs: [a, b], selectedId: b.id }],
+    });
+    store().addTab({ layout });
+    store().movePaneToNewTab([b.id, a.id]);
+    const moved = selectActiveTab(store());
+    expect(listPanes(moved.layout).map((pane) => pane.id)).toEqual([b.id, a.id]);
+    expect(isShown(moved.layout, b.id)).toBe(true);
+    expect(moved.activePaneId).toBe(b.id);
+  });
+
+  it("keeps the active pane in its frame when its subtab moves away", () => {
+    const a = createPane("terminal");
+    const b = createPane("editor");
+    const c = createPane("viewer");
+    const d = createPane("explorer");
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: [paneNode(d), { type: "tabset", tabs: [a, b, c], selectedId: b.id }],
+    });
+    store().addTab({ layout });
+    const sourceId = selectActiveTab(store()).id;
+    store().setActivePane(b.id);
+    store().movePaneToNewTab(b.id);
+    const source = selectActiveWorkspace(store()).tabs.find((t) => t.id === sourceId);
+    expect(source && isShown(source.layout, c.id)).toBe(true);
+    expect(source?.activePaneId).toBe(c.id);
   });
 
   it("re-points the active pane when it is removed or moved away", () => {
