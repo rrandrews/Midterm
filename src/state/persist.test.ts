@@ -44,6 +44,15 @@ describe("snapshot and restore", () => {
     ]);
   });
 
+  it("keeps a workspace's icon, and drops a malformed one", () => {
+    const state = sampleState();
+    state.workspaces[0] = { ...state.workspaces[0], icon: "rocket" };
+    const saved = roundTrip(snapshotState(state)) as { workspaces: { icon?: unknown }[] };
+    expect(restoreState(saved)?.workspaces[0].icon).toBe("rocket");
+    saved.workspaces[0].icon = "<script>";
+    expect(restoreState(saved)?.workspaces[0].icon).toBeUndefined();
+  });
+
   it("keeps valid explorer and file fields and drops malformed ones", () => {
     const explorer = createPane("explorer", {
       root: "/src",

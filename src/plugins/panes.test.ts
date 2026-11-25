@@ -15,7 +15,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   useSettings.getState().resetSettings();
-  useSettings.setState({ plugins: {} });
+  useSettings.getState().updateSettings({ plugins: {} });
 });
 
 describe("default terminal", () => {
@@ -37,11 +37,11 @@ describe("default terminal", () => {
       registerPlugin(plugin("explorer")),
     );
     expect(defaultTerminalKind()).toBe("terminal");
-    useSettings.setState({ defaultTerminal: "block-terminal" });
+    useSettings.getState().updateSettings({ defaultTerminal: "block-terminal" });
     expect(defaultTerminalKind()).toBe("block-terminal");
     useSettings.getState().updatePluginEntry("block-terminal", { enabled: false });
     expect(defaultTerminalKind()).toBe("terminal");
-    useSettings.setState({ defaultTerminal: "explorer" });
+    useSettings.getState().updateSettings({ defaultTerminal: "explorer" });
     expect(defaultTerminalKind()).toBe("terminal");
   });
 
@@ -51,11 +51,11 @@ describe("default terminal", () => {
       registerPlugin(plugin("block-terminal", { terminal: true })),
       registerPlugin(plugin("explorer")),
     );
-    useSettings.setState({ defaultTerminal: "block-terminal", defaultPaneKind: "terminal" });
+    useSettings.getState().updateSettings({ defaultTerminal: "block-terminal", defaultPaneKind: "terminal" });
     expect(defaultKind()).toBe("block-terminal");
-    useSettings.setState({ defaultPaneKind: "explorer" });
+    useSettings.getState().updateSettings({ defaultPaneKind: "explorer" });
     expect(defaultKind()).toBe("explorer");
-    useSettings.setState({ defaultPaneKind: "missing" });
+    useSettings.getState().updateSettings({ defaultPaneKind: "missing" });
     expect(defaultKind()).toBe("block-terminal");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OUTPUT_HEAD_LINES, OUTPUT_TAIL_LINES, buildContext, contextBody, parseSuggestion, redact, trimOutput } from "./context";
+import { OUTPUT_HEAD_LINES, OUTPUT_TAIL_LINES, buildContext, contextBody, parseSuggestion, redact, setSecretNames, trimOutput } from "./context";
 
 describe("redact", () => {
   it.each([
@@ -116,5 +116,16 @@ describe("parseSuggestion", () => {
     ["   \n  ", null],
   ])("%j", (reply, expected) => {
     expect(parseSuggestion(reply)).toBe(expected);
+  });
+});
+
+describe("secret names", () => {
+  it("redacts values assigned to the user's secret names", () => {
+    setSecretNames(["DEPLOY_PIN", "DB_URL"]);
+    expect(redact("DEPLOY_PIN=739184 and DB_URL: 'postgres://x' but OTHER=1")).toBe(
+      "DEPLOY_PIN=[redacted] and DB_URL: [redacted] but OTHER=1",
+    );
+    setSecretNames([]);
+    expect(redact("DEPLOY_PIN=739184")).toBe("DEPLOY_PIN=739184");
   });
 });

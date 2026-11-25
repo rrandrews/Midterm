@@ -5,7 +5,7 @@ React 19 frontend (`src/`) that owns everything on screen.
 
 Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
 [explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
-[ai.md](ai.md) · [claude-code.md](claude-code.md) · [design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [planning.md](planning.md)
+[ai.md](ai.md) · [claude-code.md](claude-code.md) · [design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [workspaces.md](workspaces.md) · [planning.md](planning.md)
 
 ## Concepts
 
@@ -15,7 +15,10 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
            └─ tab …
 ```
 
-- A **workspace** is a named group of tabs. One is active at a time.
+- A **workspace** is a named group of tabs with a badge icon and settings
+  of its own (overrides of the defaults, environment variables, secrets, a
+  Python environment; see [workspaces.md](workspaces.md)). One is active at
+  a time, and the settings in effect are its.
 - A **tab** holds any number of **panes** in a nested split layout.
 - A **pane** has a kind: `terminal`, `explorer`, `editor` (CodeMirror)
   or `viewer` (rendered Markdown, images, read-only text). See
@@ -30,7 +33,8 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src/commands/` | Command registry: ids, titles, key bindings; see [commands.md](commands.md). |
 | `src/shortcuts.ts` | Window-level shortcut handler, driven by the registry. |
 | `src/palette/` | Command palette; see [palette.md](palette.md). |
-| `src/settings/` | User settings: schema, validation, persisted store. |
+| `src/settings/` | User settings: schema, validation, persisted store (defaults plus per-workspace overrides), the settings dialog and its scope hooks. |
+| `src/workspaces/` | Workspace settings: wiring to the active workspace, terminal environment, badges and icons, the Workspace and Environment settings sections. See [workspaces.md](workspaces.md). |
 | `src/layout/dock.ts` | Bridge to the mounted pane layout: imperative handles by tab id, pane focus. |
 | `src/components/titlebar/` | Title bar = tab bar: workspace switcher, tabs, app menu. |
 | `src/components/layout/` | `PaneLayout` (the split layout) and `PaneToolbar` (hover controls + menu). |
@@ -141,7 +145,7 @@ Right-click menus:
 | File or folder in terminal output (instead of the pane menu) | open / change to this folder, open in new pane, open in default app, reveal, copy name/path | `pathMenuItems` in `src/terminal/pathTargets.ts`, opened by `TerminalPane.tsx` |
 | Editor / viewer | save, revert, find, go to line, reveal, copy path | `src/editor/menu.ts` |
 | Tab | rename, new tab, open the agent, close, close others, close to the right | `TabStrip.tsx` |
-| Workspace switcher | new, rename, delete | `WorkspaceSwitcher.tsx` |
+| Workspace switcher | rename, settings (its dropdown: the workspaces, then delete) | `WorkspaceSwitcher.tsx` |
 | Empty title bar | new tab, new workspace | `TitleBar.tsx` |
 
 - A terminal whose program reads the mouse (vim, htop) gets right clicks

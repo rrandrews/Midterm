@@ -17,7 +17,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
   useSettings.getState().resetSettings();
-  useSettings.setState({ plugins: {} });
+  useSettings.getState().updateSettings({ plugins: {} });
 });
 
 describe("plugin registry", () => {

@@ -17,6 +17,7 @@ import { usePluginSettings } from "../plugins/settings";
 import { allSkills, setSkillEnabled, skillProblems, skillsVersion, subscribeSkills } from "../plugins/skills";
 import { BUTTON, Block, FieldRows, Group, ICON_BUTTON, Row, Toggle } from "./controls";
 import { openSettings } from "./SettingsDialog";
+import { useScopedActions } from "./scope";
 import { useSettings } from "./settings";
 
 /*
@@ -152,7 +153,7 @@ function Skills({ pluginId }: { pluginId: string }) {
   const problems = skillProblems(pluginId);
   if (!skills.length && !problems.length) return null;
   return (
-    <Group title="Skills" help="What an AI agent will be able to do with this plugin. Tools that change things ask before running.">
+    <Group shared title="Skills" help="What an AI agent will be able to do with this plugin. Tools that change things ask before running.">
       {skills.map(({ skill, enabled }) => (
         <Row
           key={skill.id}
@@ -191,6 +192,7 @@ export function PluginSection({ pluginId }: { pluginId: string }) {
   const entry = getPlugin(pluginId);
   const values = usePluginSettings(pluginId);
   const enabled = useEnabled(pluginId);
+  const { updatePluginSettings } = useScopedActions();
   if (!entry) return <div className="text-meta text-fg-dim">This plugin is no longer installed.</div>;
   const { plugin, source } = entry;
   const fields = plugin.settings?.fields ?? [];
@@ -204,7 +206,7 @@ export function PluginSection({ pluginId }: { pluginId: string }) {
   ) : undefined;
   return (
     <>
-      <Group>
+      <Group shared>
         <Row label="Enabled" help={plugin.required ? "Always enabled" : undefined} hint={status}>
           {imported && (
             <button type="button" className={BUTTON} onClick={() => void removePluginInteractively(pluginId).catch(reportError)}>
@@ -216,11 +218,7 @@ export function PluginSection({ pluginId }: { pluginId: string }) {
       </Group>
       {enabled && fields.length > 0 && (
         <Group title="Settings">
-          <FieldRows
-            fields={fields}
-            values={values}
-            onChange={(patch) => useSettings.getState().updatePluginSettings(pluginId, patch)}
-          />
+          <FieldRows fields={fields} values={values} pluginId={pluginId} onChange={(patch) => updatePluginSettings(pluginId, patch)} />
         </Group>
       )}
       {enabled && Custom && <Custom pluginId={pluginId} />}

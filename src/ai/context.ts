@@ -83,11 +83,26 @@ const ASSIGNMENT_PATTERNS: RegExp[] = [
   /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s@/]+)(?=@)/gi,
 ];
 
+/**
+ * The names of the user's secret environment variables (Settings →
+ * Environment, every scope), whatever they are called: `NAME=value` and
+ * `NAME: value` lose the value like the patterns above. Kept current by
+ * `installWorkspaceSettings` (src/workspaces/settings.ts).
+ */
+let secretNamePattern: RegExp | null = null;
+
+export function setSecretNames(names: Iterable<string>): void {
+  // Names are `[A-Za-z_][A-Za-z0-9_]*` (validated), so they need no escaping.
+  const list = [...new Set(names)].filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  secretNamePattern = list.length ? new RegExp(`(\\b(?:${list.join("|")})\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s"']+)`, "g") : null;
+}
+
 /** `text` with likely secrets replaced by `[redacted]`. */
 export function redact(text: string): string {
   let out = text;
   for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, REDACTED);
-  for (const pattern of ASSIGNMENT_PATTERNS) {
+  const patterns = secretNamePattern ? [...ASSIGNMENT_PATTERNS, secretNamePattern] : ASSIGNMENT_PATTERNS;
+  for (const pattern of patterns) {
     out = out.replace(pattern, (match, name: string, value: string) => (value === REDACTED ? match : `${name}${REDACTED}`));
   }
   return out;

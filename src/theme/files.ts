@@ -1,6 +1,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "../ipc/fs";
+import type { SettingsScope } from "../settings/settings";
 import { addImportedIconSet } from "../icons/files";
 import { BUNDLED_IDS, getCustomIconSet } from "../icons/state";
 import { parseIconSet } from "../icons/validate";
@@ -15,7 +16,7 @@ import type { Theme } from "./types";
  */
 
 /** Asks for a theme file, imports it as a custom theme and shows it. Returns it, or null if cancelled. */
-export async function importThemeInteractively(): Promise<Theme | null> {
+export async function importThemeInteractively(scope?: SettingsScope): Promise<Theme | null> {
   if (!isTauri()) return null;
   const path = await open({
     title: "Import theme",
@@ -32,7 +33,7 @@ export async function importThemeInteractively(): Promise<Theme | null> {
     imported = { ...imported, icons: { set: set.id } };
   }
   const theme = saveTheme({ ...imported, id: freeThemeId(imported.id), name: freeThemeName(imported.name) });
-  selectTheme(theme.id);
+  selectTheme(theme.id, scope);
   return theme;
 }
 

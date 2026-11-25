@@ -48,7 +48,7 @@ function withSkills(id: string, skills: Skill[]): void {
 const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
-  useSettings.setState({ plugins: {} });
+  useSettings.getState().updateSettings({ plugins: {} });
   setWriteConfirmation(null);
 });
 

@@ -62,6 +62,11 @@ export type Tab = {
 export type Workspace = {
   id: string;
   name: string;
+  /**
+   * Icon shown in the workspace badge: a name from `WORKSPACE_ICONS`
+   * (`src/workspaces/icons.ts`). Unset shows the name's first letter.
+   */
+  icon?: string;
   tabs: Tab[];
   activeTabId: string;
 };

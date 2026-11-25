@@ -1,4 +1,4 @@
-import { Minus, Plus, RotateCcw } from "lucide-react";
+import { Globe, Minus, Plus, RotateCcw } from "lucide-react";
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { ColorPopover } from "../components/ui/ColorPicker";
 import { Select as Dropdown, type SelectOption } from "../components/ui/Select";
@@ -6,6 +6,7 @@ import { Help, Tip } from "../components/ui/Tooltip";
 import { type SettingField, optionsOf } from "../plugins/fields";
 import { ProgramList } from "./ProgramList";
 import { joinArgs, splitArgs } from "./schema";
+import { useEditedWorkspace, useOverride } from "./scope";
 
 /*
  * Controls for the settings dialog, shared by its sections and used to
@@ -36,6 +37,7 @@ export function Group({
   title,
   help,
   actions,
+  shared,
   children,
   className = "",
 }: {
@@ -43,15 +45,19 @@ export function Group({
   help?: ReactNode;
   /** Buttons on the right of the title. */
   actions?: ReactNode;
+  /** Settings no workspace can override; marked so while a workspace is edited. */
+  shared?: boolean;
   children?: ReactNode;
   className?: string;
 }) {
+  const showShared = useEditedWorkspace() !== null && shared;
   return (
     <section className={`mb-5 last:mb-0 ${className}`}>
-      {(title || actions) && (
+      {(title || actions || showShared) && (
         <div className="flex min-h-6 items-end gap-1.5 px-1 pb-1.5">
           {title && <h3 className="text-meta font-semibold text-fg-mid">{title}</h3>}
           {help && <Help>{help}</Help>}
+          {showShared && <SharedTag />}
           <div className="flex-1" />
           {actions && <div className="flex items-center gap-1">{actions}</div>}
         </div>
@@ -67,6 +73,7 @@ export function Row({
   label,
   help,
   hint,
+  setting,
   children,
   className = "",
 }: {
@@ -75,11 +82,20 @@ export function Row({
   help?: ReactNode;
   /** Status under the label (a problem, a version). */
   hint?: ReactNode;
+  /**
+   * The setting the row edits, as a path (`fontSize`, `ai.suggestions`,
+   * `plugins.terminal.settings.shell`; see `isOverridden`). When a
+   * workspace is being edited and overrides it, the row is marked and
+   * offers to go back to the default.
+   */
+  setting?: string;
   children?: ReactNode;
   className?: string;
 }) {
+  const { overridden, reset } = useOverride(setting);
   return (
-    <div className={`settings-row flex min-h-10 items-center gap-4 px-3 py-1.5 ${className}`}>
+    <div className={`settings-row relative flex min-h-10 items-center gap-4 px-3 py-1.5 ${className}`} data-overridden={overridden || undefined}>
+      {overridden && <OverrideMark />}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1 text-ui text-fg-soft">
           <span className="min-w-0 truncate">{label}</span>
@@ -87,8 +103,40 @@ export function Row({
         </div>
         {hint && <div className="text-meta text-fg-dim">{hint}</div>}
       </div>
-      {children !== undefined && <div className="flex flex-none items-center gap-1.5">{children}</div>}
+      {(children !== undefined || overridden) && (
+        <div className="flex flex-none items-center gap-1.5">
+          {overridden && <ResetOverride onReset={reset} />}
+          {children}
+        </div>
+      )}
     </div>
+  );
+}
+
+/** Marks settings that apply to every workspace, while one workspace is being edited. */
+export function SharedTag() {
+  return (
+    <Tip content="Shared by every workspace: changing it here changes it everywhere.">
+      <span className="inline-flex h-4 items-center gap-1 rounded-[4px] bg-fg-bright/[0.05] px-1.5 text-micro font-medium text-fg-dim shadow-[inset_0_0_0_1px_var(--color-line-strong)]">
+        <Globe size={9} strokeWidth={2} aria-hidden="true" />
+        All workspaces
+      </span>
+    </Tip>
+  );
+}
+
+/** The bar on the left of a row whose setting the edited workspace overrides. */
+export function OverrideMark() {
+  return <span aria-hidden="true" className="absolute top-2 bottom-2 left-0 w-[2px] rounded-r-full bg-accent" />;
+}
+
+export function ResetOverride({ onReset }: { onReset: () => void }) {
+  return (
+    <Tip content="Overridden in this workspace. Click to use the default.">
+      <button type="button" aria-label="Use the default value" className={`${ICON_BUTTON} size-5! text-accent/80 hover:text-accent`} onClick={onReset}>
+        <RotateCcw size={11} />
+      </button>
+    </Tip>
   );
 }
 
@@ -423,21 +471,27 @@ export function StackedRow({
   label,
   help,
   onReset,
+  setting,
   children,
 }: {
   label: ReactNode;
   help?: ReactNode;
   /** Shown as a reset button when set (the value differs from its default). */
   onReset?: () => void;
+  /** As for `Row`. */
+  setting?: string;
   children: ReactNode;
 }) {
+  const override = useOverride(setting);
   return (
-    <div className="settings-row px-3 pt-2 pb-2.5">
+    <div className="settings-row relative px-3 pt-2 pb-2.5" data-overridden={override.overridden || undefined}>
+      {override.overridden && <OverrideMark />}
       <div className="mb-1.5 flex h-5 items-center gap-1 text-ui text-fg-soft">
         <span className="min-w-0 truncate">{label}</span>
         {help && <Help>{help}</Help>}
         <div className="flex-1" />
-        {onReset && (
+        {override.overridden && <ResetOverride onReset={override.reset} />}
+        {onReset && !override.overridden && (
           <Tip content="Reset to default">
             <button type="button" aria-label="Reset to default" className={`${ICON_BUTTON} size-5!`} onClick={onReset}>
               <RotateCcw size={11} />
@@ -459,11 +513,15 @@ export function FieldRows({
   fields,
   values,
   onChange,
+  pluginId,
 }: {
   fields: readonly SettingField[];
   values: Record<string, unknown>;
   onChange: (patch: Record<string, unknown>) => void;
+  /** The plugin the values are saved under, so rows can show workspace overrides. */
+  pluginId?: string;
 }) {
+  const setting = (key: string) => (pluginId ? `plugins.${pluginId}.settings.${key}` : undefined);
   return (
     <>
       {fields.map((field) => {
@@ -476,6 +534,7 @@ export function FieldRows({
               key={field.key}
               label={field.label}
               help={field.hint}
+              setting={setting(field.key)}
               onReset={sameList(values[field.key], field.default) ? undefined : () => onChange({ [field.key]: [...field.default] })}
             >
               {control}
@@ -483,7 +542,7 @@ export function FieldRows({
           );
         }
         return (
-          <Row key={field.key} label={field.label} help={field.hint}>
+          <Row key={field.key} label={field.label} help={field.hint} setting={setting(field.key)}>
             {control}
           </Row>
         );

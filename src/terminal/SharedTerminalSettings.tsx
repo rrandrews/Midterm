@@ -1,6 +1,6 @@
 import { usePluginSettings } from "../plugins/settings";
 import { FieldRows, Group } from "../settings/controls";
-import { useSettings } from "../settings/settings";
+import { useScopedActions } from "../settings/scope";
 import { CLASSIC_TERMINAL } from "./kinds";
 import { TERMINAL_FIELDS } from "./settings";
 
@@ -11,12 +11,14 @@ import { TERMINAL_FIELDS } from "./settings";
  */
 export function SharedTerminalSettings() {
   const values = usePluginSettings(CLASSIC_TERMINAL, TERMINAL_FIELDS);
+  const { updatePluginSettings } = useScopedActions();
   return (
     <Group title="Terminal" help="Shared with the classic terminal.">
       <FieldRows
         fields={TERMINAL_FIELDS}
         values={values}
-        onChange={(patch) => useSettings.getState().updatePluginSettings(CLASSIC_TERMINAL, patch)}
+        pluginId={CLASSIC_TERMINAL}
+        onChange={(patch) => updatePluginSettings(CLASSIC_TERMINAL, patch)}
       />
     </Group>
   );

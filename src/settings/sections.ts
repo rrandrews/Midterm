@@ -18,6 +18,13 @@ export type SettingsSection = {
   icon?: LucideIcon;
   /** Words the dialog's search also matches (setting names in the section). */
   keywords?: readonly string[];
+  /**
+   * Which scopes show the section: `all` (default; a workspace may
+   * override its settings), `shared` (one value for every workspace, shown
+   * with a note while a workspace is edited) or `workspace` (only while a
+   * workspace is edited).
+   */
+  scope?: "all" | "shared" | "workspace";
 };
 
 const sections = new Map<string, SettingsSection>();

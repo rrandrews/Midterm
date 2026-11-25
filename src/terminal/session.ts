@@ -6,6 +6,7 @@ import { type IDisposable, type ITerminalOptions, type ITheme, Terminal } from "
 import "@xterm/xterm/css/xterm.css";
 import { effectiveSolid, oscColor } from "./solidBackground";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
+import { type TerminalEnvironment, terminalEnvironmentForPane } from "../workspaces/settings";
 import { copyText } from "../ipc/clipboard";
 import { openExternal } from "../ipc/shell";
 import { localHostname } from "../ipc/system";
@@ -502,39 +503,54 @@ export class TerminalSession {
     this.phase = "starting";
 
     const { shell, shellArgs, sshIntegration } = terminalSettings();
-    spawnPty({
-      cwd: this.currentCwd,
-      shell: shell || undefined,
-      shellArgs,
-      sshIntegration,
-      cols: this.term.cols,
-      rows: this.term.rows,
-      onData: (bytes) => this.receive(bytes),
-      onExit: (exit) => this.handleExit(exit),
-    }).then(
-      (pty) => {
-        this.pty = pty;
-        if (this.pendingAck) pty.ack(this.pendingAck);
-        this.pendingAck = 0;
+    // The workspace's environment variables, secrets and Python environment.
+    terminalEnvironmentForPane(this.paneId)
+      .catch((error: unknown): TerminalEnvironment => {
+        console.warn("Could not read the workspace environment:", error);
+        return { env: [], secrets: [], python: null };
+      })
+      .then(({ env, secrets, python }) => {
+        // Closed while the environment was looked up: start nothing.
+        if (this.disposed) return null;
+        return spawnPty({
+          cwd: this.currentCwd,
+          shell: shell || undefined,
+          shellArgs,
+          sshIntegration,
+          env,
+          secrets,
+          python,
+          cols: this.term.cols,
+          rows: this.term.rows,
+          onData: (bytes) => this.receive(bytes),
+          onExit: (exit) => this.handleExit(exit),
+        });
+      })
+      .then(
+        (pty) => {
+          if (!pty) return;
+          this.pty = pty;
+          if (this.pendingAck) pty.ack(this.pendingAck);
+          this.pendingAck = 0;
 
-        if (this.disposed) {
-          pty.kill();
-          return;
-        }
-        // The shell may already have exited while the spawn was in flight.
-        if (this.phase !== "starting") return;
+          if (this.disposed) {
+            pty.kill();
+            return;
+          }
+          // The shell may already have exited while the spawn was in flight.
+          if (this.phase !== "starting") return;
 
-        this.phase = "running";
-        pty.resize(this.term.cols, this.term.rows);
-        for (const input of this.queuedInput) this.write(pty, input);
-        this.queuedInput = [];
-      },
-      (error) => {
-        this.phase = "ended";
-        this.queuedInput = [];
-        this.report(`Could not start a shell: ${String(error)}`);
-      },
-    );
+          this.phase = "running";
+          pty.resize(this.term.cols, this.term.rows);
+          for (const input of this.queuedInput) this.write(pty, input);
+          this.queuedInput = [];
+        },
+        (error) => {
+          this.phase = "ended";
+          this.queuedInput = [];
+          this.report(`Could not start a shell: ${String(error)}`);
+        },
+      );
   }
 
   private send(input: Input): void {

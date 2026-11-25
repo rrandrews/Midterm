@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { create } from "zustand";
 import { type JsonFile, openJsonFile } from "../ipc/jsonFile";
 import type { Settings } from "../settings/schema";
-import { getSettings, useSettings } from "../settings/settings";
+import { type SettingsScope, activeSettings, getSettings, settingsFor, useSettings } from "../settings/settings";
 import { BUNDLED_THEMES, DEFAULT_THEME_ID, bundledTheme } from "./bundled";
 import { resolveTheme } from "./resolve";
 import type { ResolvedTheme, Theme } from "./types";
@@ -165,14 +165,25 @@ export function renameTheme(id: string, name: string): void {
 }
 
 /** Makes a theme the one showing (the light or dark pick when following the system). */
-export function selectTheme(id: string): void {
-  const settings = getSettings();
+export function selectTheme(id: string, scope?: SettingsScope): void {
+  const settings = scope ? settingsFor(scope) : getSettings();
   const theme = findTheme(id);
   if (!settings.themeFollowSystem || !theme) {
-    useSettings.getState().updateSettings({ theme: id });
+    useSettings.getState().updateSettings({ theme: id }, scope);
     return;
   }
-  useSettings.getState().updateSettings(theme.kind === "dark" ? { themeDark: id } : { themeLight: id });
+  useSettings.getState().updateSettings(theme.kind === "dark" ? { themeDark: id } : { themeLight: id }, scope);
+}
+
+/**
+ * The theme a scope's settings show, resolved with its accent. The active
+ * workspace's (and outside the dialog): what is on screen, draft and
+ * preview included.
+ */
+export function scopeResolvedTheme(settings: Settings, systemDark: boolean): ResolvedTheme {
+  if (settings === activeSettings()) return currentResolvedTheme();
+  const theme = findTheme(selectedThemeId(settings, systemDark)) ?? (bundledTheme(DEFAULT_THEME_ID) as Theme);
+  return resolveTheme(settings.accent ? withAccent(theme, settings.accent) : theme);
 }
 
 /*

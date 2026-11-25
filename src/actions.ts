@@ -1,4 +1,5 @@
 import { renameOpenModels } from "./editor/registry";
+import { forgetWorkspace } from "./workspaces/settings";
 import { peekExplorer } from "./explorer/explorers";
 import { revealInFileManager } from "./ipc/shell";
 import { noteRecentFile } from "./palette/recent";
@@ -108,6 +109,11 @@ export function closeTabNow(tabId: string = selectActiveTab(store()).id): void {
 
 export function newWorkspace(): void {
   store().addWorkspace();
+  // Its first tab was made while the previous workspace's settings were in
+  // effect (default pane kind). Nothing has shown it yet: replace it with a
+  // fresh one under the new workspace's settings.
+  const { tabs } = selectActiveWorkspace(store());
+  store().closeTab(tabs[0].id);
   focusActivePane();
 }
 
@@ -118,7 +124,9 @@ export function selectWorkspace(workspaceId: string): void {
 
 /** Closes a workspace without asking (see `src/closing.ts`). */
 export function removeWorkspaceNow(workspaceId: string): void {
+  if (store().workspaces.length <= 1) return;
   store().removeWorkspace(workspaceId);
+  forgetWorkspace(workspaceId);
   focusActivePane();
 }
 

@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, SETTINGS_VERSION, joinArgs, migrateSettings, monoFontStack, splitArgs, validateSettings } from "./schema";
+import {
+  DEFAULT_SETTINGS,
+  SETTINGS_VERSION,
+  effectiveSettings,
+  isOverridden,
+  joinArgs,
+  migrateSettings,
+  monoFontStack,
+  splitArgs,
+  validateOverrides,
+  validateSettings,
+  withoutOverride,
+} from "./schema";
 
 describe("validateSettings", () => {
   it("gives defaults for nothing usable", () => {
@@ -161,7 +173,7 @@ describe("migrateSettings", () => {
   });
 
   it("leaves current settings alone", () => {
-    const current = { version: 5, accent: "#8B9CFF", plugins: { terminal: { settings: { bell: "off" } } }, ai: { profiles: [], defaultProfile: "", features: {} } };
+    const current = { version: 6, accent: "#8B9CFF", plugins: { terminal: { settings: { bell: "off" } } }, ai: { profiles: [], defaultProfile: "", features: {} } };
     expect(migrateSettings(current)).toEqual(current);
   });
 });
@@ -182,5 +194,115 @@ describe("splitArgs / joinArgs", () => {
   it("round-trips", () => {
     const args = ["-l", "a b", 'say "x"', "", 'x"y', "it's"];
     expect(splitArgs(joinArgs(args))).toEqual(args);
+  });
+});
+
+describe("workspace settings", () => {
+  const base = () => validateSettings({ ai: { profiles: [{ id: "p-one", name: "One", provider: "openai", model: "m", baseUrl: "", cliPath: "" }] } });
+
+  it("keeps only overridable settings, normalized", () => {
+    const overrides = validateOverrides(
+      {
+        fontSize: 99,
+        keybindings: { "pane.close": ["Cmd+W"] },
+        ai: { suggestions: false, profiles: [], defaultProfile: "p-missing" },
+        plugins: { terminal: { settings: { shell: "/bin/bash" }, enabled: false }, empty: { settings: {} } },
+        python: { kind: "venv", target: " /tmp/venv " },
+      },
+      base(),
+    );
+    expect(overrides).toEqual({
+      fontSize: 32,
+      python: { kind: "venv", target: "/tmp/venv" },
+      ai: { suggestions: false },
+      plugins: { terminal: { settings: { shell: "/bin/bash" } } },
+    });
+  });
+
+  it("lays a workspace's overrides over the defaults", () => {
+    const settings = validateSettings({
+      ...base(),
+      fontSize: 14,
+      plugins: { terminal: { settings: { shell: "/bin/zsh", bell: "off" } } },
+      workspaces: { w1: { overrides: { fontSize: 16, plugins: { terminal: { settings: { shell: "/bin/bash" } } } } } },
+    });
+    expect(effectiveSettings(settings, null)).toBe(settings);
+    expect(effectiveSettings(settings, "unknown")).toBe(settings);
+    const w1 = effectiveSettings(settings, "w1");
+    expect(w1.fontSize).toBe(16);
+    expect(w1.plugins.terminal.settings).toEqual({ shell: "/bin/bash", bell: "off" });
+    expect(w1.workspaces).toBe(settings.workspaces);
+  });
+
+  it("names and drops overrides by path", () => {
+    const overrides = { fontSize: 13, ai: { suggestions: true }, plugins: { terminal: { settings: { shell: "x" } } } };
+    expect(isOverridden(overrides, "fontSize")).toBe(true);
+    expect(isOverridden(overrides, "accent")).toBe(false);
+    expect(isOverridden(overrides, "ai.suggestions")).toBe(true);
+    expect(isOverridden(overrides, "plugins.terminal.settings.shell")).toBe(true);
+    expect(isOverridden(overrides, "plugins.terminal.settings.bell")).toBe(false);
+    expect(withoutOverride(withoutOverride(overrides, "ai.suggestions"), "plugins.terminal.settings.shell")).toEqual({ fontSize: 13 });
+  });
+
+  it("validates environment variables, secret names, python and workspace ids", () => {
+    const settings = validateSettings({
+      env: [
+        { name: "FOO", value: "1" },
+        { name: "FOO", value: "2" },
+        { name: "1BAD", value: "x" },
+        { name: "MIDTERM_X", value: "x" },
+        { name: "NUL", value: "a\0b" },
+        "junk",
+      ],
+      secrets: ["TOKEN", "TOKEN", "bad name", 3],
+      python: { kind: "conda", target: " ml " },
+      workspaces: { "w-1": { env: [{ name: "A", value: "b" }] }, "bad id!": {} },
+    });
+    expect(settings.env).toEqual([{ name: "FOO", value: "2" }]);
+    expect(settings.secrets).toEqual(["TOKEN"]);
+    expect(settings.python).toEqual({ kind: "conda", target: "ml" });
+    expect(Object.keys(settings.workspaces)).toEqual(["w-1"]);
+    expect(settings.workspaces["w-1"]).toEqual({ overrides: {}, env: [{ name: "A", value: "b" }], secrets: [] });
+    expect(validateSettings({ python: { kind: "pyenv" } }).python).toEqual(DEFAULT_SETTINGS.python);
+  });
+});
+
+describe("workspace settings edge cases", () => {
+  it("handles plugin setting keys with dots", () => {
+    const overrides = { plugins: { viewer: { settings: { "view.zoom": 2, other: 1 } } } };
+    expect(isOverridden(overrides, "plugins.viewer.settings.view.zoom")).toBe(true);
+    expect(isOverridden(overrides, "plugins.viewer.settings.view")).toBe(false);
+    expect(withoutOverride(overrides, "plugins.viewer.settings.view.zoom")).toEqual({ plugins: { viewer: { settings: { other: 1 } } } });
+  });
+
+  it("refuses Midterm's own variable names and relative virtualenvs", () => {
+    const settings = validateSettings({
+      env: [
+        { name: "_midterm_si_loaded", value: "1" },
+        { name: "MIDTERM_X", value: "1" },
+        { name: "MIDTERMINAL", value: "1" },
+      ],
+      python: { kind: "venv", target: ".venv" },
+    });
+    expect(settings.env).toEqual([{ name: "MIDTERMINAL", value: "1" }]);
+    expect(settings.python).toEqual({ kind: "venv", target: "" });
+  });
+
+  it("ignores inherited object properties as workspace ids", () => {
+    const settings = validateSettings({});
+    expect(effectiveSettings(settings, "constructor")).toBe(settings);
+    expect(effectiveSettings(settings, "toString")).toBe(settings);
+  });
+
+  it("keeps what a workspace does not override as the defaults' own objects", () => {
+    const settings = validateSettings({
+      plugins: { terminal: { settings: { bell: "off" } }, explorer: { settings: { showHidden: true } } },
+      workspaces: { w1: { overrides: { fontSize: 16, plugins: { terminal: { settings: { shell: "/bin/bash" } } } } } },
+    });
+    const w1 = effectiveSettings(settings, "w1");
+    expect(w1.ai).toBe(settings.ai);
+    expect(w1.keybindings).toBe(settings.keybindings);
+    expect(w1.plugins.explorer).toBe(settings.plugins.explorer);
+    expect(w1.plugins.terminal).not.toBe(settings.plugins.terminal);
   });
 });

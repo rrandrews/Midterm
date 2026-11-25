@@ -10,7 +10,7 @@ import {
   clip,
   uniqueName,
 } from "../settings/schema";
-import { getSettings, useSettings } from "../settings/settings";
+import { type SettingsScope, getSettings, settingsFor, useSettings } from "../settings/settings";
 
 /*
  * Model profiles (see docs/ai.md): which profile a feature uses, whether it
@@ -166,8 +166,8 @@ export function nameTaken(name: string, id: string, settings: Settings = getSett
   return settings.ai.profiles.some((p) => p.id !== id && p.name.toLowerCase() === lower);
 }
 
-function update(patch: Partial<AiSettings>): void {
-  useSettings.getState().updateAi(patch);
+function update(patch: Partial<AiSettings>, scope?: SettingsScope): void {
+  useSettings.getState().updateAi(patch, scope);
 }
 
 /** Saves `profile`: replaces the one with its id, or appends it. The first profile becomes the default. */
@@ -182,14 +182,11 @@ export function saveProfile(profile: AiProfile): void {
 /**
  * Removes a profile. Features overriding to it fall back to the default;
  * if it was the default, the first remaining profile becomes the default
- * (or none).
+ * (or none). Validating the settings does both, for the defaults and for
+ * every workspace's overrides, so only the list changes here.
  */
 export function deleteProfile(id: string): void {
-  const { profiles, defaultProfile, features } = getSettings().ai;
-  const rest = profiles.filter((p) => p.id !== id);
-  const kept: Partial<Record<AiFeature, string>> = {};
-  for (const [feature, target] of Object.entries(features) as [AiFeature, string][]) if (target !== id) kept[feature] = target;
-  update({ profiles: rest, features: kept, defaultProfile: defaultProfile === id ? (rest[0]?.id ?? "") : defaultProfile });
+  update({ profiles: getSettings().ai.profiles.filter((p) => p.id !== id) });
 }
 
 /** A copy of a profile under a new id and name, placed after it. Returns the copy's id. */
@@ -207,16 +204,16 @@ export function duplicateProfile(id: string): string | null {
   return copy.id;
 }
 
-export function setDefaultProfile(id: string): void {
-  update({ defaultProfile: id });
+export function setDefaultProfile(id: string, scope?: SettingsScope): void {
+  update({ defaultProfile: id }, scope);
 }
 
 /** Points `feature` at a profile; null makes it use the default. */
-export function setFeatureProfile(feature: AiFeature, id: string | null): void {
-  const features = { ...getSettings().ai.features };
+export function setFeatureProfile(feature: AiFeature, id: string | null, scope?: SettingsScope): void {
+  const features = { ...(scope ? settingsFor(scope) : getSettings()).ai.features };
   if (id) features[feature] = id;
   else delete features[feature];
-  update({ features });
+  update({ features }, scope);
 }
 
 /** What deleting a profile does to the features, for the confirmation (empty when nothing uses it). */

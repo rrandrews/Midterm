@@ -10,7 +10,8 @@ import { openJsonFile } from "../ipc/jsonFile";
 import { homeDirectory } from "../ipc/system";
 import { focusPane } from "../layout/dock";
 import { runInNewTerminal } from "../palette/state";
-import { useSettings } from "../settings/settings";
+import { pluginSectionScope, useSettingsDialog } from "../settings/dialogState";
+import { settingsFor, useSettings } from "../settings/settings";
 import { findTabOfPane, selectAllPanes, useAppStore } from "../state/store";
 import type { PaneData, PaneNode } from "../state/types";
 import { peekSession } from "../terminal/sessions";
@@ -148,17 +149,23 @@ export function createApi(pluginId: string): MidtermApi {
       createState: createPaneState,
     },
     commands: { register: registerCommands, run: runCommand },
+    // While the settings dialog shows this plugin's section, its settings
+    // are those of the scope the dialog edits (see `pluginSectionScope`).
     settings: {
-      get: () => pluginSettings(pluginId),
-      set: (patch) => useSettings.getState().updatePluginSettings(pluginId, patch),
+      get: () => scopedPluginSettings(pluginId),
+      set: (patch) => useSettings.getState().updatePluginSettings(pluginId, patch, pluginSectionScope(pluginId)),
       subscribe: (listener) => {
-        let last = pluginSettings(pluginId);
-        return useSettings.subscribe(() => {
-          const next = pluginSettings(pluginId);
+        let last = scopedPluginSettings(pluginId);
+        const check = () => {
+          const next = scopedPluginSettings(pluginId);
           if (next === last) return;
           last = next;
           listener(next);
-        });
+        };
+        const stops = [useSettings.subscribe(check), useSettingsDialog.subscribe(check)];
+        return () => {
+          for (const stop of stops) stop();
+        };
       },
     },
     storage: {
@@ -193,4 +200,9 @@ export function createApi(pluginId: string): MidtermApi {
     },
     ui: { confirm, MenuItems },
   };
+}
+
+function scopedPluginSettings(pluginId: string): Record<string, unknown> {
+  const scope = pluginSectionScope(pluginId);
+  return scope === undefined ? pluginSettings(pluginId) : pluginSettings(pluginId, undefined, settingsFor(scope));
 }

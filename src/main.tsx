@@ -47,6 +47,8 @@ async function start(): Promise<void> {
     loadLocalHostname(),
     loadHomeDirectory(),
   ]);
+  // The settings in effect follow the active workspace from the first render.
+  (await import("./workspaces/settings")).installWorkspaceSettings();
   if (import.meta.env.DEV) {
     // Dev-only handles for poking at the app from the console or a test driver.
     const [actions, dock, store, sessions, settings, commands, plugins, skills, loader] = await Promise.all([

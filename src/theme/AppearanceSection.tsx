@@ -1,5 +1,5 @@
 import { Check, MoreHorizontal, Plus } from "lucide-react";
-import { useState } from "react";
+import { type CSSProperties, useState } from "react";
 import { ColorPopover } from "../components/ui/ColorPicker";
 import { confirm } from "../components/ui/ConfirmDialog";
 import { InlineEdit } from "../components/ui/InlineEdit";
@@ -7,15 +7,17 @@ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "../comp
 import { Tip } from "../components/ui/Tooltip";
 import { exportIconSetInteractively, importIconSetInteractively } from "../icons/files";
 import { allIconSets, deleteIconSet, knownIconSet, useIconState } from "../icons/state";
-import { BUTTON, Block, CommitField, Group, ICON_BUTTON, NumberField, Row, Select, Toggle } from "../settings/controls";
+import { BUTTON, Block, CommitField, Group, ICON_BUTTON, NumberField, OverrideMark, ResetOverride, Row, Select, Toggle } from "../settings/controls";
+import { useOverride } from "../settings/scope";
+import { activeSettings } from "../settings/settings";
 import { ACCENT_PRESETS, FONT_SIZE_RANGE, isHexColor } from "../settings/schema";
 import { closeSettings } from "../settings/SettingsDialog";
-import { useSettings } from "../settings/settings";
+import { useScopedActions, useScopedSettings, useSettingsScope } from "../settings/scope";
 import { BUNDLED_THEMES } from "./bundled";
 import { editTheme } from "./commands";
 import { exportThemeInteractively, importThemeInteractively } from "./files";
-import { resolveTheme } from "./resolve";
-import { currentTheme, deleteTheme, duplicateTheme, isBundled, renameTheme, selectTheme, selectedThemeId, useThemeState } from "./state";
+import { cssVariables, resolveTheme } from "./resolve";
+import { currentTheme, deleteTheme, findTheme, duplicateTheme, isBundled, renameTheme, scopeResolvedTheme, selectTheme, selectedThemeId, useThemeState } from "./state";
 import type { Theme } from "./types";
 
 /*
@@ -31,21 +33,35 @@ const stayInDialog = () => {};
 /** The theme showing now (draft and palette preview included), re-rendering when it changes. */
 function useShownTheme(): Theme {
   const { systemDark } = useThemeState();
-  useSettings((state) => selectedThemeId(state, systemDark));
-  return currentTheme();
+  useThemeState((state) => state.draft ?? state.preview);
+  const settings = useScopedSettings((state) => state);
+  if (settings === activeSettings()) return currentTheme();
+  return findTheme(selectedThemeId(settings, systemDark)) ?? currentTheme();
 }
 
-/** A few lines of a terminal in the current theme, font and accent. */
+/**
+ * The edited scope's theme, resolved. Another workspace's theme is not on
+ * screen, so the preview sets its colors itself.
+ */
+function useScopeTheme() {
+  const { systemDark } = useThemeState();
+  useThemeState((state) => state.draft ?? state.preview);
+  const settings = useScopedSettings((state) => state);
+  return scopeResolvedTheme(settings, systemDark);
+}
+
+/** A few lines of a terminal in the edited scope's theme, font and accent. */
 function Preview() {
-  const fontFamily = useSettings((state) => state.fontFamily);
-  const fontSize = useSettings((state) => state.fontSize);
-  const name = useShownTheme().name;
+  const fontFamily = useScopedSettings((state) => state.fontFamily);
+  const fontSize = useScopedSettings((state) => state.fontSize);
+  const resolved = useScopeTheme();
+  const name = resolved.name;
   const font = fontFamily ? `${fontFamily}, var(--font-mono)` : "var(--font-mono)";
   return (
     <div
       aria-hidden="true"
       className="relative mb-5 overflow-hidden rounded-lg shadow-[inset_0_0_0_1px_var(--color-line-strong)]"
-      style={{ background: "var(--pane-terminal-active)" }}
+      style={{ ...(cssVariables(resolved) as CSSProperties), background: "var(--pane-terminal-active)" }}
     >
       <div className="absolute inset-y-0 left-0 w-[2px] bg-accent" />
       <pre
@@ -80,6 +96,7 @@ function ThemeCard({
   run: (task: Promise<unknown>) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
+  const scope = useSettingsScope();
   const t = resolveTheme(theme);
   const tokens = t.tokens;
   const pane = t.panes.terminal;
@@ -94,7 +111,7 @@ function ThemeCard({
         aria-pressed={marked}
         aria-label={theme.name}
         title={credit ? `${theme.name} ${credit}` : theme.name}
-        onClick={() => selectTheme(theme.id)}
+        onClick={() => selectTheme(theme.id, scope)}
         className={`relative flex h-[62px] flex-col justify-between overflow-hidden rounded-[7px] p-2 pl-2.5 text-left outline-none transition-shadow focus-visible:shadow-[0_0_0_2px_var(--color-popover),0_0_0_3px_var(--color-accent)] ${
           marked
             ? "shadow-[0_0_0_2px_var(--color-popover),0_0_0_3.5px_var(--color-accent)]"
@@ -169,9 +186,24 @@ function ThemeCard({
   );
 }
 
+/** The gallery edits three settings; marked as one while a workspace overrides any of them. */
+function useThemeOverride() {
+  const theme = useOverride("theme");
+  const light = useOverride("themeLight");
+  const dark = useOverride("themeDark");
+  const overridden = theme.overridden || light.overridden || dark.overridden;
+  const reset = () => {
+    theme.reset();
+    light.reset();
+    dark.reset();
+  };
+  return { overridden, reset };
+}
+
 function Gallery({ run }: { run: (task: Promise<unknown>) => void }) {
-  const settings = useSettings();
+  const settings = useScopedSettings((state) => state);
   const { custom, systemDark } = useThemeState();
+  const override = useThemeOverride();
   const showing = selectedThemeId(settings, systemDark);
   const themes = [...BUNDLED_THEMES, ...custom];
   const kinds = [
@@ -179,10 +211,14 @@ function Gallery({ run }: { run: (task: Promise<unknown>) => void }) {
     { kind: "light" as const, label: "Light" },
   ];
   return (
-    <Block className="flex flex-col gap-3 pt-3 pb-3.5">
-      {kinds.map(({ kind, label }) => (
+    <Block className="relative flex flex-col gap-3 pt-3 pb-3.5">
+      {override.overridden && <OverrideMark />}
+      {kinds.map(({ kind, label }, index) => (
         <div key={kind}>
-          <div className="pb-2 text-micro font-medium text-fg-dim">{label}</div>
+          <div className="flex h-5 items-center pb-2 text-micro font-medium text-fg-dim">
+            <span className="flex-1">{label}</span>
+            {index === 0 && override.overridden && <ResetOverride onReset={override.reset} />}
+          </div>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(118px,1fr))] gap-x-3 gap-y-2.5">
             {themes
               .filter((theme) => theme.kind === kind)
@@ -203,14 +239,14 @@ function Gallery({ run }: { run: (task: Promise<unknown>) => void }) {
 }
 
 function AccentRow() {
-  const accent = useSettings((state) => state.accent);
-  const update = useSettings((state) => state.updateSettings);
+  const accent = useScopedSettings((state) => state.accent);
+  const { updateSettings: update } = useScopedActions();
   const themeAccent = resolveTheme(useShownTheme()).tokens.accent;
   const custom = accent !== "" && !ACCENT_PRESETS.some((preset) => preset.toLowerCase() === accent.toLowerCase());
   const DOT =
     "size-[18px] flex-none rounded-full outline-none transition-shadow focus-visible:shadow-[0_0_0_2px_var(--color-popover),0_0_0_3px_var(--color-accent)] aria-pressed:shadow-[0_0_0_2px_var(--color-popover),0_0_0_3.5px_var(--color-fg-mid)]";
   return (
-    <Row label="Accent" help="Active pane, cursor, selection and drop targets.">
+    <Row label="Accent" help="Active pane, cursor, selection and drop targets." setting="accent">
       <Tip content="The theme’s own">
         <button
           type="button"
@@ -250,8 +286,8 @@ function AccentRow() {
 
 /** The file icon set, and importing, exporting and deleting custom sets. */
 function IconSetRow({ run }: { run: (task: Promise<unknown>) => void }) {
-  const iconSet = useSettings((state) => state.iconSet);
-  const update = useSettings((state) => state.updateSettings);
+  const iconSet = useScopedSettings((state) => state.iconSet);
+  const { updateSettings: update } = useScopedActions();
   useIconState((state) => state.custom);
   const sets = allIconSets();
   const chosen = sets.find((set) => set.id === iconSet) ?? sets[0];
@@ -261,6 +297,7 @@ function IconSetRow({ run }: { run: (task: Promise<unknown>) => void }) {
     <Row
       label="File icons"
       help="A theme with its own icon set uses that instead."
+      setting="iconSet"
       hint={themedName ? `This theme uses ${themedName}` : undefined}
     >
       <Select
@@ -305,8 +342,9 @@ function IconSetRow({ run }: { run: (task: Promise<unknown>) => void }) {
 }
 
 export function AppearanceSection() {
-  const settings = useSettings();
-  const update = settings.updateSettings;
+  const settings = useScopedSettings((state) => state);
+  const scope = useSettingsScope();
+  const { updateSettings: update } = useScopedActions();
   const [problem, setProblem] = useState<string | null>(null);
   const run = (task: Promise<unknown>) => {
     setProblem(null);
@@ -319,12 +357,12 @@ export function AppearanceSection() {
       <Group
         title="Theme"
         actions={
-          <button type="button" className={BUTTON} onClick={() => run(importThemeInteractively())}>
+          <button type="button" className={BUTTON} onClick={() => run(importThemeInteractively(scope))}>
             <Plus size={11} /> Import
           </button>
         }
       >
-        <Row label="Match system appearance" help="Pick one dark and one light theme; they switch with macOS.">
+        <Row label="Match system appearance" help="Pick one dark and one light theme; they switch with macOS." setting="themeFollowSystem">
           <Toggle
             label="Match system appearance"
             checked={settings.themeFollowSystem}
@@ -335,7 +373,7 @@ export function AppearanceSection() {
         <Gallery run={run} />
       </Group>
       <Group title="Text">
-        <Row label="Font" help="Terminals and the editor. Empty for the bundled JetBrains Mono.">
+        <Row label="Font" help="Terminals and the editor. Empty for the bundled JetBrains Mono." setting="fontFamily">
           <CommitField
             label="Font family"
             className="w-48"
@@ -345,7 +383,7 @@ export function AppearanceSection() {
             onCommit={(fontFamily) => update({ fontFamily: fontFamily.trim() })}
           />
         </Row>
-        <Row label="Size">
+        <Row label="Size" setting="fontSize">
           <NumberField
             label="Font size"
             value={settings.fontSize}

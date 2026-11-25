@@ -5,6 +5,7 @@ import { providerInfo } from "../../ipc/ai";
 import { Tip } from "../../components/ui/Tooltip";
 import { BUTTON, Block, Group, ICON_BUTTON } from "../../settings/controls";
 import { AI_PROFILE_LIMIT, type AiProfile } from "../../settings/schema";
+import { useScopedSettings } from "../../settings/scope";
 import { useSettings } from "../../settings/settings";
 import { blankProfile, deleteProfile, deleteWarning, duplicateProfile, profileProblem } from "../profiles";
 import { ProfileEditor } from "./ProfileEditor";
@@ -23,7 +24,7 @@ function describe(profile: AiProfile): string {
 
 export function ProfileList() {
   const profiles = useSettings((s) => s.ai.profiles);
-  const defaultProfile = useSettings((s) => s.ai.defaultProfile);
+  const defaultProfile = useScopedSettings((s) => s.ai.defaultProfile);
   // The profile being edited (by id), or a new one not saved yet.
   const [editing, setEditing] = useState<{ profile: AiProfile; isNew: boolean } | null>(null);
 
@@ -37,6 +38,7 @@ export function ProfileList() {
   return (
     <Group
       title="Models"
+      shared
       actions={
         !editing?.isNew && (
           <button

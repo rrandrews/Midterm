@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { BUTTON, Block, Group, NumberField, Row, Select, Toggle } from "../settings/controls";
-import { useSettings } from "../settings/settings";
+import { useScopedActions, useScopedSettings, useSettingsScope } from "../settings/scope";
 import { AI_CONTEXT_RANGE } from "../settings/schema";
 import { activeTerminal } from "../terminal/blockMode";
 import { contextFor } from "./engine";
@@ -15,7 +15,8 @@ import { ProfileList } from "./settings/ProfileList";
  */
 
 function Features() {
-  const settings = useSettings();
+  const settings = useScopedSettings((state) => state);
+  const scope = useSettingsScope();
   const { profiles, defaultProfile, features } = settings.ai;
   // The agent's CLI profile: whether its ACP adapter is installed (featureProblem stays pure).
   const adapterProblem = useAgentAdapterProblem(profileFor("agent", settings));
@@ -24,8 +25,8 @@ function Features() {
   const choices = profiles.map((profile) => ({ value: profile.id, label: profile.name }));
   return (
     <Group title="Features">
-      <Row label="Default model" help="Used by every feature that does not pick its own.">
-        <Select label="Default model" className="w-56" value={defaultProfile} options={choices} onChange={setDefaultProfile} />
+      <Row label="Default model" help="Used by every feature that does not pick its own." setting="ai.defaultProfile">
+        <Select label="Default model" className="w-56" value={defaultProfile} options={choices} onChange={(id) => setDefaultProfile(id, scope)} />
       </Row>
       {FEATURES.map((feature) => {
         const problem = featureProblem(feature.id, settings) ?? (feature.id === "agent" ? adapterProblem : null);
@@ -34,6 +35,7 @@ function Features() {
             key={feature.id}
             label={feature.label}
             help={feature.hint}
+            setting="ai.features"
             hint={
               problem ? (
                 <span className="text-warn">
@@ -47,7 +49,7 @@ function Features() {
               className="w-56"
               value={features[feature.id] ?? ""}
               options={[{ value: "", label: `Default (${defaultName})` }, ...choices]}
-              onChange={(id) => setFeatureProfile(feature.id, id || null)}
+              onChange={(id) => setFeatureProfile(feature.id, id || null, scope)}
             />
           </Row>
         );
@@ -57,8 +59,8 @@ function Features() {
 }
 
 export function AiSection() {
-  const ai = useSettings((s) => s.ai);
-  const updateAi = useSettings((s) => s.updateAi);
+  const ai = useScopedSettings((s) => s.ai);
+  const { updateAi } = useScopedActions();
   const [preview, setPreview] = useState<string | null>(null);
 
   const showPreview = async () => {
@@ -73,10 +75,10 @@ export function AiSection() {
         title="Suggestions"
         help="Suggestions, /cmd and Explain and fix send the focused terminal’s recent commands, cut output, directory, git branch, shell and OS to your chosen model, with secrets redacted. The agent also sends what its tools read; nothing runs without asking, and nothing is sent until you add a model."
       >
-        <Row label="Suggest next commands" help="In the block terminal, at an empty prompt of the focused terminal.">
+        <Row label="Suggest next commands" help="In the block terminal, at an empty prompt of the focused terminal." setting="ai.suggestions">
           <Toggle label="Suggest next commands" checked={ai.suggestions} onChange={(suggestions) => updateAi({ suggestions })} />
         </Row>
-        <Row label="Context size" help="Finished commands (with their output) sent with each request.">
+        <Row label="Context size" help="Finished commands (with their output) sent with each request." setting="ai.contextBlocks">
           <NumberField
             label="Context size"
             value={ai.contextBlocks}

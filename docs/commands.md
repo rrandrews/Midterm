@@ -62,7 +62,10 @@ override; version 4 turned the terminal's `terminalMode` into
 `defaultTerminal`. Global fields: fonts, accent, theme, key bindings,
 `defaultPaneKind`, `defaultTerminal`, `ai`. Everything a plugin owns is in
 `plugins[id] = { enabled, settings, skills }`, validated against the
-plugin's declared fields when read (`src/plugins/settings.ts`; the
+plugin's declared fields when read. Also `env`, `secrets`, `python` and
+`workspaces` (per-workspace overrides and environment; the store's fields
+are the active workspace's effective settings, see
+[workspaces.md](workspaces.md#settings-model)) (`src/plugins/settings.ts`; the
 terminal's are in `src/terminal/settings.ts`, the editor's and viewer's in
 `src/editor/settings.ts`). See [plugins.md](plugins.md#settings).
 `settings.ts` is the zustand store (`useSettings`, `getSettings`),
@@ -75,12 +78,15 @@ render and saved 200 ms after each change. Dev runs with `?mockup` or
 
 ## Settings dialog
 
-`src/settings/SettingsDialog.tsx` (⌘, or the app menu). Sections come from
-a registry (`src/settings/sections.ts`; each has an icon and search
-keywords): General (`GeneralSection.tsx`: what new terminals and new
+`src/settings/SettingsDialog.tsx` (⌘, or the app menu). The picker above
+the section list chooses what is edited: the defaults or one workspace
+(see [workspaces.md](workspaces.md#settings-dialog)). Sections come from
+a registry (`src/settings/sections.ts`; each has an icon, search
+keywords and a `scope`): Workspace (only for a workspace), General (`GeneralSection.tsx`: what new terminals and new
 tabs/splits open, restore all defaults), Appearance (a live preview, the
 theme gallery, font family and size, the accent, file icons; see
-[themes.md](themes.md#settings-and-gallery)), AI (see
+[themes.md](themes.md#settings-and-gallery)), Environment (variables,
+secrets, Python), AI (see
 [ai.md](ai.md#settings--ai)), Plugins (`PluginSettings.tsx`: installed
 plugins, enable/disable, import, remove) and Keyboard
 (`KeyboardSection.tsx`: commands grouped by category, shortcuts as key caps;

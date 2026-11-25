@@ -22,7 +22,7 @@ import type { Layout, PaneData, Tab, Workspace } from "./types";
 export const SCHEMA_VERSION = 2;
 
 type SavedTab = Pick<Tab, "id" | "title" | "titleLocked" | "layout" | "activePaneId">;
-type SavedWorkspace = Pick<Workspace, "id" | "name" | "activeTabId"> & { tabs: SavedTab[] };
+type SavedWorkspace = Pick<Workspace, "id" | "name" | "icon" | "activeTabId"> & { tabs: SavedTab[] };
 
 export type SavedState = {
   version: number;
@@ -38,6 +38,7 @@ export function snapshotState(state: AppState): SavedState {
     workspaces: state.workspaces.map((workspace) => ({
       id: workspace.id,
       name: workspace.name,
+      ...(workspace.icon && { icon: workspace.icon }),
       activeTabId: workspace.activeTabId,
       tabs: workspace.tabs.map((tab) => ({
         id: tab.id,
@@ -122,6 +123,7 @@ function restoreWorkspace(saved: unknown, index: number): Workspace | null {
   const name = nonEmptyString(saved.name) ? saved.name : `workspace ${index + 1}`;
   const workspace = createWorkspace(name, tabs.length ? tabs : [createTab()]);
   if (nonEmptyString(saved.id)) workspace.id = saved.id;
+  if (typeof saved.icon === "string" && /^[a-z0-9-]{1,40}$/.test(saved.icon)) workspace.icon = saved.icon;
   if (workspace.tabs.some((tab) => tab.id === saved.activeTabId)) {
     workspace.activeTabId = saved.activeTabId as string;
   }

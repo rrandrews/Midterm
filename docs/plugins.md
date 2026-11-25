@@ -154,7 +154,14 @@ Plugin entries live in `settings.plugins[id]`:
   `terminalMode` setting into `defaultTerminal` (`"blocks"` →
   `block-terminal`), and version 5 turned the flat AI provider fields into
   model profiles (`ai.profiles`, `ai.defaultProfile`, `ai.features`; see
-  [ai.md](ai.md#settings)).
+  [ai.md](ai.md#settings)). Version 6 added `env`, `secrets`, `python` and
+  `workspaces` (no migration).
+- A workspace can override single plugin settings
+  (`workspaces[id].overrides.plugins[pluginId].settings`); `enabled` and
+  `skills` are shared by every workspace. `pluginSettings` and
+  `api.settings.get` read the active workspace's values; in the settings
+  dialog, `usePluginSettings` reads the scope being edited. See
+  [workspaces.md](workspaces.md).
 
 The dialog's sections come from a registry (`registerSettingsSection` in
 `src/settings/sections.ts`), plus one section per plugin: enable/disable,

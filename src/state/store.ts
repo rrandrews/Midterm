@@ -11,6 +11,8 @@ export type AppState = {
 export type AppActions = {
   addWorkspace: (name?: string) => string;
   renameWorkspace: (workspaceId: string, name: string) => void;
+  /** Sets the workspace's badge icon; `undefined` goes back to its initial. */
+  setWorkspaceIcon: (workspaceId: string, icon: string | undefined) => void;
   removeWorkspace: (workspaceId: string) => void;
   setActiveWorkspace: (workspaceId: string) => void;
 
@@ -155,6 +157,17 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
       workspaces: state.workspaces.map((workspace) =>
         workspace.id === workspaceId ? { ...workspace, name: trimmed } : workspace,
       ),
+    }));
+  },
+
+  setWorkspaceIcon: (workspaceId, icon) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((workspace) => {
+        if (workspace.id !== workspaceId) return workspace;
+        const next = { ...workspace, icon };
+        if (!icon) delete next.icon;
+        return next;
+      }),
     }));
   },
 

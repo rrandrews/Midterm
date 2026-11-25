@@ -4,7 +4,7 @@ import { createPaneState } from "../plugins/paneState";
 import { refreshTabTitles } from "../plugins/tabTitles";
 import { useSettings } from "../settings/settings";
 import { subscribeThemeApplied } from "../theme/state";
-import { findPane } from "../state/layout";
+import { findPane, listPanes } from "../state/layout";
 import { findTabOfPane, useAppStore } from "../state/store";
 import type { PaneNode } from "../state/types";
 import { TerminalSession } from "./session";
@@ -102,17 +102,32 @@ export function terminalTabTitle(pane: PaneNode): string | undefined {
   return terminalTitle(session?.foregroundProgram ?? null, cwd, homeDirectory()) || undefined;
 }
 
-// Settings and the theme apply to every live terminal at once.
-let lastConfig = JSON.stringify(terminalConfig());
+/*
+ * Settings and the theme apply to the live terminals of the active
+ * workspace, whose settings they are. Terminals of other workspaces keep
+ * what they last had until theirs is active again: applying another
+ * workspace's settings to them could do lasting harm (a smaller scrollback
+ * drops their history).
+ */
+const appliedConfig = new WeakMap<TerminalSession, string>();
 function applyConfig(): void {
   const config = terminalConfig();
   const json = JSON.stringify(config);
-  if (json === lastConfig) return;
-  lastConfig = json;
-  for (const [, session] of sessions.entries()) session.applySettings(config);
+  const state = useAppStore.getState();
+  const workspace = state.workspaces.find((candidate) => candidate.id === state.activeWorkspaceId);
+  const shown = new Set(workspace?.tabs.flatMap((tab) => listPanes(tab.layout).map((pane) => pane.id)));
+  for (const [paneId, session] of sessions.entries()) {
+    if (!shown.has(paneId) || appliedConfig.get(session) === json) continue;
+    appliedConfig.set(session, json);
+    session.applySettings(config);
+  }
 }
 useSettings.subscribe(applyConfig);
 subscribeThemeApplied(applyConfig);
+// Panes moved into the active workspace, or a workspace switch that changed no setting.
+useAppStore.subscribe((state, previous) => {
+  if (state.workspaces !== previous.workspaces || state.activeWorkspaceId !== previous.activeWorkspaceId) applyConfig();
+});
 
 /**
  * The kind of a new pane that is sent a command (`queueStartupInput`): the

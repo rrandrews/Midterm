@@ -1,4 +1,4 @@
-import { useSettings } from "../settings/settings";
+import { useScopedSettings } from "../settings/scope";
 import type { Settings } from "../settings/schema";
 import { getSettings } from "../settings/settings";
 import { type SettingField, resolveFields } from "./fields";
@@ -37,7 +37,10 @@ export function pluginSettings(
   return resolved;
 }
 
-/** `pluginSettings` as a React hook. */
+/**
+ * `pluginSettings` as a React hook. In the settings dialog, the settings of
+ * the scope being edited (see `src/settings/scope.tsx`).
+ */
 export function usePluginSettings(pluginId: string, fields?: readonly SettingField[]): Record<string, unknown> {
-  return useSettings((state) => pluginSettings(pluginId, fields ?? getPlugin(pluginId)?.plugin.settings?.fields, state));
+  return useScopedSettings((state) => pluginSettings(pluginId, fields ?? getPlugin(pluginId)?.plugin.settings?.fields, state));
 }
