@@ -27,6 +27,7 @@ async function start(): Promise<void> {
   (await import("./plugins")).installPlugins();
   (await import("./theme/commands")).installThemeCommands();
   (await import("./ai/commands")).installAi();
+  (await import("./terminal/openCommand")).installOpenCommand();
   const { loadHomeDirectory, loadLocalHostname } = await import("./ipc/system");
   const { loadSettings } = await import("./settings/settings");
   const { loadRecent } = await import("./palette/sources");

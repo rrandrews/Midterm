@@ -1,5 +1,5 @@
 import { type KeyboardEvent, type RefObject, useEffect, useRef, useState } from "react";
-import { parseSlash, slashCompletion } from "../../ai/slash";
+import { parseSlash, slashCompletesPath, slashCompletion } from "../../ai/slash";
 import { homeDirectory } from "../../ipc/system";
 import {
   applyCandidate,
@@ -91,7 +91,9 @@ export function useCompletion({
 
   /** Starts a completion of the word at the caret; `fallback` runs if nothing completes. */
   const start = (line: string, caret: number, fallback: () => void): boolean => {
-    if (!enabled || !line.trim() || slashCompletion(line) || parseSlash(line)) return false;
+    if (!enabled || !line.trim() || slashCompletion(line)) return false;
+    // Slash command lines are not shell commands; `/open`'s path still completes.
+    if (parseSlash(line) && !slashCompletesPath(line, caret)) return false;
     const context = completionContext(line, caret);
     if (!context) return false;
     const id = ++lookup.current;

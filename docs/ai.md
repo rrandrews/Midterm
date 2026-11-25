@@ -824,7 +824,7 @@ Code: `src/ai/` and `src/ipc/ai.ts`. Installed by `installAi()` from
 | `editorRequests.ts` | Requests whose answer lands in a pane's blocks editor (`/cmd`, Fix), per pane outside React: `startEditorRequest`, `cancelEditorRequest`, `failEditorRequest`, the store `BlockInput` renders, and the bound editor's draft (`bindEditor`, `editorDraft`). Tested in `editorRequests.test.ts`. |
 | `blockAi.ts` | Explain and fix: the prompts, `buildExplainRequest` / `buildFixRequest`, `explainRequest`, `fixCommand`, `canFix`, `fixBlock`. Tested in `blockAi.test.ts`. |
 | `blockNotes.ts` | The notes under blocks (Explain): `useBlockNotes`, `explainBlock`, `stopNote`, `dismissNote`, `toggleNote`, `pruneNotes`, `dropPaneNotes`, and `runNote` (the stream seam). Tested in `blockNotes.test.ts` with a fake stream. |
-| `slash.ts` | Slash commands for the blocks editor: the registry, `parseSlash`, `slashCompletion`, and `/cmd`'s request (`writeCommand`, `buildCmdRequest`). Unit-tested in `slash.test.ts`. |
+| `slash.ts` | Slash commands for the blocks editor: the registry, `parseSlash`, `slashCompletion`, `slashCompletesPath`, and `/cmd`'s request (`writeCommand`, `buildCmdRequest`). Unit-tested in `slash.test.ts`. |
 | `predict.ts` | Pure: local next-command prediction from the command log (`predictNext`, `tokenize`). Unit-tested in `predict.test.ts`. |
 | `AiSection.tsx` | Settings → AI: suggestions switches, Models, Features. |
 | `settings/AgentStatus.tsx` | The agent's adapter status: `AgentStatusLine` (the profile editor's second status line), `useAgentAdapterProblem` (the Features row), `ProblemText` (a problem with its install command in mono and a copy button). |
@@ -1051,6 +1051,7 @@ of a command name, the ghost text shows its usage (`/cmd <what to do>`),
 |---|---|
 | `/cmd <task>` | Asks the model for a shell command that does the task. |
 | `/agent <task>` | Runs the task through the agent against this terminal, in the pane's agent card (see [Agent](#agent)). Without a task, "Say what the agent should do: /agent <task>" shows above the editor. |
+| `/open <file or folder>` | Opens it as ⌘-clicking it in the output would (a file in an editor or viewer, a folder in an explorer), relative to the terminal's directory. Takes shell quoting and escapes, and `name:line[:col]`; ⇥ completes the path. Not in a nested (ssh) shell. Not AI: `src/terminal/openCommand.ts` (`installOpenCommand`, from `main.tsx`). Handlers may return a promise; the line stays in the editor until it settles. |
 
 `/cmd`: on ⏎ the line moves above the editor ("writing a command… esc
 cancels"; Esc or ⌃C cancels and puts the line back) and the request goes

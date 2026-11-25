@@ -790,7 +790,8 @@ and list are `src/components/panes/useCompletion.tsx` and
   `}`, and `~` at the start of a word), or, inside a quote the user opened,
   for that quote: `'` becomes `'\''` in single quotes; in double quotes a
   backslash goes before `"`, `$`, `\` and backquotes.
-- ⇥ precedence: an empty line, a slash command line (`/cmd …`), a
+- ⇥ precedence: an empty line, a slash command line (`/cmd …`; but
+  `/open`'s argument completes as a path, `slashCompletesPath`), a
   selection, a nested shell's prompt (ssh: the files are elsewhere) or a
   word that cannot be completed accept the ghost suggestion as before;
   otherwise completion runs, and falls back to the suggestion when nothing

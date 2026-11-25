@@ -170,9 +170,17 @@ export function BlockInput({
   const runSlash = (line: string, { command, args }: ParsedSlash) => {
     if (command.name !== "cmd") {
       const handler = slashHandler(command.name);
-      const problem = handler ? handler(paneId, args) : `/${command.name} is not available`;
-      if (problem) failEditorRequest(paneId, { line, restore: line, message: problem });
-      else setValue("");
+      const settle = (problem: string | void) => {
+        // An async handler settles later: leave the editor alone if something
+        // else was typed or requested meanwhile.
+        const untouched = valueRef.current.trim() === line && useEditorRequests.getState()[paneId]?.status !== "loading";
+        if (!untouched) return;
+        if (problem) failEditorRequest(paneId, { line, restore: line, message: problem });
+        else setValue("");
+      };
+      const result = handler ? handler(paneId, args) : `/${command.name} is not available`;
+      if (result instanceof Promise) void result.then(settle, (error: unknown) => settle(String(error)));
+      else settle(result);
       return;
     }
     if (!args) {

@@ -19,14 +19,16 @@ export type SlashCommand = {
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "cmd", usage: "/cmd <what to do>", description: "AI writes a command for it" },
   { name: "agent", usage: "/agent <task>", description: "the agent does it, working with this terminal" },
+  { name: "open", usage: "/open <file or folder>", description: "open it from this directory in a pane" },
 ];
 
 /**
- * What a slash command other than `/cmd` does, registered from `installAi`
- * so this module stays free of the agent's dependencies. Returns an error
- * message to show (e.g. a missing task), or nothing.
+ * What a slash command other than `/cmd` does, registered by its owner
+ * (`/agent` from `installAi`, `/open` from `installOpenCommand`) so this
+ * module stays free of their dependencies. Returns (or resolves to) an
+ * error message to show (e.g. a missing task), or nothing.
  */
-export type SlashHandler = (paneId: string, args: string) => string | void;
+export type SlashHandler = (paneId: string, args: string) => string | void | Promise<string | void>;
 
 const handlers = new Map<string, SlashHandler>();
 
@@ -55,6 +57,15 @@ export function parseSlash(line: string): ParsedSlash | null {
 export function slashCompletion(value: string): SlashCommand | undefined {
   if (!/^\/[A-Za-z-]*$/.test(value)) return undefined;
   return SLASH_COMMANDS.find((entry) => `/${entry.name}`.startsWith(value));
+}
+
+/** Slash commands whose argument is a path, completed like a shell command's (⇥). */
+const PATH_ARGUMENT = new Set(["open"]);
+
+/** Whether the caret is in the path argument of a slash command that takes one (`/open src/ma|`). */
+export function slashCompletesPath(line: string, caret: number): boolean {
+  const match = /^(\s*)\/([A-Za-z][\w-]*)\s/.exec(line);
+  return match !== null && PATH_ARGUMENT.has(match[2]) && caret >= match[0].length && parseSlash(line) !== null;
 }
 
 export const CMD_SYSTEM_PROMPT = [

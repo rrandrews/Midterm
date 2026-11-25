@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CMD_SYSTEM_PROMPT, buildCmdRequest, parseSlash, slashCompletion, writeCommand } from "./slash";
+import { CMD_SYSTEM_PROMPT, buildCmdRequest, parseSlash, slashCompletesPath, slashCompletion, writeCommand } from "./slash";
 
 describe("parseSlash", () => {
   it("parses registered commands and their arguments", () => {
@@ -22,6 +22,19 @@ describe("slashCompletion", () => {
     expect(slashCompletion("/u")).toBeUndefined();
     expect(slashCompletion("/cmd x")).toBeUndefined();
     expect(slashCompletion("ls")).toBeUndefined();
+  });
+});
+
+describe("slashCompletesPath", () => {
+  it("completes /open's argument, not its name or other commands", () => {
+    expect(parseSlash("/open src/a.ts")).toMatchObject({ command: { name: "open" }, args: "src/a.ts" });
+    expect(slashCompletion("/o")?.name).toBe("open");
+    expect(slashCompletesPath("/open sr", 8)).toBe(true);
+    expect(slashCompletesPath("/open ", 6)).toBe(true);
+    expect(slashCompletesPath("/open sr", 3)).toBe(false);
+    expect(slashCompletesPath("/open", 5)).toBe(false);
+    expect(slashCompletesPath("/cmd list", 9)).toBe(false);
+    expect(slashCompletesPath("/opener x", 9)).toBe(false);
   });
 });
 
