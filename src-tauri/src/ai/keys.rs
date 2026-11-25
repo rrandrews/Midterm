@@ -5,6 +5,9 @@
 //! (the provider id, or `custom:<base URL>` so a custom key stays with its
 //! endpoint).
 //!
+//! The same store holds workspace secrets (accounts `secret/…`, see
+//! `crate::secrets`).
+//!
 //! Keys are never written to settings files, and no command returns one to
 //! the webview: it can set, delete and ask whether one is set. These calls
 //! can block (the OS may show a prompt), so callers run them on the
@@ -394,6 +397,18 @@ pub fn get(account: &str) -> Result<Option<String>, AiError> {
         Store::Memory => Ok(mem_get(memory(), account)),
         Store::File => file_get(&key_file(), account),
         Store::Os => os_get(account),
+    }
+}
+
+/// Like [`get`], but never asks the OS store: from the OS store only what
+/// an earlier read put in this launch's cache (`None` if nothing did). For
+/// callers on the main thread, which must not wait for a credential prompt
+/// or for another call holding the store's lock.
+pub fn get_cached(account: &str) -> Option<Option<String>> {
+    match store() {
+        Store::Memory => Some(mem_get(memory(), account)),
+        Store::File => file_get(&key_file(), account).ok(),
+        Store::Os => cache_lookup(account),
     }
 }
 

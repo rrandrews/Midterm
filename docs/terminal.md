@@ -158,7 +158,8 @@ Uses [`portable-pty`](https://crates.io/crates/portable-pty) directly.
 
 | Command | Arguments (JS names) | Notes |
 |---|---|---|
-| `pty_spawn` | `cols`, `rows`, `cwd?`, `onData`, `onEvent` | Returns the session id. Output can start arriving before the id does. |
+| `pty_spawn` | `cols`, `rows`, `cwd?`, `shell?`, `shellArgs?`, `sshIntegration?`, `env?`, `secrets?`, `python?`, `onData`, `onEvent` | Returns the session id. Output can start arriving before the id does. `env`, `secrets` and `python`: see "Workspace environment". |
+| `secret_set`, `secret_delete`, `secret_status`, `secrets_warm` | `account`, `value` / `accounts` | Async. Workspace secrets in the key store; no command returns a value. |
 | `pty_write` | `id`, `data` | UTF-8 input. Queued; never blocks. Errors on an unknown id. |
 | `pty_write_bytes` | `id`, `data` (byte array) | Input that is not text, e.g. legacy mouse reports (xterm's `onBinary`). |
 | `pty_resize` | `id`, `cols`, `rows` | Errors on an unknown id. |
@@ -203,6 +204,47 @@ Windows. Lookup code is in `process.rs`. The mock PTY reports a shell.
   otherwise the home directory.
 - zsh, bash and fish additionally get shell integration (below); bash is
   then started as `bash --rcfile …` instead of `-bash`.
+
+### Workspace environment
+
+`pty_spawn` takes the workspace's environment, computed by the frontend per
+terminal (`PtyOptions` in `src/ipc/pty.ts`); `SpawnEnv` in `shell.rs`:
+
+- `env: [{ name, value }]`: set in order, on top of the base terminal
+  environment (so `TERM` can be overridden) and **before** the shell
+  integration is set up, so integration variables (`ZDOTDIR`, `XDG_DATA_DIRS`,
+  `MIDTERM_*`) always win and the integration sees the user's `ZDOTDIR` as the
+  original. Names must match `^[A-Za-z_][A-Za-z0-9_]*$`; invalid names,
+  names starting with `MIDTERM_` and values with a NUL are skipped. The same
+  for a custom `shell`.
+- `secrets: [{ name, account }]`: like `env`, applied after it, with the value
+  read from the key store (`ai/keys.rs`, see [ai.md](ai.md#keys); account
+  `secret/<scope>/<NAME>`, scope `default` or a workspace id). Missing ones
+  are skipped (the log names them, never the value). `pty_spawn` is
+  synchronous on the main thread, so the frontend calls `secrets_warm`
+  (`warmSecrets` in `src/ipc/secrets.ts`) with the accounts first, which fills
+  the store's per-launch cache and takes any Keychain prompt on the blocking
+  pool. The `secret_*` commands (`src-tauri/src/secrets.rs`) reject accounts
+  outside `secret/`, so they cannot reach the AI keys, and nothing returns a
+  secret's value to the webview (`secretStatus` only says whether it is set).
+- `python: { kind: "venv" | "conda", target }`: `target` is a venv directory
+  or a conda environment name. Sets `MIDTERM_PYTHON_VENV` / `MIDTERM_PYTHON_CONDA`
+  (unknown kinds and empty targets are ignored; inherited ones are removed).
+  The integration scripts act on them **once, at the first prompt**, after
+  the user's startup files (macOS `path_helper` and rc files reorder `PATH`
+  before then): a venv's `bin/activate` (fish: `bin/activate.fish`) is
+  sourced, which also gives the usual `(venv)` prompt prefix; otherwise
+  `conda activate <name>` if a `conda` function or command exists (stderr is
+  discarded). Then both variables are unset, so nested shells and `ssh` (which
+  sends no environment anyway) do not repeat it. In zsh this runs at the
+  start of `_midterm_deferred_init`, before the OSC 133 hooks, so the
+  prefix is in `PS1` before `_midterm_prompt_end` appends the B mark; in bash
+  the script does it right after the login files, before its hooks are
+  installed; in fish it runs at the top of the first `fish_prompt` event,
+  before `fish_prompt` is wrapped for B. Without integration (a custom
+  `shell`, or a shell the integration does not know) nothing can activate, so
+  for a venv `VIRTUAL_ENV` is set and `<venv>/bin` prepended to the inherited
+  `PATH` directly; conda does nothing there.
 
 ### Shell integration
 

@@ -16,7 +16,8 @@ use tauri::{State, Window};
 
 use super::manager::PtyManager;
 use super::session::{Foreground, PtyEvent, Sinks};
-use super::shell::{CustomShell, shell_command};
+use super::shell::{CustomShell, EnvVar, PythonEnv, SpawnEnv, shell_command};
+use crate::secrets::{self, SecretVar};
 
 /// Starts the user's login shell (or `shell` with `shell_args`, from the
 /// settings) in a new PTY and returns the session id.
@@ -25,6 +26,12 @@ use super::shell::{CustomShell, shell_command};
 /// `InvokeResponseBody::Raw`, which Tauri delivers to JavaScript as an
 /// `ArrayBuffer` (a `Channel<Vec<u8>>` would be serialised as a JSON array of
 /// numbers instead). `on_event` receives [`PtyEvent`]s as JSON.
+///
+/// `env` and `secrets` are added to the shell's environment (secrets last,
+/// read from the key store, which must have been warmed with
+/// `secrets_warm`: this command runs on the main thread and does not wait
+/// for a credential prompt); `python` is activated by the shell at its
+/// first prompt. See `shell::SpawnEnv`.
 ///
 /// Output may start arriving before this command's result does.
 // Each argument is a field of the webview's call; a struct would only rename them.
@@ -39,6 +46,9 @@ pub fn pty_spawn(
     shell: Option<String>,
     shell_args: Option<Vec<String>>,
     ssh_integration: Option<bool>,
+    env: Option<Vec<EnvVar>>,
+    secrets: Option<Vec<SecretVar>>,
+    python: Option<PythonEnv>,
     on_data: Channel<InvokeResponseBody>,
     on_event: Channel<PtyEvent>,
 ) -> Result<u32, String> {
@@ -49,6 +59,13 @@ pub fn pty_spawn(
             let _ = on_event.send(event);
         }),
     };
+    let mut vars = env.unwrap_or_default();
+    vars.extend(
+        secrets::resolve_from_store(&secrets.unwrap_or_default())
+            .into_iter()
+            .map(|(name, value)| EnvVar { name, value }),
+    );
+    let spawn = SpawnEnv { vars, python };
     manager.spawn(
         window.label(),
         shell_command(
@@ -60,6 +77,7 @@ pub fn pty_spawn(
                 })
                 .as_ref(),
             ssh_integration.unwrap_or(true),
+            &spawn,
         ),
         cols,
         rows,

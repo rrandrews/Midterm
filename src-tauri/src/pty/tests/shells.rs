@@ -1168,3 +1168,133 @@ fn bootstrap_prints_the_motd_unless_hushed() {
         assert_eq!(text.contains(line), !hushed, "{text:?}");
     }
 }
+
+/// A fake venv in the sandbox: an `activate` that does what the real ones
+/// do (`VIRTUAL_ENV`, `PATH` in front, a prefix on `PS1`).
+fn fake_venv(sandbox: &Sandbox) -> PathBuf {
+    let venv = sandbox.root.join("venv");
+    fs::create_dir_all(venv.join("bin")).unwrap();
+    fs::write(
+        venv.join("bin/activate"),
+        format!(
+            "VIRTUAL_ENV='{}'\nexport VIRTUAL_ENV\nPATH=\"$VIRTUAL_ENV/bin:$PATH\"\nexport PATH\nPS1=\"(fake) ${{PS1-}}\"\n",
+            venv.display()
+        ),
+    )
+    .unwrap();
+    venv
+}
+
+/// The workspace's venv is activated at the first prompt, after the user's
+/// startup files (which put their own entry first in `PATH`), with its
+/// prompt prefix before OSC 133;B, and the variables are gone afterwards.
+fn check_python_venv(shell: &Path, sandbox: &Sandbox, prompt: &str) {
+    let venv = fake_venv(sandbox);
+    let mut h = sandbox.spawn(shell, &sandbox.home, |cmd| {
+        cmd.env("MIDTERM_PYTHON_VENV", &venv);
+    });
+    h.wait_for_output(MARK_B);
+    h.session
+        .write(
+            b"echo \"V=$VIRTUAL_ENV M=${MIDTERM_PYTHON_VENV-unset} P=${PATH%%:*}\"\nexit\n".to_vec(),
+        )
+        .unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let text = h.text();
+    let expected = format!("V={} M=unset P={}/bin\r\n", venv.display(), venv.display());
+    assert!(text.contains(&expected), "output: {text:?}");
+    assert!(
+        text.contains(&format!("(fake) {prompt}{MARK_B}")),
+        "output: {text:?}"
+    );
+    // The first PATH report already has the venv in front.
+    let reports = path_reports(&text);
+    assert!(
+        reports[0].0.starts_with(&format!("{}/bin:", venv.display())),
+        "{reports:?}"
+    );
+    let names = mark_names(&osc133_marks(&text)).join(",");
+    assert!(names.starts_with("A,B,C,D;0,A,B"), "marks {names}");
+}
+
+#[test]
+fn zsh_activates_the_workspace_venv() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-venv");
+    sandbox.write(".zshrc", "PS1='zsh> '\nPATH=/late:$PATH\nsetopt nounset errexit\n");
+    check_python_venv(&zsh, &sandbox, "zsh> ");
+}
+
+#[test]
+fn bash_activates_the_workspace_venv() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-venv");
+    sandbox.write(".bash_profile", "PS1='bash> '\nPATH=/late:$PATH\n");
+    check_python_venv(&bash, &sandbox, "bash> ");
+}
+
+/// A `conda` function in the startup files is called with `activate <name>`
+/// at the first prompt.
+fn check_python_conda(shell: &Path, sandbox: &Sandbox) {
+    let mut h = sandbox.spawn(shell, &sandbox.home, |cmd| {
+        cmd.env("MIDTERM_PYTHON_CONDA", "my-env");
+    });
+    h.wait_for_output(MARK_B);
+    h.session
+        .write(b"echo \"C=$(cat \"$HOME/conda.out\") M=${MIDTERM_PYTHON_CONDA-unset}\"\nexit\n".to_vec())
+        .unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let text = h.text();
+    assert!(text.contains("C=activate my-env M=unset\r\n"), "output: {text:?}");
+}
+
+#[test]
+fn zsh_activates_the_workspace_conda_env() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-conda");
+    sandbox.write(".zshrc", "conda() { print -r -- \"$*\" > \"$HOME/conda.out\" }\n");
+    check_python_conda(&zsh, &sandbox);
+}
+
+#[test]
+fn bash_activates_the_workspace_conda_env() {
+    let Some(bash) = find_shell("bash") else {
+        eprintln!("bash not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("bash-conda");
+    sandbox.write(".bash_profile", "conda() { echo \"$*\" > \"$HOME/conda.out\"; }\n");
+    check_python_conda(&bash, &sandbox);
+}
+
+#[test]
+fn a_missing_venv_or_conda_does_not_disturb_the_shell() {
+    for (name, rc) in [("zsh", ".zshrc"), ("bash", ".bash_profile")] {
+        let Some(shell) = find_shell(name) else {
+            eprintln!("{name} not installed; skipped");
+            continue;
+        };
+        let sandbox = Sandbox::new(&format!("{name}-nopython"));
+        sandbox.write(rc, "");
+        for (var, value) in [("MIDTERM_PYTHON_VENV", "/no/such/venv"), ("MIDTERM_PYTHON_CONDA", "nope")] {
+            let mut h = sandbox.spawn(&shell, &sandbox.home, |cmd| {
+                cmd.env(var, value);
+            });
+            h.wait_for_output(MARK_B);
+            h.session
+                .write(b"echo \"M=${MIDTERM_PYTHON_VENV-unset}${MIDTERM_PYTHON_CONDA-unset}\"\nexit\n".to_vec())
+                .unwrap();
+            assert_eq!(h.wait_for_exit(), Some(0));
+            assert!(h.text().contains("M=unsetunset\r\n"), "{name}/{var}: {:?}", h.text());
+        }
+    }
+}

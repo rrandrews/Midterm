@@ -131,6 +131,27 @@ if [[ -n ${MIDTERM_SSH_DIR-} ]]; then
   fi
 fi
 
+# The workspace's default Python environment (MIDTERM_PYTHON_VENV: a venv
+# directory, MIDTERM_PYTHON_CONDA: a conda environment name) is activated
+# once, at the first prompt, so after the user's startup files (macOS's
+# path_helper and rc files put PATH in order meanwhile). It runs before the
+# hooks below touch PS1, so the `(venv)` prefix the activate script adds
+# comes before OSC 133;B, which _midterm_prompt_end puts at the end. Run
+# with zsh's own defaults, whatever options the user's files set, and it
+# never ends the startup.
+_midterm_activate_python() {
+  builtin emulate -L zsh
+  if [[ -n ${MIDTERM_PYTHON_VENV-} ]]; then
+    [[ -r $MIDTERM_PYTHON_VENV/bin/activate ]] &&
+      builtin source -- "$MIDTERM_PYTHON_VENV/bin/activate"
+  elif [[ -n ${MIDTERM_PYTHON_CONDA-} ]]; then
+    (( ${+functions[conda]} )) || (( ${+commands[conda]} )) &&
+      conda activate "$MIDTERM_PYTHON_CONDA" 2>/dev/null
+  fi
+  builtin unset MIDTERM_PYTHON_VENV MIDTERM_PYTHON_CONDA
+  builtin return 0
+}
+
 # The hooks are put in place at the first prompt rather than now: the user's
 # .zprofile/.zshrc have not run yet and may add hooks of their own.
 # _midterm_precmd goes first so that it sees the command's exit status,
@@ -144,6 +165,8 @@ fi
 # and hooks after it may still rewrite PS1 for that one prompt.
 _midterm_deferred_init() {
   builtin emulate -L zsh
+  _midterm_activate_python
+  builtin unfunction _midterm_activate_python
   precmd_functions=(${precmd_functions:#_midterm_deferred_init})
   precmd_functions=(_midterm_precmd ${precmd_functions:#(_midterm_precmd|_midterm_prompt_end)} _midterm_prompt_end)
   preexec_functions=(_midterm_preexec ${preexec_functions:#_midterm_preexec})

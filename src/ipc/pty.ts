@@ -10,6 +10,22 @@ export type PtyExit = {
   runtimeMs: number;
 };
 
+/** An environment variable for a new shell. */
+export type PtyEnvVar = { name: string; value: string };
+
+/**
+ * A secret to put in the environment as `name`. The backend reads its value
+ * from the key store (`account`, see `secrets.ts`); it never passes through
+ * the webview.
+ */
+export type PtySecretVar = { name: string; account: string };
+
+/**
+ * The Python environment a new shell activates at its first prompt: a venv
+ * directory, or the name of a conda environment.
+ */
+export type PtyPython = { kind: "venv" | "conda"; target: string };
+
 export type PtyOptions = {
   cols: number;
   rows: number;
@@ -21,6 +37,16 @@ export type PtyOptions = {
   shellArgs?: string[];
   /** Wrap `ssh` to load the shell integration on the remote (default true). */
   sshIntegration?: boolean;
+  /** Variables for the shell, on top of the terminal's own (applied in order). */
+  env?: PtyEnvVar[];
+  /**
+   * Secrets for the shell's environment, after `env`. Call `warmSecrets` for
+   * their accounts first, so that the spawn does not wait for a Keychain
+   * prompt. Missing ones are skipped.
+   */
+  secrets?: PtySecretVar[];
+  /** Python environment to activate (integrated shells), or `null`. */
+  python?: PtyPython | null;
   /** Raw output bytes. May be called before `spawnPty` resolves. */
   onData: (bytes: Uint8Array) => void;
   /** Called once, after the last `onData`. */
@@ -79,6 +105,9 @@ async function spawnTauriPty(options: PtyOptions): Promise<Pty> {
     shell: options.shell || null,
     shellArgs: options.shell ? (options.shellArgs ?? []) : null,
     sshIntegration: options.sshIntegration ?? true,
+    env: options.env?.length ? options.env : null,
+    secrets: options.secrets?.length ? options.secrets : null,
+    python: options.python ?? null,
     onData,
     onEvent,
   });

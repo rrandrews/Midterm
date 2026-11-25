@@ -583,6 +583,9 @@ Keys are never written to settings files. The webview can set, delete and
 ask whether a key is set; **no command returns a key**. The calls run on
 the blocking pool, since the OS may show a prompt (a re-signed dev build can
 trigger a Keychain "allow access" dialog). CLI providers take no key.
+The same store also holds workspace secrets, under accounts starting with
+`secret/` (see [terminal.md](terminal.md#workspace-environment)); their
+commands refuse any other account.
 
 Builds with the `tauri-mcp` cargo feature (`bun run dev:mcp`) keep keys in a
 process-wide in-memory map instead, with the same set/delete/status

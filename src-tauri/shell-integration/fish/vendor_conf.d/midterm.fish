@@ -92,11 +92,33 @@ function __midterm_report_path
     printf '\e]6973;path=%s;aid=%s\a' "$encoded" $__midterm_aid
 end
 
+# The workspace's default Python environment (MIDTERM_PYTHON_VENV: a venv
+# directory, MIDTERM_PYTHON_CONDA: a conda environment name), activated once
+# at the first prompt, after config.fish. Runs after __midterm_wrap_prompt:
+# activate.fish then wraps our wrapper (it prints `(venv) ` and calls the
+# prompt it saved, so OSC 133;B still comes last), and `deactivate` restores
+# our wrapper rather than the unwrapped prompt. Never ends the startup.
+function __midterm_activate_python
+    if set -q MIDTERM_PYTHON_VENV; and test -n "$MIDTERM_PYTHON_VENV"
+        if test -r "$MIDTERM_PYTHON_VENV/bin/activate.fish"
+            source "$MIDTERM_PYTHON_VENV/bin/activate.fish"
+        end
+    else if set -q MIDTERM_PYTHON_CONDA; and test -n "$MIDTERM_PYTHON_CONDA"
+        if functions -q conda; or command -q conda
+            conda activate "$MIDTERM_PYTHON_CONDA" 2>/dev/null
+        end
+    end
+    set -e MIDTERM_PYTHON_VENV
+    set -e MIDTERM_PYTHON_CONDA
+    return 0
+end
+
 function __midterm_prompt --on-event fish_prompt
+    __midterm_wrap_prompt
+    __midterm_activate_python
     __midterm_report_path
     __midterm_report_cwd
     printf '\e]133;A;aid=%s\a' $__midterm_aid
-    __midterm_wrap_prompt
 end
 
 # Puts OSC 133;B after the user's prompt. Done at the first prompt rather

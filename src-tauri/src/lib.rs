@@ -6,6 +6,7 @@ mod menu;
 mod plugins;
 mod pty;
 mod quit_guard;
+mod secrets;
 mod traffic_lights;
 
 use tauri::webview::PageLoadEvent;
@@ -165,6 +166,10 @@ pub fn run() {
             pty::commands::pty_ack,
             pty::commands::pty_kill,
             pty::commands::pty_foreground,
+            secrets::secret_set,
+            secrets::secret_delete,
+            secrets::secret_status,
+            secrets::secrets_warm,
             fs::commands::fs_list_dir,
             fs::commands::fs_stat,
             fs::commands::fs_open_default,

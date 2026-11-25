@@ -67,6 +67,28 @@ else
   builtin unset _midterm_si_file
 fi
 
+# The workspace's default Python environment (MIDTERM_PYTHON_VENV: a venv
+# directory, MIDTERM_PYTHON_CONDA: a conda environment name), activated once
+# here: the startup files have run, the hooks below are not in place yet, so
+# the `(venv)` prefix the activate script adds to PS1 is there before
+# _midterm_prompt_end appends OSC 133;B. Never ends the startup, even under
+# `set -e` from the user's files (hence the `|| :`).
+_midterm_activate_python() {
+  if [ -n "${MIDTERM_PYTHON_VENV-}" ]; then
+    if [ -r "$MIDTERM_PYTHON_VENV/bin/activate" ]; then
+      builtin source "$MIDTERM_PYTHON_VENV/bin/activate" || :
+    fi
+  elif [ -n "${MIDTERM_PYTHON_CONDA-}" ]; then
+    if builtin declare -F conda >/dev/null || command -v conda >/dev/null 2>&1; then
+      conda activate "$MIDTERM_PYTHON_CONDA" 2>/dev/null || :
+    fi
+  fi
+  builtin unset MIDTERM_PYTHON_VENV MIDTERM_PYTHON_CONDA
+  builtin return 0
+}
+_midterm_activate_python
+builtin unset -f _midterm_activate_python
+
 # `ssh host` loads this integration on the remote too (see the zsh script):
 # an `ssh` function adds the remote command for plain interactive logins,
 # unless the user's startup files defined their own.
