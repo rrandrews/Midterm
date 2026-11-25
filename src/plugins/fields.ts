@@ -99,6 +99,7 @@ export function checkFields(fields: unknown): string[] {
     }
     const { key, label, type } = field as Record<string, unknown>;
     if (typeof key !== "string" || !key) problems.push(`${where}.key must be a non-empty string`);
+    else if (key.startsWith("$")) problems.push(`${where}.key "${key}" is reserved (keys starting with $ belong to the host)`);
     else if (keys.has(key)) problems.push(`${where}.key "${key}" is used twice`);
     else keys.add(key);
     if (typeof label !== "string" || !label) problems.push(`${where}.label must be a non-empty string`);

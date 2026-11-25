@@ -6,6 +6,7 @@ import { createPaneState } from "../plugins/paneState";
 import { selectAllPanes, useAppStore } from "../state/store";
 import { editorOptions, markdownMode } from "./settings";
 import { appliedTheme } from "../theme/apply";
+import { paneResolvedTheme } from "../theme/paneTheme";
 import { subscribeThemeApplied } from "../theme/state";
 import { ViewerModel } from "../viewer/model";
 import { EditorModel } from "./model";
@@ -49,9 +50,10 @@ function shapeFor(kind: FileKind, path: string): Shape {
   return mode === "text" ? "readOnly" : mode;
 }
 
-function create(paneId: string, path: string, shape: Shape): FileModel {
+function create(paneId: string, kind: FileKind, path: string, shape: Shape): FileModel {
   if (shape === "markdown" || shape === "image") return new ViewerModel(paneId, path, shape);
   const model = new EditorModel(paneId, path, shape === "readOnly");
+  if (darkFor(kind) !== lastDark) model.setDark(darkFor(kind));
   const { fontFamily, fontSize } = getSettings();
   model.setFont(monoFontStack(fontFamily), fontSize);
   model.setOptions(editorOptions());
@@ -67,7 +69,7 @@ export function acquireFileModel(paneId: string, kind: FileKind, path: string): 
   // A new kind or file means a new model (the old component released it).
   const entry = entries.acquire(
     paneId,
-    () => ({ model: create(paneId, path, shape), kind, shape }),
+    () => ({ model: create(paneId, kind, path, shape), kind, shape }),
     (existing) => existing.shape === shape && existing.model.path === path,
   );
   const reveal = pendingReveals.get(paneId);
@@ -141,15 +143,27 @@ useSettings.subscribe(() => {
   }
 });
 
-// CodeMirror's light/dark flag follows the theme.
+// CodeMirror's light/dark flag follows the theme: the pane kind's own
+// (src/theme/paneTheme.ts) if it has one, else the app's.
+function darkFor(kind: FileKind): boolean {
+  return (paneResolvedTheme(kind) ?? appliedTheme()).dark;
+}
 let lastDark = appliedTheme().dark;
 EditorModel.setDark(lastDark);
-subscribeThemeApplied(() => {
+const lastKindDark: Record<FileKind, boolean> = { editor: darkFor("editor"), viewer: darkFor("viewer") };
+function applyDark(): void {
   const dark = appliedTheme().dark;
-  if (dark === lastDark) return;
-  lastDark = dark;
-  EditorModel.setDark(dark);
-  for (const [, { model }] of entries.entries()) {
-    if (model instanceof EditorModel) model.setDark(dark);
+  if (dark !== lastDark) {
+    lastDark = dark;
+    EditorModel.setDark(dark);
   }
-});
+  const next: Record<FileKind, boolean> = { editor: darkFor("editor"), viewer: darkFor("viewer") };
+  const changed = (["editor", "viewer"] as const).filter((kind) => next[kind] !== lastKindDark[kind]);
+  Object.assign(lastKindDark, next);
+  if (!changed.length) return;
+  for (const [, { model, kind }] of entries.entries()) {
+    if (model instanceof EditorModel && changed.includes(kind)) model.setDark(next[kind]);
+  }
+}
+subscribeThemeApplied(applyDark);
+useSettings.subscribe(applyDark);

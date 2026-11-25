@@ -111,13 +111,15 @@ export function terminalTabTitle(pane: PaneNode): string | undefined {
  */
 const appliedConfig = new WeakMap<TerminalSession, string>();
 function applyConfig(): void {
-  const config = terminalConfig();
-  const json = JSON.stringify(config);
   const state = useAppStore.getState();
   const workspace = state.workspaces.find((candidate) => candidate.id === state.activeWorkspaceId);
   const shown = new Set(workspace?.tabs.flatMap((tab) => listPanes(tab.layout).map((pane) => pane.id)));
   for (const [paneId, session] of sessions.entries()) {
-    if (!shown.has(paneId) || appliedConfig.get(session) === json) continue;
+    if (!shown.has(paneId)) continue;
+    // Per pane: its kind may have a theme of its own.
+    const config = terminalConfig(paneId);
+    const json = JSON.stringify(config);
+    if (appliedConfig.get(session) === json) continue;
     appliedConfig.set(session, json);
     session.applySettings(config);
   }

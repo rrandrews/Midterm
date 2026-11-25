@@ -1,5 +1,6 @@
 import { Component, type CSSProperties, type ErrorInfo, type ReactNode, memo, useEffect, useMemo, useRef } from "react";
 import { usePaneNumbers } from "../layout/paneNumbers";
+import { usePaneThemeStyle } from "../theme/paneTheme";
 import { focusPane, notePaneFocused, registerPaneFocuser } from "../layout/dock";
 import { closePane } from "../closing";
 import { registerPaneActions } from "../commands/registry";
@@ -62,10 +63,17 @@ export const PaneHost = memo(function PaneHost({ pane }: { pane: PaneNode }) {
   };
   const spec = plugin?.pane;
   // A plugin without its own background gets the theme's for its id (`--pane-<id>`), else the default.
-  const style = {
-    "--pane-bg": spec?.background ?? `var(--pane-${kind}, var(--pane-default))`,
-    ...(spec?.activeBackground && { "--pane-bg-active": spec.activeBackground }),
-  } as CSSProperties;
+  // The pane kind's own theme (Settings → the plugin → Theme): its variables, scoped to the pane.
+  const themeStyle = usePaneThemeStyle(kind);
+  const style = useMemo(
+    () =>
+      ({
+        "--pane-bg": spec?.background ?? `var(--pane-${kind}, var(--pane-default))`,
+        ...(spec?.activeBackground && { "--pane-bg-active": spec.activeBackground }),
+        ...themeStyle,
+      }) as CSSProperties,
+    [spec?.background, spec?.activeBackground, kind, themeStyle],
+  );
 
   return (
     <ContextMenu>

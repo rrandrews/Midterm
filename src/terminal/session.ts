@@ -82,6 +82,8 @@ type Input = { binary: boolean; data: string };
  */
 export class TerminalSession {
   private readonly host = document.createElement("div");
+  // App-wide settings here: field initializers may run before `paneId` is
+  // set. The constructor then applies the pane's own config (its theme).
   private readonly term = new Terminal({ ...TERMINAL_OPTIONS, ...terminalOptions(terminalConfig()) });
   private readonly search = new SearchAddon();
   private copyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -142,7 +144,9 @@ export class TerminalSession {
     this.host.className = "terminal-host";
 
     this.term.loadAddon(this.search);
-    this.solid = this.computeSolid(terminalConfig());
+    const config = terminalConfig(this.paneId);
+    this.solid = this.computeSolid(config);
+    this.term.options.theme = terminalOptions(config, this.solid).theme;
     this.host.classList.toggle("is-solid", this.solid);
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11";
@@ -255,7 +259,7 @@ export class TerminalSession {
   /** Re-evaluates the effective background; touches xterm only when it flips. */
   private refreshSolid(): void {
     if (this.disposed) return;
-    const config = terminalConfig();
+    const config = terminalConfig(this.paneId);
     if (this.computeSolid(config) !== this.solid) this.applySettings(config);
   }
 
@@ -269,7 +273,7 @@ export class TerminalSession {
     const background = this.term.options.theme?.background;
     // An opaque theme background is reported by xterm itself.
     if (background && !/^#[0-9a-f]{6}00$/i.test(background) && background !== "transparent") return false;
-    const color = oscColor(terminalConfig().solidBackground);
+    const color = oscColor(terminalConfig(this.paneId).solidBackground);
     if (!color) return false;
     this.send({ binary: false, data: `\x1b]11;${color}\x1b\\` });
     return true;
@@ -286,7 +290,7 @@ export class TerminalSession {
       this.search.clearDecorations();
       return false;
     }
-    const { match, matchActive, accent } = terminalConfig();
+    const { match, matchActive, accent } = terminalConfig(this.paneId);
     const options = {
       incremental,
       decorations: {

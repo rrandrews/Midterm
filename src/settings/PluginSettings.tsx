@@ -19,6 +19,7 @@ import { BUTTON, Block, FieldRows, Group, ICON_BUTTON, Row, Toggle } from "./con
 import { openSettings } from "./SettingsDialog";
 import { useScopedActions } from "./scope";
 import { useSettings } from "./settings";
+import { PaneThemeSection } from "../theme/PaneThemeSection";
 
 /*
  * Settings → Plugins (every installed plugin, import, remove) and the
@@ -222,6 +223,7 @@ export function PluginSection({ pluginId }: { pluginId: string }) {
         </Group>
       )}
       {enabled && Custom && <Custom pluginId={pluginId} />}
+      {enabled && <PaneThemeSection pluginId={pluginId} />}
       {enabled && <Skills pluginId={pluginId} />}
     </>
   );

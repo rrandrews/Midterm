@@ -23,6 +23,7 @@ the CSS variables, xterm, blocks rendering, CodeMirror and the window.
 | `files.ts` | Import and export through file dialogs |
 | `commands.ts` | Palette commands, `editTheme`, and the Appearance and Theme editor settings sections, registered by `installThemeCommands` |
 | `AppearanceSection.tsx` | Settings → Appearance |
+| `paneTheme.ts`, `PaneThemeSection.tsx` | A pane kind's own theme (below) and its Theme group in each plugin's settings |
 | `editor/` | Settings → Theme editor: `draft.ts` (draft, undo, save, leave guard), `ThemeEditor.tsx` (the section), `tokens.tsx` (token rows and lists that don't depend on the draft) |
 | `importers/` | `importItermColors`, `importVSCodeTheme`, `importBase16`, `importMidtermTheme` / `exportTheme`, `detectThemeFormat`, `importThemeFile`; fixtures in `importers/fixtures/` |
 
@@ -373,6 +374,40 @@ Palette commands:
   showing.
 - **Theme: Toggle light/dark**: switches to the light or dark pick and turns
   off following the system.
+
+## Pane themes
+
+Every plugin's settings section has a **Theme** group
+(`PaneThemeSection.tsx`), so the panes of one kind can look different from
+the rest of the app:
+
+- **Theme**: "Same as the app" (default) or any bundled or custom theme. A
+  picked theme keeps its own accent; the app's accent override does not
+  apply to it.
+- **Background**: the pane background as one color (active or not).
+- **Colors**: every token (`TokenList`, ANSI included), each overridable,
+  laid over the theme above. Derived tokens follow an overridden one, as in
+  a theme's own overrides.
+
+It is saved as the plugin setting `$theme`
+(`settings.plugins[id].settings.$theme`, `{ theme?, overrides?, background? }`,
+validated by `validatePaneTheme`), so a workspace can override it like any
+plugin setting. Keys starting with `$` belong to the host: field keys may
+not start with `$`, and `pluginSettings` leaves them out.
+
+`paneTheme.ts` resolves it (`resolvePaneTheme(kind, settings, systemDark)`,
+`null` when the kind follows the app, cached per kind) and it is applied:
+
+- **CSS**: `PaneHost` sets `paneThemeStyle(kind)` on the `.pane` element:
+  every `cssVariables()` entry, `color` and `color-scheme` (inherited values
+  were computed from `<html>`'s variables), and `--pane-bg` /
+  `--pane-bg-active` for the background. Popovers and menus portalled out
+  of the pane keep the app's theme.
+- **Terminals**: `terminalConfig(paneId)` uses the pane kind's theme for
+  xterm colors, the solid background and find highlights; `sessions.ts`
+  applies each session's own config.
+- **Editors**: CodeMirror's dark flag follows the editor's or viewer's
+  kind (`darkFor` in `src/editor/registry.ts`).
 
 ## Theme editor
 

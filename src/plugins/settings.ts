@@ -20,8 +20,9 @@ export function pluginSettings(
   settings: Settings = getSettings(),
 ): Record<string, unknown> {
   const raw = settings.plugins[pluginId]?.settings ?? EMPTY;
-  // No declared fields: the saved object itself (stable, so React sees no change).
-  if (!fields) return raw;
+  // No declared fields: the saved object itself (stable, so React sees no
+  // change), without the host's own keys (`$theme`).
+  if (!fields) return withoutHostKeys(raw);
   // Resolved once per saved object, so callers get a stable value to compare.
   let byPlugin = cache.get(raw);
   if (!byPlugin) {
@@ -35,6 +36,19 @@ export function pluginSettings(
     byPlugin.set(key, resolved);
   }
   return resolved;
+}
+
+const stripped = new WeakMap<object, Record<string, unknown>>();
+
+/** Saved plugin settings without the keys the host keeps there (they start with `$`). */
+function withoutHostKeys(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.keys(raw).some((key) => key.startsWith("$"))) return raw;
+  let result = stripped.get(raw);
+  if (!result) {
+    result = Object.fromEntries(Object.entries(raw).filter(([key]) => !key.startsWith("$")));
+    stripped.set(raw, result);
+  }
+  return result;
 }
 
 /**

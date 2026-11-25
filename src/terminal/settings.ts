@@ -3,7 +3,9 @@ import { pluginSettings, usePluginSettings } from "../plugins/settings";
 import type { PaneData } from "../state/types";
 import type { ITheme } from "@xterm/xterm";
 import { getSettings } from "../settings/settings";
+import { selectAllPanes, useAppStore } from "../state/store";
 import { appliedTheme } from "../theme/apply";
+import { paneResolvedTheme } from "../theme/paneTheme";
 import { BLOCK_TERMINAL } from "./kinds";
 
 /*
@@ -168,9 +170,16 @@ export type TerminalConfig = TerminalSettings & {
   accent: string;
 };
 
-export function terminalConfig(): TerminalConfig {
+/** The kind of a pane in any tab, if it exists. */
+function kindOfPane(paneId: string): string | undefined {
+  return selectAllPanes(useAppStore.getState()).find((pane) => pane.id === paneId)?.data.kind;
+}
+
+/** The config for a pane's terminal: its kind's own theme (see src/theme/paneTheme.ts), else the app's. */
+export function terminalConfig(paneId?: string): TerminalConfig {
   const { fontFamily, fontSize } = getSettings();
-  const theme = appliedTheme();
+  const kind = paneId ? kindOfPane(paneId) : undefined;
+  const theme = (kind && paneResolvedTheme(kind)) || appliedTheme();
   return {
     ...terminalSettings(),
     fontFamily,

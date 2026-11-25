@@ -33,6 +33,10 @@ describe("resolveFields", () => {
     expect(checkFields([{ key: "apps", type: "programs", label: "Apps", default: ["agy", 4] }])).toHaveLength(1);
   });
 
+  it("reserves keys starting with $ for the host", () => {
+    expect(checkFields([{ key: "$theme", type: "toggle", label: "Theme", default: false }])[0]).toMatch(/reserved/);
+  });
+
   it("checks declarations from imported plugins", () => {
     expect(checkFields(fields)).toEqual([]);
     expect(checkFields([{ key: "a", type: "toggle", label: "A", default: "yes" }])).toHaveLength(1);
