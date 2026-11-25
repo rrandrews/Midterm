@@ -1,4 +1,5 @@
 import { Component, type CSSProperties, type ErrorInfo, type ReactNode, memo, useEffect, useMemo, useRef } from "react";
+import { usePaneNumbers } from "../layout/paneNumbers";
 import { focusPane, notePaneFocused, registerPaneFocuser } from "../layout/dock";
 import { closePane } from "../closing";
 import { registerPaneActions } from "../commands/registry";
@@ -92,6 +93,7 @@ export const PaneHost = memo(function PaneHost({ pane }: { pane: PaneNode }) {
             <PluginPlaceholder paneId={pane.id} kind={kind} problem={problem} />
           )}
           <AgentCard paneId={pane.id} />
+          <PaneNumberBadge paneId={pane.id} active={active} />
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent aria-label="Pane">
@@ -101,6 +103,17 @@ export const PaneHost = memo(function PaneHost({ pane }: { pane: PaneNode }) {
     </ContextMenu>
   );
 });
+
+/** The digit that ⌥-selects this pane, shown while ⌥ is held (src/layout/paneNumbers.ts). */
+function PaneNumberBadge({ paneId, active }: { paneId: string; active: boolean }) {
+  const label = usePaneNumbers((state) => state.numbers[paneId]);
+  if (!label) return null;
+  return (
+    <div className={`pane-number${active ? " is-active" : ""}`} aria-hidden="true">
+      {label}
+    </div>
+  );
+}
 
 function PluginContent({ plugin, pane, active, ctx }: { plugin: PanePlugin; pane: PaneNode; active: boolean; ctx: PaneContext }) {
   const { component: Content, mount } = plugin.pane;

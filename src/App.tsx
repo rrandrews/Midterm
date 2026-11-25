@@ -12,6 +12,7 @@ import { flushSettings } from "./settings/settings";
 import { flushCommandLog } from "./terminal/commandLog";
 import { installFocusKeeper } from "./layout/dock";
 import { installPaneDropTargets } from "./layout/paneDrag";
+import { installPaneNumbers } from "./layout/paneNumbers";
 import { installShortcuts } from "./shortcuts";
 import { selectActiveTab, useAppStore } from "./state/store";
 
@@ -40,6 +41,7 @@ export default function App() {
 
   useEffect(() => {
     const uninstallShortcuts = installShortcuts();
+    const uninstallPaneNumbers = installPaneNumbers();
     const uninstallFocusKeeper = installFocusKeeper();
     const uninstallContextMenuGuard = suppressNativeContextMenu();
     const uninstallDropTargets = installPaneDropTargets(dropPaneOnTab);
@@ -57,6 +59,7 @@ export default function App() {
       uninstallDropTargets();
       uninstallCloseGuards();
       uninstallShortcuts();
+      uninstallPaneNumbers();
       uninstallFocusKeeper();
       uninstallContextMenuGuard();
     };

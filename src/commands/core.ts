@@ -5,6 +5,7 @@ import {
   movePaneToNewTab,
   newTab,
   newWorkspace,
+  selectPaneByDigit,
   selectTabAt,
   splitPane,
   toggleMaximizePane,
@@ -43,6 +44,21 @@ export const CORE_COMMANDS: Command[] = [
 
   { id: "pane.splitRight", title: "Split right", category: "Pane", keys: ["Cmd+D"], run: () => splitPane("right") },
   { id: "pane.splitDown", title: "Split down", category: "Pane", keys: ["Cmd+Shift+D"], run: () => splitPane("bottom") },
+  // ⌥1 … ⌥9, ⌥0: the numbers shown on the panes while ⌥ is held (src/layout/paneNumbers.ts).
+  ...Array.from(
+    { length: 10 },
+    (_, index): Command => {
+      const digit = (index + 1) % 10;
+      return {
+        id: `pane.select${index + 1}`,
+        title: `Go to pane ${index + 1}`,
+        category: "Pane",
+        keys: [`Alt+${digit}`],
+        hidden: true,
+        run: () => selectPaneByDigit(digit),
+      };
+    },
+  ),
   { id: "pane.close", title: "Close pane", category: "Pane", keys: ["Cmd+W"], run: () => closePane() },
   {
     id: "pane.toggleMaximize",

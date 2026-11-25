@@ -57,6 +57,30 @@ export function listPanes(layout: Layout): PaneNode[] {
   return tabsets(layout).flatMap((tabset) => tabset.tabs);
 }
 
+/**
+ * The digit key that selects the pane at a position in `listPanes` order:
+ * "1" … "9" for the first nine, "0" for the tenth, `null` beyond that.
+ */
+export function paneNumberLabel(index: number): string | null {
+  if (index < 0 || index > 9) return null;
+  return String((index + 1) % 10);
+}
+
+/** The position in `listPanes` order a digit key selects: "1" is 0, … "9" is 8, "0" is 9. */
+export function paneIndexForDigit(digit: number): number {
+  return (digit + 9) % 10;
+}
+
+/** Each numbered pane's id mapped to its label, in `listPanes` order (at most ten panes). */
+export function paneNumbers(layout: Layout): Record<string, string> {
+  const numbers: Record<string, string> = {};
+  for (const [index, pane] of listPanes(layout).entries()) {
+    const label = paneNumberLabel(index);
+    if (label) numbers[pane.id] = label;
+  }
+  return numbers;
+}
+
 export function countPanes(layout: Layout): number {
   return listPanes(layout).length;
 }

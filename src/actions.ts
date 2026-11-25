@@ -6,7 +6,16 @@ import { noteRecentFile } from "./palette/recent";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { convertedData, defaultTerminalKind, fileHandlers, newPane, newPaneData } from "./plugins/panes";
 import { isPluginEnabled, paneSpec } from "./plugins/registry";
-import { countPanes, createPane, findPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
+import {
+  countPanes,
+  createPane,
+  findPane,
+  frameIdOf,
+  listPanes,
+  paneIndexForDigit,
+  paneNumbers,
+  singlePaneLayout,
+} from "./state/layout";
 import {
   findTabOfPane,
   selectActiveTab,
@@ -254,6 +263,31 @@ export function focusNeighbourPane(direction: Direction): void {
     }
   }
   if (best) focusPane(best.id);
+}
+
+/** The numbers shown on the active tab's panes (⌥1 … ⌥0), by pane id. */
+export function activePaneNumbers(): Record<string, string> {
+  return paneNumbers(activeLayout().layout);
+}
+
+/**
+ * Focuses the pane a digit key (1 … 9, 0 for the tenth) selects, counting
+ * in `listPanes` order. Restores a maximized layout if the pane is hidden by it.
+ */
+export function selectPaneByDigit(digit: number): void {
+  const { dock, layout } = activeLayout();
+  const pane = listPanes(layout)[paneIndexForDigit(digit)];
+  if (!pane) return;
+  const hidden = layout.maximizedTabsetId && layout.maximizedTabsetId !== frameIdOf(layout, pane.id);
+  if (dock && hidden) dock.restoreTabset();
+  store().setActivePane(pane.id);
+  focusPane(pane.id);
+  // A pane revealed by the restore can only take focus once it is visible again.
+  if (hidden) restoreFocusSoon(pane.id);
+}
+
+function restoreFocusSoon(paneId: string): void {
+  requestAnimationFrame(() => focusPane(paneId));
 }
 
 /** Whether a pane may be given another file: its plugin says it has nothing unsaved. */

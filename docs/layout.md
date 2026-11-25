@@ -61,6 +61,31 @@ clicks or focus inside a pane. `PaneHost` (`src/plugins/PaneHost.tsx`) marks its
 pointer-down (`setActivePane` in the store) and gets the `is-active` class;
 CSS in `src/styles/dock.css` styles the frame from that with `:has()`.
 
+## Pane numbers and ⌥ digits
+
+⌥1 … ⌥9 focus the first to ninth pane of the active tab and ⌥0 the tenth
+(`pane.select1` … `pane.select10`, hidden commands in `src/commands/core.ts`
+running `selectPaneByDigit` in `src/actions.ts`). A number with no pane does
+nothing. If another pane is maximized, the layout is restored first.
+
+The order is `listPanes` order (depth-first through the splits, then floating
+panes), not on-screen geometry, so a pane keeps its number while the user
+resizes. `paneNumbers`, `paneNumberLabel` and `paneIndexForDigit` in
+`src/state/layout.ts` are the single source of that mapping, for both the
+shortcuts and the overlay.
+
+Holding ⌥ alone for 250ms shows the number on each pane
+(`src/layout/paneNumbers.ts`, installed in `App.tsx`; drawn by
+`PaneNumberBadge` in `PaneHost`, styled `.pane-number` in `dock.css`, the
+active pane's in the accent). The numbers are a snapshot in a small zustand
+store. They hide on ⌥ release, window blur, the page hiding, another
+modifier going down, or any key that is not ⌥+digit, and they never appear
+with fewer than two panes or while shortcuts are suspended. ⌥+digit keeps
+them up while ⌥ stays held. The badge is `pointer-events: none` and absolutely
+positioned, so it does not affect layout. Like all shortcuts, ⌥+digit is
+matched on `event.code` in the capture phase, so terminals never see the
+characters ⌥ would type ("¡™£…").
+
 ## Styling
 
 The library renders unstyled elements. Class names are assigned in

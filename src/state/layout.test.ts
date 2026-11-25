@@ -6,7 +6,10 @@ import {
   findPane,
   frameIdOf,
   listPanes,
+  paneIndexForDigit,
   paneNode,
+  paneNumberLabel,
+  paneNumbers,
   removePane,
   singlePaneLayout,
 } from "./layout";
@@ -95,5 +98,43 @@ describe("removePane", () => {
     const snapshot = JSON.stringify(layout);
     removePane(layout, c.id);
     expect(JSON.stringify(layout)).toBe(snapshot);
+  });
+});
+
+describe("pane numbers", () => {
+  it("labels the first nine panes 1 to 9 and the tenth 0", () => {
+    expect(Array.from({ length: 10 }, (_, index) => paneNumberLabel(index))).toEqual([
+      "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    ]);
+    expect(paneNumberLabel(10)).toBeNull();
+    expect(paneNumberLabel(-1)).toBeNull();
+  });
+
+  it("maps digit keys back to positions", () => {
+    expect(Array.from({ length: 10 }, (_, digit) => paneIndexForDigit(digit))).toEqual([
+      9, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+    ]);
+    // Labels and digits agree.
+    for (let index = 0; index < 10; index++) {
+      expect(paneIndexForDigit(Number(paneNumberLabel(index)))).toBe(index);
+    }
+  });
+
+  it("numbers panes in layout order", () => {
+    const { layout, a, b, c } = threePanes();
+    expect(paneNumbers(layout)).toEqual({ [a.id]: "1", [b.id]: "2", [c.id]: "3" });
+  });
+
+  it("leaves panes beyond the tenth unnumbered", () => {
+    const panes = Array.from({ length: 11 }, () => createPane("terminal"));
+    const layout = createLayout({
+      type: "split",
+      orientation: "horizontal",
+      children: panes.map((pane) => paneNode(pane)),
+    });
+    const numbers = paneNumbers(layout);
+    expect(Object.keys(numbers)).toHaveLength(10);
+    expect(numbers[panes[9].id]).toBe("0");
+    expect(numbers[panes[10].id]).toBeUndefined();
   });
 });
