@@ -13,6 +13,8 @@ export type FileLinkMatch = {
   end: number;
   /** The path as written (relative, absolute or `~/…`). */
   path: string;
+  /** With `names`: the path without an `ls -F` marker (`*`, `@`), to try when `path` does not exist. */
+  unmarked?: string;
   line?: number;
   column?: number;
 };
@@ -27,8 +29,16 @@ const PYTHON_POSITION = /^"?,\s*line\s+(\d+)/;
 /** A file extension: a dot, then a letter, then letters or digits. */
 const EXTENSION = /\.[A-Za-z][A-Za-z0-9_-]{0,15}$/;
 
+export type FindOptions = {
+  /**
+   * Also bare names (`Makefile`, `src`, `src/`), as `ls` prints them:
+   * anything that could name an entry. Callers check what exists.
+   */
+  names?: boolean;
+};
+
 /** File references in one (unwrapped) line of output. */
-export function findFileLinks(text: string): FileLinkMatch[] {
+export function findFileLinks(text: string, { names = false }: FindOptions = {}): FileLinkMatch[] {
   const matches: FileLinkMatch[] = [];
   for (const token of text.matchAll(TOKEN)) {
     const start = token.index;
@@ -63,8 +73,16 @@ export function findFileLinks(text: string): FileLinkMatch[] {
       }
     }
 
-    if (!looksLikeFile(path)) continue;
-    matches.push({ start, end, path, ...(line ? { line } : {}), ...(column ? { column } : {}) });
+    let unmarked: string | undefined;
+    if (names && line === undefined) {
+      // `ls -F` / `ls -p` markers: `dir/` is `dir`; `tool*` and `link@`
+      // may be, or may be names. The range keeps them.
+      path = path.replace(/(?<=[^/])\/+$/, "");
+      const stripped = path.replace(/(?<=.)[*@]$/, "");
+      if (stripped !== path && looksLikeName(stripped)) unmarked = stripped;
+    }
+    if (!(names ? looksLikeName(path) || unmarked !== undefined : looksLikeFile(path))) continue;
+    matches.push({ start, end, path, ...(unmarked ? { unmarked } : {}), ...(line ? { line } : {}), ...(column ? { column } : {}) });
   }
   return matches;
 }
@@ -75,6 +93,14 @@ function looksLikeFile(path: string): boolean {
   const name = path.slice(path.lastIndexOf("/") + 1);
   if (!name || name === "." || name === "..") return false;
   return path.includes("/") || EXTENSION.test(name);
+}
+
+/** Could name a file or directory: not an option, a number or punctuation. */
+function looksLikeName(path: string): boolean {
+  if (path.startsWith("-") || /^[\d.:,%+]+$/.test(path)) return false;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (!name || name === "." || name === "..") return false;
+  return /[\p{L}\p{N}]/u.test(name);
 }
 
 /** An absolute path for a reference in output, resolved against the terminal's directory. */

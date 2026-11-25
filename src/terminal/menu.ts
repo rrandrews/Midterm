@@ -12,6 +12,7 @@ import {
   replayBlock,
   toggleBlocks,
 } from "./blockMode";
+import { contextPathOf, pathMenuItems } from "./pathTargets";
 import { peekSession } from "./sessions";
 
 /** Pastes into the blocks input editor if it is showing, else into the terminal. */
@@ -36,6 +37,9 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
   const selection = (blocks && window.getSelection()?.toString()) || session?.selection || "";
   const block = session && blocks ? contextBlockOf(session) : undefined;
   const items: MenuItemSpec[] = [];
+  // A file or folder named in the output, right-clicked.
+  const path = session ? contextPathOf(paneId) : undefined;
+  if (path) items.push(...pathMenuItems(paneId, path), { type: "separator" });
   if (session && block) {
     items.push(
       { label: "Copy command", disabled: !block.command, run: () => copyBlockCommand(block) },

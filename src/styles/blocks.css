@@ -116,6 +116,14 @@
   cursor: text;
 }
 
+/* A file or folder named in the output: underlined on hover, ⌘-click opens it. */
+.block-link:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--color-accent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
 .block-cursor {
   background: var(--color-accent);
   color: var(--color-app) !important;

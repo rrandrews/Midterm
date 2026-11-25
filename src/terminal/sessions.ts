@@ -9,6 +9,7 @@ import { findTabOfPane, useAppStore } from "../state/store";
 import type { PaneNode } from "../state/types";
 import { TerminalSession } from "./session";
 import { type TerminalData, terminalConfig } from "./settings";
+import { forgetPathTargets } from "./pathTargets";
 import { terminalTitle } from "./titles";
 import { CLASSIC_TERMINAL, isSessionKind } from "./kinds";
 import { getSettings } from "../settings/settings";
@@ -28,6 +29,7 @@ const sessions = createPaneState<TerminalSession>({
   isLive: (pane) => isSessionKind(pane.data.kind),
   dispose: (session) => {
     session.dispose();
+    forgetPathTargets(session.paneId);
     for (const listener of disposeListeners) listener(session.paneId);
   },
 });

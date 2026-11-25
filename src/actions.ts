@@ -1,8 +1,10 @@
 import { renameOpenModels } from "./editor/registry";
+import { peekExplorer } from "./explorer/explorers";
+import { revealInFileManager } from "./ipc/shell";
 import { noteRecentFile } from "./palette/recent";
 import { type DockHandle, focusPane, getDock } from "./layout/dock";
 import { convertedData, defaultTerminalKind, fileHandlers, newPane, newPaneData } from "./plugins/panes";
-import { paneSpec } from "./plugins/registry";
+import { isPluginEnabled, paneSpec } from "./plugins/registry";
 import { countPanes, createPane, findPane, frameIdOf, listPanes, singlePaneLayout } from "./state/layout";
 import {
   findTabOfPane,
@@ -355,6 +357,38 @@ export function addPaneBeside(fromPaneId: string, pane: PaneNode): void {
   if (!best || !frameId) return;
   const region = best.wide ? "right" : "bottom";
   if (dock.addTab(pane, { target: { tabsetId: frameId, region } })) focusPane(pane.id);
+}
+
+/**
+ * Shows a directory in an explorer of `fromPaneId`'s tab: the last active
+ * explorer there is pinned to it, or, with `newPane` or when the tab has
+ * none, a new explorer pane pinned to it is split off. Without the
+ * explorer plugin, Finder shows it.
+ */
+export function openDirectory(path: string, { fromPaneId, newPane: alwaysNew = false }: { fromPaneId: string; newPane?: boolean }): void {
+  const tab = findTabOfPane(store(), fromPaneId);
+  const dock = tab && getDock(tab);
+  if (!tab || !dock) return;
+  // Without the explorer plugin, Finder is the folder view there is.
+  if (!isPluginEnabled("explorer")) return revealInFileManager(path);
+  if (!alwaysNew) {
+    const explorers = listPanes(dock.getModel()).filter((pane) => pane.data.kind === "explorer");
+    const target = explorers.find((pane) => pane.id === tab.activePaneId) ?? explorers[0];
+    const model = target && peekExplorer(target.id);
+    if (target && model) {
+      model.setPinned(true);
+      model.setRoot(path);
+      focusPane(target.id);
+      return;
+    }
+    if (target) {
+      // Not mounted yet: its model reads the data when it is created.
+      dock.updateTab(target.id, { data: { ...target.data, root: path, pinned: true, expanded: undefined } });
+      focusPane(target.id);
+      return;
+    }
+  }
+  addPaneBeside(fromPaneId, createPane("explorer", { ...newPaneData("explorer"), root: path, pinned: true }));
 }
 
 /** Opens the default terminal in `cwd`, in a new pane of `fromPaneId`'s tab. */

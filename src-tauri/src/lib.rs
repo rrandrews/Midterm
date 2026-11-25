@@ -167,6 +167,7 @@ pub fn run() {
             pty::commands::pty_foreground,
             fs::commands::fs_list_dir,
             fs::commands::fs_stat,
+            fs::commands::fs_open_default,
             fs::commands::fs_create,
             fs::commands::fs_rename,
             fs::commands::fs_trash,

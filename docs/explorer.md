@@ -184,6 +184,11 @@ split off the roomiest non-explorer pane, along its longer side
 panes showing it (`renameOpenFiles`), keeping their buffers. See
 [editor.md](editor.md).
 
+`openDirectory` in `src/actions.ts` (a folder ⌘-clicked in a terminal, or
+`/open dir`) pins the tab's last active explorer to the folder, or, with
+"Open in new pane" or when the tab has none, splits off a new explorer
+pinned to it.
+
 ### Keyboard
 
 | Key | Does |

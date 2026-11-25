@@ -9,7 +9,8 @@ import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty
 import { copyText } from "../ipc/clipboard";
 import { openExternal } from "../ipc/shell";
 import { localHostname } from "../ipc/system";
-import { BlockTracker } from "./blocks";
+import { type Block, BlockTracker, outputRows } from "./blocks";
+import { blockDirectories } from "./pathTargets";
 import { branchOf } from "./gitBranch";
 import { registerFileLinks } from "./fileLinkProvider";
 import { fitTerminal } from "./fit";
@@ -150,12 +151,7 @@ export class TerminalSession {
     );
 
     // Paths a shell over ssh prints are not files here.
-    registerFileLinks(
-      this.term,
-      paneId,
-      () => this.currentCwd,
-      () => !this.blocks.snapshot().nested,
-    );
+    registerFileLinks(this.term, paneId, (row) => this.linkDirectories(row));
 
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
@@ -608,6 +604,31 @@ export class TerminalSession {
       this.events.onForegroundChange(this);
       for (const listener of this.foregroundListeners) listener();
     }
+  }
+
+  /**
+   * Where names printed on buffer row `row` are resolved: a block's output
+   * where its command ran (see `blockDirectories`); other rows (prompts,
+   * output from before the blocks known, e.g. cleared) where the next
+   * command started, which is where the shell was when they were printed;
+   * rows after the last block in the current directory. Null for a nested
+   * shell's (ssh) output.
+   */
+  private linkDirectories(row: number): readonly (string | undefined)[] | null {
+    const snapshot = this.blocks.snapshot();
+    const buffer = this.term.buffer.active;
+    let following: Block | undefined;
+    if (buffer.type === "normal") {
+      const { blocks } = snapshot;
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const rows = outputRows(blocks[i], buffer);
+        if (!rows || rows.to <= row) break;
+        if (row >= rows.from) return blockDirectories(blocks, i, this.currentCwd, snapshot.nested);
+        following = blocks[i];
+      }
+    }
+    if (following) return following.host || following.nested ? null : [following.cwd ?? this.currentCwd];
+    return snapshot.nested ? null : [this.currentCwd];
   }
 
   private handleCwdReport(data: string): void {

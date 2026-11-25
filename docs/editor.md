@@ -185,21 +185,54 @@ relative to the file's repository (nearest ancestor with `.git`), else from
 - Viewers reload when the file changes on disk. Scroll position survives
   remounts.
 
-## Terminal links (`src/terminal/fileLinks.ts`, `fileLinkProvider.ts`)
+## Terminal links (`src/terminal/fileLinks.ts`, `pathTargets.ts`, `fileLinkProvider.ts`)
 
-A link provider registered on each terminal (`registerFileLinks` in
-`session.ts`) turns file references in output into links; ⌘-click (or
-Ctrl-click) opens the file with `openFile` from the terminal's pane, at the
-line and column given.
+Files and folders named in terminal output are links, in both views of a
+terminal: the classic xterm view (a link provider registered on each
+terminal, `registerFileLinks` in `session.ts`) and the blocks view
+(`OutputLine` in `BlocksView.tsx`, which looks a line up the first time
+the pointer enters it and wraps the names in `.block-link` spans,
+splitting styled runs with `splitAtLinks`). Hovering one underlines it.
 
+- ⌘-click (or Ctrl-click) opens it from the terminal's pane
+  (`openPathTarget`): a file with `openFile`, at the line and column
+  given; a folder with `openDirectory` (`src/actions.ts`), which pins the
+  tab's last active explorer to it, or splits off a new pinned explorer
+  (Finder without the explorer plugin).
+- Right-click on one puts its items at the top of the terminal's menu:
+  Open file / Open folder, Open in new pane, Open in default application
+  (`fs_open_default`: the opener plugin's Rust API, absolute existing
+  regular files and directories only, so the webview needs no open-path
+  scope), Reveal in Finder,
+  Copy file (folder) name, Copy full path. Which one: hover records the
+  target per pane and view (`setHoveredPath`); `TerminalPane` copies it on
+  `contextmenu` (capture phase, `captureContextPath`) if the click was in
+  the same view (in the blocks view, on a `.block-link`), and
+  `terminalMenu` reads it (`contextPathOf`). Every right click first clears
+  the context target (a window capture listener), so one that never
+  reaches the terminal (the agent card) does not reuse the last one.
 - `findFileLinks` (pure, unit-tested) finds tokens that look like files
   (contain a `/` or end in an extension), with an optional position:
   `path:line`, `path:line:col` (trailing colon allowed), tsc's
   `path(line,col)` and Python's `File "path", line N`. URLs, numbers,
   versions, times and flags are skipped; trailing sentence punctuation is
-  dropped.
+  dropped. With `names: true` (what terminals use) bare names count too
+  (`Makefile`, `src`, as `ls` prints them). A trailing `/` is dropped from
+  the path but kept in the range; `tool*` and `link@` are tried as written,
+  then without the marker (`unmarked`).
 - The line is read across soft-wrapped rows, cell by cell, so wide
   characters keep the mapping from string index to cell right.
-- Paths are resolved against the session's current directory (OSC 7), `~`
-  against the home directory. Only existing files become links; stats are
-  cached (10 s for hits, 3 s for misses, at most 2000 entries).
+- `findPathLinks` resolves relative names against a list of directories,
+  first that exists wins, `~` against the home directory. A block's output
+  (`blockDirectories`) tries the shell's directory after the command (the
+  next block's, or the current one), then where it started, so
+  `cd x && ls` resolves in `x`. The classic view finds the block a row
+  belongs to (`TerminalSession.linkDirectories`); a row outside any
+  tracked block's output (a prompt, output from before a `clear`) uses
+  the directory the next command started in, and rows after the last
+  block the current one. Only what exists becomes a link; stats are
+  cached (10 s for hits, 3 s for misses, at most 2000 entries), and the
+  blocks view looks a line up again on each hover. Nothing links in a
+  nested shell's (ssh) output (`host` or `nested` set). Known limit: names
+  are split at whitespace, so `My Report.txt` in `ls` output can link only
+  its `Report.txt` part (if that exists).

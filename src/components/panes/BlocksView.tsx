@@ -6,7 +6,7 @@ import { useSettings } from "../../settings/settings";
 import { useThemeRevision } from "../../theme/state";
 import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { homeDirectory } from "../../ipc/system";
-import { type Line, type Run, formatDuration, logicalLines, renderRows } from "../../terminal/blockRender";
+import { type Line, type Run, formatDuration, logicalLines, renderRows, splitAtLinks } from "../../terminal/blockRender";
 import {
   canReplay,
   copyBlockCommand,
@@ -16,6 +16,7 @@ import {
 } from "../../terminal/blockMode";
 import { type Block, type BlocksSnapshot, outputRows, scopeOf } from "../../terminal/blocks";
 import { branchOf } from "../../terminal/gitBranch";
+import { type PathLink, blockDirectories, findPathLinks, leaveHoveredPath, openPathTarget, opensLink, setHoveredPath } from "../../terminal/pathTargets";
 import type { TerminalSession } from "../../terminal/session";
 import { BlockInput } from "./BlockInput";
 import { BlockNote } from "./BlockNote";
@@ -105,19 +106,27 @@ export function BlocksView({
         }}
       >
         <div ref={listRef} className="blocks-list">
-          {snapshot.blocks.map((block) =>
+          {snapshot.blocks.map((block, index) =>
             block.end ? (
               <FinishedBlock
                 key={block.id}
                 session={session}
                 block={block}
+                // Where the command left the shell (`cd x && ls` lists x): the next block's directory.
+                dirs={blockDirectories(snapshot.blocks, index, session.cwd, snapshot.nested)?.join("\n")}
                 branch={block.branch}
                 // Only at a prompt of the same shell: "Run again" must not run a remote command here.
                 runnable={atPrompt && canReplay(session, block)}
                 aiReady={aiReady}
               />
             ) : (
-              <RunningBlock key={block.id} session={session} block={block} branch={block.branch} />
+              <RunningBlock
+                key={block.id}
+                session={session}
+                block={block}
+                dirs={blockDirectories(snapshot.blocks, index, session.cwd, snapshot.nested)?.join("\n")}
+                branch={block.branch}
+              />
             ),
           )}
         </div>
@@ -149,12 +158,15 @@ export function BlocksView({
 const FinishedBlock = memo(function FinishedBlock({
   session,
   block,
+  dirs,
   branch,
   runnable,
   aiReady,
 }: {
   session: TerminalSession;
   block: Block;
+  /** Directories its output's names resolve against, one per line (`blockDirectories`); unset for a remote block. */
+  dirs: string | undefined;
   branch: string | null | undefined;
   runnable: boolean;
   /** The `explain` feature has a ready model: Explain and Fix show. */
@@ -227,13 +239,23 @@ const FinishedBlock = memo(function FinishedBlock({
         </button>
       )}
       {block.truncated && hidden === 0 && <div className="block-note">Earlier output is no longer in the scrollback.</div>}
-      <Output lines={lines} />
+      <Output lines={lines} paneId={session.paneId} dirs={dirs} />
       <BlockNote paneId={session.paneId} block={block} />
     </div>
   );
 });
 
-function RunningBlock({ session, block, branch }: { session: TerminalSession; block: Block; branch: string | null | undefined }) {
+function RunningBlock({
+  session,
+  block,
+  dirs,
+  branch,
+}: {
+  session: TerminalSession;
+  block: Block;
+  dirs: string | undefined;
+  branch: string | null | undefined;
+}) {
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   const elapsed = useElapsed(block.startedAt);
   useThemeRevision();
@@ -271,7 +293,7 @@ function RunningBlock({ session, block, branch }: { session: TerminalSession; bl
         <span className="shrink-0">running{elapsed >= 1000 ? ` · ${Math.floor(elapsed / 1000)}s` : ""}</span>
       </BlockHeader>
       <BlockCommand command={block.command} />
-      <Output lines={lines} />
+      <Output lines={lines} paneId={session.paneId} dirs={dirs} />
     </div>
   );
 }
@@ -314,16 +336,67 @@ function ActionButton({
   );
 }
 
-const Output = memo(function Output({ lines }: { lines: Line[] }) {
+const Output = memo(function Output({ lines, paneId, dirs }: { lines: Line[]; paneId: string; dirs: string | undefined }) {
   if (!lines.length) return null;
   return (
     <div className="block-output">
       {lines.map((runs, i) => (
-        <div key={i}>{runs.length ? runs.map((run, j) => <RunSpan key={j} run={run} />) : "​"}</div>
+        <OutputLine key={i} runs={runs} paneId={paneId} dirs={dirs} />
       ))}
     </div>
   );
 });
+
+/**
+ * One line of output. The files and folders it names are looked up each
+ * time the pointer enters it (cheap: lookups are cached briefly), so a
+ * file created since shows up; the last result stays shown meanwhile.
+ */
+function OutputLine({ runs, paneId, dirs }: { runs: Run[]; paneId: string; /** One per line. */ dirs: string | undefined }) {
+  const text = useMemo(() => runs.map((run) => run.text).join(""), [runs]);
+  const [found, setFound] = useState<{ text: string; dirs: string; links: PathLink[] } | null>(null);
+  const links = found && found.text === text && found.dirs === dirs ? found.links : null;
+  const lookUp = () => {
+    if (!dirs || !text.trim()) return;
+    void findPathLinks(text, dirs.split("\n")).then((result) => setFound({ text, dirs, links: result }));
+  };
+  if (!runs.length) return <div>{"\u200b"}</div>;
+  return (
+    <div onMouseEnter={lookUp}>
+      {links?.length
+        ? splitAtLinks(runs, links).map((segment, j) =>
+            segment.link ? (
+              <PathLinkSpan key={j} paneId={paneId} link={segment.link}>
+                {segment.runs.map((run, k) => <RunSpan key={k} run={run} />)}
+              </PathLinkSpan>
+            ) : (
+              segment.runs.map((run, k) => <RunSpan key={`${j}.${k}`} run={run} />)
+            ),
+          )
+        : runs.map((run, j) => <RunSpan key={j} run={run} />)}
+    </div>
+  );
+}
+
+function PathLinkSpan({ paneId, link, children }: { paneId: string; link: PathLink; children: React.ReactNode }) {
+  const { target } = link;
+  return (
+    <span
+      className="block-link"
+      title={`${target.path}\n⌘-click to open`}
+      onMouseEnter={() => setHoveredPath(paneId, target, "blocks")}
+      onMouseLeave={() => leaveHoveredPath(paneId, target)}
+      onClick={(event) => {
+        // Plain clicks select text and give the keyboard back.
+        if (!opensLink(event)) return;
+        event.preventDefault();
+        openPathTarget(target, paneId);
+      }}
+    >
+      {children}
+    </span>
+  );
+}
 
 function RunSpan({ run }: { run: Run }) {
   const style: CSSProperties = {};

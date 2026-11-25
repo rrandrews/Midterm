@@ -200,3 +200,41 @@ export function formatDuration(ms: number): string {
   if (m < 60) return `${m}m ${String(Math.floor(s % 60)).padStart(2, "0")}s`;
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
+
+/** A piece of a line: runs inside one link's range (`link` set), or between links. */
+export type LinkSegment<L> = { link?: L; runs: Run[] };
+
+/**
+ * Splits a line's runs at the `[start, end)` ranges of `links` (string
+ * indices into the line's text, sorted, not overlapping), so each link can
+ * wrap its own runs and keep their styles.
+ */
+export function splitAtLinks<L extends { start: number; end: number }>(runs: readonly Run[], links: readonly L[]): LinkSegment<L>[] {
+  const segments: LinkSegment<L>[] = [];
+  let current: LinkSegment<L> | undefined;
+  let index = 0;
+  let next = 0;
+  const segmentFor = (link: L | undefined) => {
+    if (!current || current.link !== link) {
+      current = link ? { link, runs: [] } : { runs: [] };
+      segments.push(current);
+    }
+    return current;
+  };
+  for (const run of runs) {
+    let offset = 0;
+    while (offset < run.text.length) {
+      const at = index + offset;
+      while (next < links.length && links[next].end <= at) next++;
+      const link = links[next];
+      const inside = link !== undefined && link.start <= at;
+      // Up to the next boundary: the link's end, or its start.
+      const boundary = inside ? link.end : (link?.start ?? Infinity);
+      const length = Math.min(run.text.length - offset, boundary - at);
+      segmentFor(inside ? link : undefined).runs.push({ ...run, text: run.text.slice(offset, offset + length) });
+      offset += length;
+    }
+    index += run.text.length;
+  }
+  return segments;
+}

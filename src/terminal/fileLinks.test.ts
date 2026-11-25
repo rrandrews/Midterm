@@ -51,3 +51,35 @@ describe("resolveLinkPath", () => {
     expect(resolveLinkPath("rel.ts", undefined, "/home/me")).toBeNull();
   });
 });
+
+describe("findFileLinks with names", () => {
+  const names = (text: string) => findFileLinks(text, { names: true }).map(({ path }) => path);
+
+  it("finds bare names as ls prints them", () => {
+    expect(names("Makefile   README.md   src   node_modules")).toEqual(["Makefile", "README.md", "src", "node_modules"]);
+  });
+
+  it("handles ls -F markers, keeping them in the range", () => {
+    const text = "src/  run.sh*  link@";
+    const found = findFileLinks(text, { names: true });
+    expect(found.map(({ path, unmarked }) => [path, unmarked])).toEqual([
+      ["src", undefined],
+      // A literal `run.sh*` is tried first, then `run.sh`.
+      ["run.sh*", "run.sh"],
+      ["link@", "link"],
+    ]);
+    expect(text.slice(found[0].start, found[0].end)).toBe("src/");
+  });
+
+  it("skips options, numbers and punctuation", () => {
+    expect(names("-rw-r--r--  1  4096  12:30  --  .  ..  ~  /")).toEqual([]);
+  });
+
+  it("still finds references with positions", () => {
+    expect(findFileLinks("src/a.ts:3:1: oops", { names: true })[0]).toMatchObject({ path: "src/a.ts", line: 3, column: 1 });
+  });
+
+  it("is off by default", () => {
+    expect(paths("Makefile src")).toEqual([]);
+  });
+});

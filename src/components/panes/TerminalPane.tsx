@@ -3,6 +3,7 @@ import { registerPaneActions } from "../../commands/registry";
 import { registerPaneFocuser } from "../../layout/dock";
 import type { BlocksSnapshot } from "../../terminal/blocks";
 import { runsFullPane } from "../../terminal/fullPane";
+import { captureContextPath } from "../../terminal/pathTargets";
 import type { TerminalSession } from "../../terminal/session";
 import { acquireSession, releaseSession } from "../../terminal/sessions";
 import { useBlockTerminalSettings } from "../../terminal/settings";
@@ -114,6 +115,8 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
       onFocusCapture={() => {
         hasFocus.current = true;
       }}
+      // The pane's menu is about the file or folder under the pointer, if any.
+      onContextMenuCapture={(event) => captureContextPath(paneId, event.target)}
       onBlurCapture={(event) => {
         const next = event.relatedTarget as Node | null;
         // Focus moving to nothing is an element being hidden (or the window losing focus).

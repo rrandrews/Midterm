@@ -1,48 +1,21 @@
 import type { IBufferCellPosition, IDisposable, ILink, Terminal } from "@xterm/xterm";
-import { openFile } from "../actions";
-import * as fs from "../ipc/fs";
-import { homeDirectory } from "../ipc/system";
-import { findFileLinks, resolveLinkPath } from "./fileLinks";
+import { findPathLinks, leaveHoveredPath, openPathTarget, opensLink, setHoveredPath } from "./pathTargets";
 
 /*
- * Makes file references in terminal output (`src/a.ts:12:5`, see
- * fileLinks.ts) links: ⌘-click (or Ctrl-click) opens the file in an editor
- * in the terminal's tab, at that line. Relative paths are resolved against
- * the terminal's working directory, and only files that exist become links;
- * lookups are cached briefly, so hovering over a busy screen does not stat
- * the same paths again and again.
+ * Makes files and folders named in terminal output links: paths and
+ * references (`src/a.ts:12:5`, see fileLinks.ts) and bare names as `ls`
+ * prints them. Hovering one underlines it; ⌘-click (or Ctrl-click) opens a
+ * file in an editor in the terminal's tab, at that line, and a folder in an
+ * explorer; right-click adds its items to the pane's menu (pathTargets.ts).
+ * Relative names are resolved against the terminal's working directory,
+ * and only what exists becomes a link.
  */
-
-const FOUND_MS = 10_000;
-const MISSING_MS = 3_000;
-const CACHE_LIMIT = 2000;
-/** Lookups by path, kept until `until` (a miss for less long: the file may be about to appear). */
-const cache = new Map<string, { exists: Promise<boolean>; until: number }>();
-
-function isFile(path: string): Promise<boolean> {
-  const cached = cache.get(path);
-  if (cached && Date.now() < cached.until) return cached.exists;
-  const entry = {
-    exists: fs.stat(path).then(
-      (found) => found?.kind === "file",
-      () => false,
-    ),
-    until: Date.now() + MISSING_MS,
-  };
-  void entry.exists.then((exists) => {
-    if (exists) entry.until = Date.now() + FOUND_MS;
-  });
-  cache.delete(path);
-  cache.set(path, entry);
-  if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value as string);
-  return entry.exists;
-}
 
 /**
  * The logical line (a row and the rows wrapped onto it) containing buffer
  * row `y` (1-based), as text, with each string index's cell position.
  */
-function readLogicalLine(term: Terminal, y: number): { text: string; cells: IBufferCellPosition[] } {
+function readLogicalLine(term: Terminal, y: number): { text: string; cells: IBufferCellPosition[]; widths: number[] } {
   const buffer = term.buffer.active;
   let first = y - 1;
   while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
@@ -51,6 +24,8 @@ function readLogicalLine(term: Terminal, y: number): { text: string; cells: IBuf
 
   let text = "";
   const cells: IBufferCellPosition[] = [];
+  /** Cells each string index's character covers (2 for a wide one). */
+  const widths: number[] = [];
   const cell = buffer.getNullCell();
   for (let row = first; row <= last; row++) {
     const line = buffer.getLine(row);
@@ -60,54 +35,51 @@ function readLogicalLine(term: Terminal, y: number): { text: string; cells: IBuf
       if (cell.getWidth() === 0) continue; // second half of a wide character
       const chars = cell.getChars() || " ";
       text += chars;
-      for (let i = 0; i < chars.length; i++) cells.push({ x: x + 1, y: row + 1 });
+      for (let i = 0; i < chars.length; i++) {
+        cells.push({ x: x + 1, y: row + 1 });
+        widths.push(cell.getWidth());
+      }
     }
   }
-  return { text, cells };
+  return { text, cells, widths };
 }
 
 /** Registers the link provider on `term`. `cwd` is the shell's current directory. */
 export function registerFileLinks(
   term: Terminal,
   paneId: string,
-  cwd: () => string | undefined,
-  /** False while the paths printed are not on this machine (a shell over ssh). */
-  enabled: () => boolean = () => true,
+  /**
+   * Directories to resolve names on buffer row `row` (0-based) against, in
+   * order; null when what is printed there is not on this machine (a shell
+   * over ssh).
+   */
+  directories: (row: number) => readonly (string | undefined)[] | null,
 ): IDisposable {
   return term.registerLinkProvider({
     provideLinks(y, callback) {
-      if (!enabled()) {
+      const dirs = directories(y - 1);
+      if (!dirs) {
         callback(undefined);
         return;
       }
-      const { text, cells } = readLogicalLine(term, y);
-      const matches = findFileLinks(text).filter(
-        (match) => cells[match.start]?.y <= y && cells[match.end - 1]?.y >= y,
-      );
-      if (matches.length === 0) {
-        callback(undefined);
-        return;
-      }
-      const directory = cwd();
-      const home = homeDirectory();
-      void Promise.all(
-        matches.map(async (match): Promise<ILink | null> => {
-          const path = resolveLinkPath(match.path, directory, home);
-          if (!path || !(await isFile(path))) return null;
-          return {
-            range: { start: cells[match.start], end: cells[match.end - 1] },
-            text: text.slice(match.start, match.end),
+      const { text, cells, widths } = readLogicalLine(term, y);
+      void findPathLinks(text, dirs).then((found) => {
+        const links = found
+          // Each row is asked for separately: only the links touching this one.
+          .filter((link) => cells[link.start]?.y <= y && cells[link.end - 1]?.y >= y)
+          .map(({ start, end, target }): ILink => ({
+            // Inclusive; a wide last character covers its second cell too.
+            range: { start: cells[start], end: { x: cells[end - 1].x + Math.max(0, widths[end - 1] - 1), y: cells[end - 1].y } },
+            text: text.slice(start, end),
             decorations: { pointerCursor: true, underline: true },
             activate(event) {
               // Plain clicks are for selecting text and the shell's mouse mode.
-              if (!event.metaKey && !event.ctrlKey) return;
-              openFile(path, { fromPaneId: paneId, line: match.line, column: match.column });
+              if (opensLink(event)) openPathTarget(target, paneId);
             },
-          };
-        }),
-      ).then((links) => {
-        const found = links.filter((link): link is ILink => link !== null);
-        callback(found.length ? found : undefined);
+            hover: () => setHoveredPath(paneId, target, "terminal"),
+            leave: () => leaveHoveredPath(paneId, target),
+          }));
+        callback(links.length ? links : undefined);
       });
     },
   });

@@ -48,6 +48,27 @@ pub async fn fs_stat(path: String) -> Result<Option<FsEntry>, String> {
     blocking(move || list::stat(&PathBuf::from(path))).await
 }
 
+/// Opens an existing file or directory with its default application
+/// (Finder for a directory). Through the opener plugin's Rust API, so the
+/// webview needs no `opener:allow-open-path` scope covering every path.
+#[tauri::command]
+pub async fn fs_open_default(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let target = PathBuf::from(&path);
+    if !target.is_absolute() {
+        return Err(format!("not an absolute path: {path}"));
+    }
+    // Only regular files and directories (following links): not a FIFO,
+    // socket or device, which the launcher has no business opening.
+    let openable = blocking(move || Ok(target.is_file() || target.is_dir())).await?;
+    if !openable {
+        return Err(format!("not a file or directory: {path}"));
+    }
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Creates an empty file, or a directory if `dir`. Fails if `path` exists.
 #[tauri::command]
 pub async fn fs_create(path: String, dir: bool) -> Result<(), String> {

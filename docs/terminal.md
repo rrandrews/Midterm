@@ -119,8 +119,12 @@ terminals only.
 - App shortcuts (`src/shortcuts.ts`) are excluded from xterm with
   `attachCustomKeyEventHandler`; the window-level handler runs them.
 - Links open in the default browser on ⌘-click (`src/ipc/shell.ts`, http(s)
-  only). File references such as `src/a.ts:12:5` open in an editor on
-  ⌘-click (`src/terminal/fileLinkProvider.ts`; see [editor.md](editor.md)).
+  only). Files and folders in output (`src/a.ts:12:5`, or bare names as
+  `ls` prints them) underline on hover, open on ⌘-click (a file in an
+  editor, a folder in an explorer) and add Open / Open in new pane / Open
+  in default application / Reveal in Finder / Copy name / Copy full path
+  to the right-click menu, in the classic and the blocks view; see
+  [editor.md](editor.md#terminal-links-srcterminalfilelinksts-pathtargetsts-filelinkproviderts).
 - Input typed while the shell is starting is queued and sent, in order, once
   it is running.
 
