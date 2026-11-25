@@ -1051,7 +1051,7 @@ of a command name, the ghost text shows its usage (`/cmd <what to do>`),
 |---|---|
 | `/cmd <task>` | Asks the model for a shell command that does the task. |
 | `/agent <task>` | Runs the task through the agent against this terminal, in the pane's agent card (see [Agent](#agent)). Without a task, "Say what the agent should do: /agent <task>" shows above the editor. |
-| `/open <file or folder>` | Opens it as ⌘-clicking it in the output would (a file in an editor or viewer, a folder in an explorer), relative to the terminal's directory. Takes shell quoting and escapes, and `name:line[:col]`; ⇥ completes the path. Not in a nested (ssh) shell. Not AI: `src/terminal/openCommand.ts` (`installOpenCommand`, from `main.tsx`). Handlers may return a promise; the line stays in the editor until it settles. |
+| `/open <file or folder>` | Opens it (a file in an editor or viewer, as clicking it in the output would; a folder in the tab's explorer, pinned to it), relative to the terminal's directory. Takes shell quoting and escapes, and `name:line[:col]`; ⇥ completes the path. Not in a nested (ssh) shell. Not AI: `src/terminal/openCommand.ts` (`installOpenCommand`, from `main.tsx`). Handlers may return a promise; the line stays in the editor until it settles. |
 
 `/cmd`: on ⏎ the line moves above the editor ("writing a command… esc
 cancels"; Esc or ⌃C cancels and puts the line back) and the request goes

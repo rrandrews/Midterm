@@ -1,9 +1,22 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { registerPaneActions } from "../../commands/registry";
 import { registerPaneFocuser } from "../../layout/dock";
 import type { BlocksSnapshot } from "../../terminal/blocks";
 import { runsFullPane } from "../../terminal/fullPane";
-import { captureContextPath } from "../../terminal/pathTargets";
+import {
+  type PathTarget,
+  canChangeDirectory,
+  currentTip,
+  displayPath,
+  hideTip,
+  pathMenuItems,
+  pathUnderPointer,
+  subscribeTip,
+} from "../../terminal/pathTargets";
+import { MenuItems } from "../../plugins/MenuItems";
+import { Menu, MenuContent, MenuTrigger } from "../ui/Menu";
+import { AnchoredTip } from "../ui/Tooltip";
 import type { TerminalSession } from "../../terminal/session";
 import { acquireSession, releaseSession } from "../../terminal/sessions";
 import { useBlockTerminalSettings } from "../../terminal/settings";
@@ -81,6 +94,14 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
   };
   /** Whether the keyboard is in this pane (kept while the focused element is hidden). */
   const hasFocus = useRef(false);
+  /** The right-clicked file or folder in the output, and where its menu opens. */
+  const [pathMenu, setPathMenu] = useState<{ target: PathTarget; x: number; y: number } | null>(null);
+  /**
+   * The link under a right button press, taken before xterm sees the press:
+   * it moves its text field under the pointer, which ends the link's hover
+   * before the `contextmenu` event arrives.
+   */
+  const pressedPath = useRef<PathTarget | undefined>(undefined);
 
   useEffect(() => {
     const container = ref.current;
@@ -115,8 +136,25 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
       onFocusCapture={() => {
         hasFocus.current = true;
       }}
-      // The pane's menu is about the file or folder under the pointer, if any.
-      onContextMenuCapture={(event) => captureContextPath(paneId, event.target)}
+      // A right click on a file or folder in the output opens its own menu
+      // instead of the pane's (preventing the default keeps the pane's
+      // closed), unless a program reading the mouse gets the click.
+      onContextMenu={(event) => {
+        hideTip();
+        const target = pressedPath.current ?? pathUnderPointer(paneId, event.target);
+        pressedPath.current = undefined;
+        if (!target || (session?.wantsMouse && !event.altKey)) return;
+        event.preventDefault();
+        setPathMenu({ target, x: event.clientX, y: event.clientY });
+      }}
+      onPointerDownCapture={(event) => {
+        hideTip();
+        // A right button press, or ⌃-click (the right click of macOS).
+        const secondary = event.button === 2 || (event.button === 0 && event.ctrlKey);
+        pressedPath.current = secondary ? pathUnderPointer(paneId, event.target) : undefined;
+      }}
+      onWheelCapture={hideTip}
+      onKeyDownCapture={hideTip}
       onBlurCapture={(event) => {
         const next = event.relatedTarget as Node | null;
         // Focus moving to nothing is an element being hidden (or the window losing focus).
@@ -137,6 +175,20 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
           }}
         />
       )}
+      {pathMenu && (
+        <Menu open onOpenChange={(open) => !open && setPathMenu(null)}>
+          {createPortal(
+            <MenuTrigger asChild>
+              <span aria-hidden style={{ position: "fixed", left: pathMenu.x, top: pathMenu.y, width: 0, height: 0 }} />
+            </MenuTrigger>,
+            document.body,
+          )}
+          <MenuContent align="start" side="bottom" sideOffset={2} aria-label="File">
+            <MenuItems items={pathMenuItems(paneId, pathMenu.target)} />
+          </MenuContent>
+        </Menu>
+      )}
+      {!pathMenu && <PathTip paneId={paneId} session={session} />}
       {session && blocksMode && (
         <BlocksView
           hidden={!showBlocks}
@@ -147,5 +199,27 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
         />
       )}
     </div>
+  );
+}
+
+/** The tooltip of the hovered file or folder in this pane's output. */
+function PathTip({ paneId, session }: { paneId: string; session: TerminalSession | null }) {
+  const tip = useSyncExternalStore(subscribeTip, currentTip);
+  if (!tip || tip.paneId !== paneId) return null;
+  const dir = tip.target.kind === "dir";
+  // Only what a click will do now: a program reading the mouse (classic view) gets plain clicks.
+  const plain = !(session?.wantsMouse && tip.view === "terminal");
+  const click = !plain ? null : dir ? (canChangeDirectory(paneId) ? "Click to cd here" : null) : "Click to open";
+  const hint = [click, dir ? "⌘-click: new explorer pane" : "⌘-click: new pane"].filter(Boolean).join(" · ");
+  return (
+    <AnchoredTip
+      rect={tip.rect}
+      content={
+        <>
+          <div className="break-all font-mono text-fg-bright">{displayPath(tip.target.path)}</div>
+          <div className="mt-0.5 text-fg-dim">{hint}</div>
+        </>
+      }
+    />
   );
 }

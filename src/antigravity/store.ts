@@ -22,6 +22,7 @@ import {
   type SidePanel,
 } from "./types";
 import { findConfigOption, flattenSelectOptions } from "./ui/format";
+import { shellQuoteArg } from "../terminal/shellQuote";
 
 /*
  * Antigravity ACP sessions, one per pane (keyed by session key), and the
@@ -72,11 +73,8 @@ export function pathToFileUrl(path: string): string {
   return isWindowsDrive ? `file:///${joined}` : `file://${joined.startsWith("/") ? joined : `/${joined}`}`;
 }
 
-/** POSIX single-quote escaping for a shell argument (`'` → `'\''`). */
-export function shellQuoteArg(arg: string): string {
-  if (/^[A-Za-z0-9_./:-]+$/.test(arg)) return arg;
-  return `'${arg.replace(/'/g, `'\\''`)}'`;
-}
+// Shared with the terminal (a click on a folder runs `cd`).
+export { shellQuoteArg };
 
 /* ---- Host hooks (wired once by plugin.tsx) ---- */
 

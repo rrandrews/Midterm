@@ -2,7 +2,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { type ITerminalOptions, type ITheme, Terminal } from "@xterm/xterm";
+import { type IDisposable, type ITerminalOptions, type ITheme, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { effectiveSolid, oscColor } from "./solidBackground";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
@@ -113,6 +113,8 @@ export class TerminalSession {
 
   /** Last directory the shell reported; until then, where it was started. */
   private currentCwd: string | undefined;
+  /** The file and folder links in output (their provider and listeners). */
+  private readonly fileLinks: IDisposable;
   /** The root shell's `PATH`, from OSC 6973; unset until the first report. */
   private reportedPath: string | undefined;
   /**
@@ -151,7 +153,12 @@ export class TerminalSession {
     );
 
     // Paths a shell over ssh prints are not files here.
-    registerFileLinks(this.term, paneId, (row) => this.linkDirectories(row));
+    this.fileLinks = registerFileLinks(
+      this.term,
+      paneId,
+      (row) => this.linkDirectories(row),
+      () => !this.wantsMouse,
+    );
 
     // Let app shortcuts through to the window handler untouched.
     this.term.attachCustomKeyEventHandler((event) => !isAppShortcut(event));
@@ -486,6 +493,7 @@ export class TerminalSession {
     this.unsettled = 0;
     this.pty?.kill();
     this.blocks.dispose();
+    this.fileLinks.dispose();
     this.term.dispose();
   }
 

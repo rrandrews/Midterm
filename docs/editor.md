@@ -194,23 +194,47 @@ terminal, `registerFileLinks` in `session.ts`) and the blocks view
 the pointer enters it and wraps the names in `.block-link` spans,
 splitting styled runs with `splitAtLinks`). Hovering one underlines it.
 
-- ⌘-click (or Ctrl-click) opens it from the terminal's pane
-  (`openPathTarget`): a file with `openFile`, at the line and column
-  given; a folder with `openDirectory` (`src/actions.ts`), which pins the
-  tab's last active explorer to it, or splits off a new pinned explorer
-  (Finder without the explorer plugin).
-- Right-click on one puts its items at the top of the terminal's menu:
-  Open file / Open folder, Open in new pane, Open in default application
-  (`fs_open_default`: the opener plugin's Rust API, absolute existing
-  regular files and directories only, so the webview needs no open-path
-  scope), Reveal in Finder,
-  Copy file (folder) name, Copy full path. Which one: hover records the
-  target per pane and view (`setHoveredPath`); `TerminalPane` copies it on
-  `contextmenu` (capture phase, `captureContextPath`) if the click was in
-  the same view (in the blocks view, on a `.block-link`), and
-  `terminalMenu` reads it (`contextPathOf`). Every right click first clears
-  the context target (a window capture listener), so one that never
-  reaches the terminal (the agent card) does not reuse the last one.
+- A click (`clickPath`) opens a file with `openFile`, at the line and
+  column given, or `cd`s the shell to a folder (`changeDirectory`: `cd
+  ./sub` inside the shell's directory, so `CDPATH` and names like `-P`
+  cannot change it, else the absolute path; quoted with `shellQuoteArg`,
+  sent with `runFromBlocks`). Only when `canChangeDirectory`: the shell is
+  idle at a prompt of this machine, the foreground process is the shell
+  (bash's `(cat)` has no command mark), and no command is being written
+  (input editor draft or typed shell line), which the `cd` would discard.
+  Paths with a backslash or control character are not sent (typed as
+  keys, a tab would complete). Otherwise the click does nothing.
+  ⌘-click (or Ctrl-click) opens either in a new pane: a file in a new
+  editor or viewer, a folder in a new explorer pinned to it
+  (`openDirectory` in `src/actions.ts`; Finder without the explorer
+  plugin). Only a main-button click released where it was pressed counts
+  (in the classic view xterm activates links on any button and reports a
+  drag's selection only after activating, so the press position is
+  tracked); a program reading the mouse (vim) gets plain clicks.
+- A right click on one opens the link's own menu instead of the pane's:
+  Open file / Change to this folder, Open in new pane, Open in default
+  application (`fs_open_default`: the opener plugin's Rust API, absolute
+  existing regular files and directories only, so the webview needs no
+  open-path scope), Reveal in Finder, Copy file (folder) name, Copy full
+  path (`pathMenuItems`). `TerminalPane` prevents the default on that
+  `contextmenu` (which keeps the pane's Radix menu closed) and opens a
+  dropdown at the pointer. Which link: hover records it per pane and view
+  (`setHoveredPath`); `pathUnderPointer` takes it if the click was in the
+  same view (in the blocks view, on a `.block-link`). It is taken on the
+  right button press (pointerdown, capture phase), because xterm moves its
+  text field under the pointer on that press, which ends the link's hover
+  before `contextmenu` arrives. A program reading the mouse gets the right
+  click unless ⌥ is held, as for the pane menu.
+- Tooltips: the app's tooltip (`AnchoredTip` in `Tooltip.tsx`, a
+  controlled Radix tooltip over a rectangle) shows the `~`-relative path
+  and what a click (only if it would do something now) and a ⌘-click do,
+  after 350 ms of hover (at once when
+  moving to the next link). One at a time, from a small store in
+  `pathTargets.ts` (`scheduleTip`, `hideTip`), rendered by `PathTip` in
+  `TerminalPane`; hidden on leave, any button press, key, wheel or while
+  the link menu is open. The classic view places it over the link's cells
+  (`linkRect`, from xterm's cell size), the blocks view over the span's
+  first line box.
 - `findFileLinks` (pure, unit-tested) finds tokens that look like files
   (contain a `/` or end in an extension), with an optional position:
   `path:line`, `path:line:col` (trailing colon allowed), tsc's

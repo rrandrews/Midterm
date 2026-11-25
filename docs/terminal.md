@@ -120,10 +120,12 @@ terminals only.
   `attachCustomKeyEventHandler`; the window-level handler runs them.
 - Links open in the default browser on ⌘-click (`src/ipc/shell.ts`, http(s)
   only). Files and folders in output (`src/a.ts:12:5`, or bare names as
-  `ls` prints them) underline on hover, open on ⌘-click (a file in an
-  editor, a folder in an explorer) and add Open / Open in new pane / Open
-  in default application / Reveal in Finder / Copy name / Copy full path
-  to the right-click menu, in the classic and the blocks view; see
+  `ls` prints them) underline on hover with a tooltip. A click opens a
+  file or `cd`s to a folder; ⌘-click opens either in a new pane (editor
+  or explorer); a right click opens their own menu (Open / Change to this
+  folder, Open in new pane, Open in default application, Reveal in
+  Finder, Copy name, Copy full path) instead of the pane's. In the classic
+  and the blocks view; see
   [editor.md](editor.md#terminal-links-srcterminalfilelinksts-pathtargetsts-filelinkproviderts).
 - Input typed while the shell is starting is queued and sent, in order, once
   it is running.

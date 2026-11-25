@@ -16,7 +16,15 @@ import {
 } from "../../terminal/blockMode";
 import { type Block, type BlocksSnapshot, outputRows, scopeOf } from "../../terminal/blocks";
 import { branchOf } from "../../terminal/gitBranch";
-import { type PathLink, blockDirectories, findPathLinks, leaveHoveredPath, openPathTarget, opensLink, setHoveredPath } from "../../terminal/pathTargets";
+import {
+  type PathLink,
+  blockDirectories,
+  clickPath,
+  findPathLinks,
+  isNewPaneClick,
+  leaveHoveredPath,
+  setHoveredPath,
+} from "../../terminal/pathTargets";
 import type { TerminalSession } from "../../terminal/session";
 import { BlockInput } from "./BlockInput";
 import { BlockNote } from "./BlockNote";
@@ -383,14 +391,17 @@ function PathLinkSpan({ paneId, link, children }: { paneId: string; link: PathLi
   return (
     <span
       className="block-link"
-      title={`${target.path}\n⌘-click to open`}
-      onMouseEnter={() => setHoveredPath(paneId, target, "blocks")}
+      onMouseEnter={(event) => {
+        // The first line's box if the name wraps.
+        const box = event.currentTarget.getClientRects()[0] ?? event.currentTarget.getBoundingClientRect();
+        setHoveredPath(paneId, target, "blocks", { left: box.left, top: box.top, width: box.width, height: box.height });
+      }}
       onMouseLeave={() => leaveHoveredPath(paneId, target)}
       onClick={(event) => {
-        // Plain clicks select text and give the keyboard back.
-        if (!opensLink(event)) return;
+        // A drag that selected text is not a click (nor is a middle click).
+        if (event.button !== 0 || window.getSelection()?.isCollapsed === false) return;
         event.preventDefault();
-        openPathTarget(target, paneId);
+        clickPath(target, paneId, { newPane: isNewPaneClick(event) });
       }}
     >
       {children}

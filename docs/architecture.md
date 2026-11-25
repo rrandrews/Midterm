@@ -137,7 +137,8 @@ Right-click menus:
 | Area | Items | Where |
 |---|---|---|
 | Any pane | the plugin's items (`pane.menu`, declarative), then split, change type, Agent (ask about this pane, open the agent pane), maximize, move to tab, close | `src/plugins/PaneHost.tsx`, `PaneMenuItems.tsx` (shared with the pane toolbar's ⋯ menu) |
-| Terminal (on top of the above) | a right-clicked file or folder in the output (open, open in new pane, open in default app, reveal, copy name/path; `src/terminal/pathTargets.ts`), copy/re-run a block (block terminal), copy, paste, select all, clear, switch to block/classic terminal | `src/terminal/menu.ts` |
+| Terminal (on top of the above) | copy/re-run a block (block terminal), copy, paste, select all, clear, switch to block/classic terminal | `src/terminal/menu.ts` |
+| File or folder in terminal output (instead of the pane menu) | open / change to this folder, open in new pane, open in default app, reveal, copy name/path | `pathMenuItems` in `src/terminal/pathTargets.ts`, opened by `TerminalPane.tsx` |
 | Editor / viewer | save, revert, find, go to line, reveal, copy path | `src/editor/menu.ts` |
 | Tab | rename, new tab, open the agent, close, close others, close to the right | `TabStrip.tsx` |
 | Workspace switcher | new, rename, delete | `WorkspaceSwitcher.tsx` |
