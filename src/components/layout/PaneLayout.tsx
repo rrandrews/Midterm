@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   type DisableDropArgs,
   Workspace as Dock,
@@ -6,9 +6,17 @@ import {
   type TabsetNode,
   type WorkspaceClassNames,
 } from "react-resizable-panels";
-import { type DockHandle, registerDock, restoreFocusAfterLayoutChange } from "../../layout/dock";
+import { type DockHandle, getDock, registerDock, restoreFocusAfterLayoutChange } from "../../layout/dock";
 import { notePaneDrag } from "../../layout/paneDrag";
-import { kindLabel } from "../../plugins/registry";
+import {
+  clampSizeLimits,
+  DEFAULT_MIN_HEIGHT,
+  DEFAULT_MIN_WIDTH,
+  type FrameLimits,
+  frameLimitUpdates,
+  withSizeLimits,
+} from "../../layout/paneSize";
+import { activePlugin, kindLabel, subscribePlugins } from "../../plugins/registry";
 import { countPanes } from "../../state/layout";
 import { findTab, useAppStore } from "../../state/store";
 import type { Layout, PaneData, PaneNode, Tab } from "../../state/types";
@@ -47,6 +55,21 @@ const renderToolbar = (frame: Frame) => {
   return pane ? <PaneToolbar pane={pane} /> : null;
 };
 
+/** The size limits a pane of `kind` asks for (`pane.size`), clamped. */
+const limitsOf = (kind: string): FrameLimits => clampSizeLimits(activePlugin(kind)?.pane.size);
+
+const MIN_WIDTH = `${DEFAULT_MIN_WIDTH}px`;
+const MIN_HEIGHT = `${DEFAULT_MIN_HEIGHT}px`;
+
+/**
+ * Brings a mounted layout's frame limits in line with their panes' plugins
+ * (after a split, a change of pane type, a plugin loading). Each update is
+ * reported as a model change, which stores it.
+ */
+function syncSizeLimits(dock: DockHandle): void {
+  for (const { frameId, limits } of frameLimitUpdates(dock.getModel(), limitsOf)) dock.updateTabset(frameId, limits);
+}
+
 const renderSeparator = () => <Separator className="pane-separator" />;
 
 const renderDragPreview = (frame: Frame) => {
@@ -69,12 +92,20 @@ export function PaneLayout({ tab }: { tab: Tab }) {
   // The revision this instance was mounted for; a newer one means the store
   // has moved on and this instance is about to be replaced.
   const [layoutRev] = useState(tab.layoutRev);
+  // Starts with its frames' size limits set (a store-side edit does not set them).
+  const [defaultModel] = useState(() => withSizeLimits(tab.layout, limitsOf));
+  const [dock, setDock] = useState<DockHandle | null>(null);
 
   const dockRef = useCallback(
-    (handle: DockHandle | null) =>
-      handle ? registerDock({ id: tabId, layoutRev }, handle) : undefined,
+    (handle: DockHandle | null) => {
+      setDock(handle);
+      return handle ? registerDock({ id: tabId, layoutRev }, handle) : undefined;
+    },
     [tabId, layoutRev],
   );
+
+  // Imported plugins load after the layout is shown, and may be enabled, disabled or replaced.
+  useEffect(() => (dock ? subscribePlugins(() => syncSizeLimits(dock)) : undefined), [dock]);
 
   const onModelChanged = useCallback(
     (layout: Layout) => {
@@ -88,6 +119,13 @@ export function PaneLayout({ tab }: { tab: Tab }) {
       }
       setTabLayout(tabId, layout);
       restoreFocusAfterLayoutChange();
+      // A new frame (a split, a drop at an edge) or a pane of another kind may need other limits.
+      if (frameLimitUpdates(layout, limitsOf).length) {
+        queueMicrotask(() => {
+          const handle = getDock({ id: tabId, layoutRev });
+          if (handle) syncSizeLimits(handle);
+        });
+      }
     },
     [tabId, layoutRev],
   );
@@ -97,15 +135,15 @@ export function PaneLayout({ tab }: { tab: Tab }) {
       workspaceRef={dockRef}
       className="min-h-0 flex-1"
       classNames={CLASS_NAMES}
-      defaultModel={tab.layout}
+      defaultModel={defaultModel}
       disableDrop={rejectStacking}
       onModelChanged={onModelChanged}
       renderSeparator={renderSeparator}
       renderTabContent={renderContent}
       renderTabsetDragPreview={renderDragPreview}
       renderTabsetToolbar={renderToolbar}
-      tabsetMinHeight="56px"
-      tabsetMinWidth="96px"
+      tabsetMinHeight={MIN_HEIGHT}
+      tabsetMinWidth={MIN_WIDTH}
     />
   );
 }

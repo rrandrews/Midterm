@@ -149,6 +149,26 @@ Tabs themselves are reordered by dragging (dnd-kit sortable, in
 working). When they do not fit, the strip scrolls sideways (wheel or
 trackpad) and keeps the active tab in view.
 
+## Pane size limits
+
+Every frame is at least 96px wide and 56px high (`tabsetMinWidth` /
+`tabsetMinHeight`). A plugin can ask for other limits with `pane.size`
+(pixels; see [plugins.md](plugins.md#the-contract)). `src/layout/paneSize.ts`
+clamps them (`clampSizeLimits`) and writes them onto the frame as the
+library's tabset `minWidth`, `minHeight`, `maxWidth`, `maxHeight`:
+
+- `PaneLayout` mounts with `withSizeLimits(tab.layout)`, so layouts edited
+  in the store (moves between tabs, restore) get them;
+- after each model change, `frameLimitUpdates` finds frames whose limits no
+  longer match their pane's kind (a split, a drop, a change of pane type)
+  and `syncSizeLimits` fixes them with `updateTabset`;
+- a change in the plugin registry (an imported plugin loading, enabled or
+  replaced) syncs the mounted layout too.
+
+The library only applies a maximum while something else in the split can
+take the rest of the space, and shows a frame within its limits without
+changing its saved size.
+
 ## Maximizing a pane
 
 ⇧⌘↩ or the pane menu toggles `toggleMaximizePane` (the library's

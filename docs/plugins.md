@@ -66,6 +66,7 @@ All `PaneSpec` members are optional:
 | `fileHandler(path)` | `"default"`, `"option"` or `false`. `openFile` picks from the enabled plugins. |
 | `reveal(paneId, path, line, column?)` | Opening a file at a line (only handlers with `reveal` are asked). |
 | `splittable: false` | `openFile` avoids splitting this pane (explorers). |
+| `size` | `{ minWidth?, minHeight?, maxWidth?, maxHeight? }` in pixels, for the pane's frame. Clamped by the host (`PANE_SIZE_BOUNDS` in `src/layout/paneSize.ts`): minimums to 96–800 wide and 56–600 high, maximums to at least 160 wide / 100 high and the minimum. See [layout.md](layout.md#pane-size-limits). |
 | `background`, `activeBackground` | CSS background, set as `--pane-bg` / `--pane-bg-active`. The default is `--pane-default`. |
 | `ownsContextMenu(paneId, event)` | Leave a right-click to the content (a terminal program reading the mouse). |
 

@@ -80,6 +80,18 @@ export type MenuItemSpec =
 export const HIDEABLE_PANE_MENU_ITEMS = ["splitRight", "splitDown", "changeType", "agent", "maximize", "moveToTab"] as const;
 export type HideablePaneMenuItem = (typeof HIDEABLE_PANE_MENU_ITEMS)[number];
 
+/**
+ * Size limits of a pane's frame, in CSS pixels. The host clamps them to
+ * `PANE_SIZE_BOUNDS` (src/layout/paneSize.ts). A maximum only applies
+ * while another pane in the same split can take the rest of the space.
+ */
+export type PaneSizeLimits = {
+  minWidth?: number;
+  minHeight?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+};
+
 /** Something that makes closing a pane lose work. */
 export type CloseBlocker =
   /** A program still running (its name). */
@@ -138,6 +150,8 @@ export type PaneSpec = {
    * menus. "Settings…" and "Close pane" cannot be hidden.
    */
   hideMenuItems?: readonly HideablePaneMenuItem[] | ((ctx: PaneContext) => readonly HideablePaneMenuItem[]);
+  /** Minimum and maximum size of the pane, in pixels (clamped by the host). */
+  size?: PaneSizeLimits;
   /**
    * Whether panes of this kind can show a file: `"default"` to be picked
    * first, `"option"` to be offered, `false` (or no handler) not at all.

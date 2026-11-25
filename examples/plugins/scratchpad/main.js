@@ -39,6 +39,8 @@ const plugin = {
     // The … menu: the same items, and without the built-in "Agent" submenu.
     optionsMenu: (ctx) => notesMenu(ctx),
     hideMenuItems: ["agent"],
+    // Pixels; the host keeps limits within reason (docs/plugins.md).
+    size: { minWidth: 180, minHeight: 80 },
     tabTitle: () => "notes",
   },
   settings: {
