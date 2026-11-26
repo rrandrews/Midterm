@@ -16,11 +16,15 @@ use tauri::{State, Window};
 
 use super::manager::PtyManager;
 use super::session::{Foreground, PtyEvent, Sinks};
-use super::shell::{CustomShell, EnvVar, PythonEnv, SpawnEnv, shell_command};
+use super::shell::{CustomShell, EnvVar, PythonEnv, SpawnEnv, shell_command_with_ssh, ssh_command};
 use crate::secrets::{self, SecretVar};
+use crate::ssh::SshManager;
+use crate::ssh::location::Location;
 
 /// Starts the user's login shell (or `shell` with `shell_args`, from the
-/// settings) in a new PTY and returns the session id.
+/// settings) in a new PTY and returns the session id. When `cwd` is an
+/// `ssh://<remote_id>/<posix_path>` URI, opens a multiplexed direct-SSH login
+/// shell starting in that remote directory instead.
 ///
 /// `on_data` receives the shell's output as raw bytes: every message is an
 /// `InvokeResponseBody::Raw`, which Tauri delivers to JavaScript as an
@@ -40,12 +44,14 @@ use crate::secrets::{self, SecretVar};
 pub fn pty_spawn(
     window: Window,
     manager: State<'_, PtyManager>,
+    ssh: State<'_, SshManager>,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
     shell: Option<String>,
     shell_args: Option<Vec<String>>,
     ssh_integration: Option<bool>,
+    ssh_token: Option<String>,
     env: Option<Vec<EnvVar>>,
     secrets: Option<Vec<SecretVar>>,
     python: Option<PythonEnv>,
@@ -59,16 +65,32 @@ pub fn pty_spawn(
             let _ = on_event.send(event);
         }),
     };
-    let mut vars = env.unwrap_or_default();
-    vars.extend(
-        secrets::resolve_from_store(&secrets.unwrap_or_default())
-            .into_iter()
-            .map(|(name, value)| EnvVar { name, value }),
-    );
-    let spawn = SpawnEnv { vars, python };
-    manager.spawn(
-        window.label(),
-        shell_command(
+
+    let use_ssh_integration = ssh_integration.unwrap_or(true);
+    // Any `ssh://` cwd MUST parse as a valid remote location (never silently
+    // fall back to spawning a local shell in $HOME on malformed remote URIs).
+    let cmd = if let Some(raw_cwd) = cwd.as_deref().filter(|s| s.starts_with("ssh://")) {
+        match Location::parse(raw_cwd)? {
+            Location::Remote { remote_id, path } => {
+                let target = ssh.spawn_info_sync(&remote_id)?;
+                ssh_command(&target, &path, use_ssh_integration)?
+            }
+            Location::Local(_) => unreachable!(),
+        }
+    } else {
+        let mut vars = env.unwrap_or_default();
+        vars.extend(
+            secrets::resolve_from_store(&secrets.unwrap_or_default())
+                .into_iter()
+                .map(|(name, value)| EnvVar { name, value }),
+        );
+        let spawn = SpawnEnv { vars, python };
+        let sock_dir = if use_ssh_integration {
+            ssh.socket_dir().ok()
+        } else {
+            None
+        };
+        shell_command_with_ssh(
             cwd.as_deref(),
             shell
                 .map(|program| CustomShell {
@@ -76,13 +98,14 @@ pub fn pty_spawn(
                     args: shell_args.unwrap_or_default(),
                 })
                 .as_ref(),
-            ssh_integration.unwrap_or(true),
+            use_ssh_integration,
+            sock_dir.as_deref(),
+            ssh_token.as_deref(),
             &spawn,
-        ),
-        cols,
-        rows,
-        sinks,
-    )
+        )
+    };
+
+    manager.spawn(window.label(), cmd, cols, rows, sinks)
 }
 
 /// Sends UTF-8 input (keystrokes, pastes) to the session's terminal.

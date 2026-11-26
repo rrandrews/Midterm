@@ -17,13 +17,69 @@
 # 3.0 or a failing mktemp gets a plain login shell. Nothing is written
 # anywhere else and no startup file of the user's is touched.
 
+# Optional initial directory (base64-encoded by direct-SSH pane spawn).
+# Fails closed rather than silently starting in the wrong directory.
+if [ -n "${MIDTERM_REMOTE_CD-}" ]; then
+  _midterm_cd=$( (printf %s "$MIDTERM_REMOTE_CD" | base64 -d || printf %s "$MIDTERM_REMOTE_CD" | base64 -D || printf %s "$MIDTERM_REMOTE_CD" | openssl base64 -d -A) 2>/dev/null && printf X )
+  case $_midterm_cd in
+    *X)
+      _midterm_cd=${_midterm_cd%X}
+      if [ -n "$_midterm_cd" ] && ! cd -- "$_midterm_cd"; then
+        printf 'midterm: cannot change remote directory to %s\n' "$_midterm_cd" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      printf 'midterm: invalid remote directory encoding\n' >&2
+      exit 1
+      ;;
+  esac
+  unset MIDTERM_REMOTE_CD _midterm_cd
+fi
+
 # sshd prints the message of the day only for sessions without a command.
 if [ ! -e "$HOME/.hushlogin" ] && [ -r /etc/motd ]; then
   cat /etc/motd
 fi
 
 _midterm_shell=${SHELL:-/bin/sh}
+_midterm_plain_enc() {
+  _mt_enc=
+  _mt_s=$1
+  case $_mt_s in
+    *[!A-Za-z0-9/._~-]*)
+      _mt_hex=$(LC_ALL=C printf '%s' "$_mt_s" | od -An -tx1 -v | tr -s ' \t\r\n' ' ')
+      for _mt_b in $_mt_hex; do
+        case $_mt_b in
+          2[de]|2f|3[0-9]|4[1-9a-f]|5[0-9a]|5f|6[1-9a-f]|7[0-9a]|7e)
+            _mt_c=$(printf "\\$(printf '%03o' "0x$_mt_b")")
+            _mt_enc="${_mt_enc}${_mt_c}"
+            ;;
+          *)
+            _mt_u=$(printf '%s' "$_mt_b" | tr 'a-f' 'A-F')
+            _mt_enc="${_mt_enc}%${_mt_u}"
+            ;;
+        esac
+      done
+      ;;
+    *) _mt_enc=$_mt_s ;;
+  esac
+}
 _midterm_plain() {
+  # Emit a one-time OSC 7 and OSC 6974 metadata report so Explorer/Editor still
+  # open at the remote working directory even when the remote shell is plain.
+  _midterm_host=$(hostname 2>/dev/null || :)
+  _midterm_plain_enc "$_midterm_host"; _mt_ehost=$_mt_enc
+  _midterm_plain_enc "${_midterm_shell##*/}"; _mt_esh=$_mt_enc
+  if [ -n "${PWD-}" ]; then
+    _midterm_plain_enc "$PWD"; _mt_epwd=$_mt_enc
+    printf '\033]7;file://%s%s\007' "$_mt_ehost" "$_mt_epwd"
+  fi
+  if [ -n "${HOME-}" ]; then
+    _midterm_plain_enc "$HOME"; _mt_ehome=$_mt_enc
+    printf '\033]6974;meta=1;home=%s;shell=%s\007' "$_mt_ehome" "$_mt_esh"
+  fi
+  unset _midterm_host _mt_enc _mt_s _mt_hex _mt_b _mt_c _mt_u _mt_ehost _mt_esh _mt_epwd _mt_ehome
   exec "$_midterm_shell" -l
 }
 

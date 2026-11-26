@@ -59,16 +59,21 @@ functions -q __midterm_report_cwd; and exit 0
 # A function of the user's (config.fish, or autoloaded) wins.
 if set -q MIDTERM_SSH_DIR
     set -g __midterm_ssh_dir $MIDTERM_SSH_DIR
+    set -g __midterm_ssh_sock_dir "$MIDTERM_SSH_SOCK_DIR"
+    set -g __midterm_pty_token "$MIDTERM_PTY_TOKEN"
     set -e MIDTERM_SSH_DIR
+    set -e MIDTERM_SSH_SOCK_DIR
+    set -e MIDTERM_PTY_TOKEN
     if not functions -q ssh
         function ssh --wraps ssh
-            if command sh $__midterm_ssh_dir/should-wrap.sh $argv
-                command ssh -t $argv (string collect < $__midterm_ssh_dir/remote-command)
-            else
-                command ssh $argv
-            end
+            set -lx MIDTERM_RUN_SOCK_DIR "$__midterm_ssh_sock_dir"
+            set -lx MIDTERM_RUN_TOKEN "$__midterm_pty_token"
+            command sh $__midterm_ssh_dir/run.sh $argv
         end
     end
+else
+    set -e MIDTERM_SSH_SOCK_DIR
+    set -e MIDTERM_PTY_TOKEN
 end
 
 # This shell's id in its marks (`aid=`), so the terminal can tell them from
@@ -113,9 +118,18 @@ function __midterm_activate_python
     return 0
 end
 
+# OSC 6974 (meta): reports this shell's HOME and shell name once, scoped by aid.
+function __midterm_report_meta
+    set -q __midterm_reported_meta; and return
+    set -g __midterm_reported_meta 1
+    set -l encoded (string escape --style=url -- $HOME)
+    printf '\e]6974;meta=1;home=%s;shell=fish;aid=%s\a' "$encoded" $__midterm_aid
+end
+
 function __midterm_prompt --on-event fish_prompt
     __midterm_wrap_prompt
     __midterm_activate_python
+    __midterm_report_meta
     __midterm_report_path
     __midterm_report_cwd
     printf '\e]133;A;aid=%s\a' $__midterm_aid

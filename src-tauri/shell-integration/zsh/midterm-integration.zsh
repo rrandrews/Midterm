@@ -65,6 +65,17 @@ _midterm_report_path() {
   builtin print -rn -- $'\e]6973;path='"${REPLY};aid=$_midterm_aid"$'\a'
 }
 
+# OSC 6974 (meta): reports this shell's HOME and shell name once, scoped by aid,
+# so remote sessions can abbreviate ~ and provide accurate shell context.
+_midterm_report_meta() {
+  builtin emulate -L zsh
+  (( ${+_midterm_reported_meta} )) && builtin return
+  builtin typeset -g _midterm_reported_meta=1
+  builtin local REPLY
+  _midterm_urlencode "$HOME"
+  builtin print -rn -- $'\e]6974;meta=1;home='"${REPLY};shell=zsh;aid=$_midterm_aid"$'\a'
+}
+
 # Set by preexec once a C has been emitted, so that the next prompt emits D
 # (none after an empty line or ^C at the prompt).
 builtin typeset -gi _midterm_ran=0
@@ -77,6 +88,7 @@ _midterm_prompt_start() {
     _midterm_ran=0
     builtin print -rn -- $'\e]133;D;'"$1;aid=$_midterm_aid"$'\a'
   fi
+  _midterm_report_meta
   _midterm_report_path
   _midterm_report_cwd
   builtin print -rn -- $'\e]133;A;aid='"$_midterm_aid"$'\a'
@@ -119,16 +131,16 @@ _midterm_preexec() {
 # .zshrc, replaces it; `command ssh` skips it.
 if [[ -n ${MIDTERM_SSH_DIR-} ]]; then
   builtin typeset -g _midterm_ssh_dir=$MIDTERM_SSH_DIR
-  builtin unset MIDTERM_SSH_DIR
+  builtin typeset -g _midterm_ssh_sock_dir=${MIDTERM_SSH_SOCK_DIR-}
+  builtin typeset -g _midterm_pty_token=${MIDTERM_PTY_TOKEN-}
+  builtin unset MIDTERM_SSH_DIR MIDTERM_SSH_SOCK_DIR MIDTERM_PTY_TOKEN
   if (( ! ${+functions[ssh]} )); then
     ssh() {
-      if command sh "$_midterm_ssh_dir/should-wrap.sh" "$@"; then
-        command ssh -t "$@" "$(<"$_midterm_ssh_dir/remote-command")"
-      else
-        command ssh "$@"
-      fi
+      MIDTERM_RUN_SOCK_DIR="${_midterm_ssh_sock_dir-}" MIDTERM_RUN_TOKEN="${_midterm_pty_token-}" command sh "$_midterm_ssh_dir/run.sh" "$@"
     }
   fi
+else
+  builtin unset MIDTERM_SSH_SOCK_DIR MIDTERM_PTY_TOKEN
 fi
 
 # The workspace's default Python environment (MIDTERM_PYTHON_VENV: a venv

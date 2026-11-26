@@ -113,10 +113,24 @@ impl SpawnEnv {
 /// `ssh`, also on ssh remotes), or `custom` (from the settings) exactly as
 /// given, without integration. `spawn` adds the workspace's variables and
 /// Python environment.
+#[allow(dead_code)]
 pub fn shell_command(
     cwd: Option<&str>,
     custom: Option<&CustomShell>,
     ssh: bool,
+    spawn: &SpawnEnv,
+) -> CommandBuilder {
+    shell_command_with_ssh(cwd, custom, ssh, None, None, spawn)
+}
+
+/// Like [`shell_command`], also passing Midterm's ControlMaster socket
+/// directory and per-PTY authentication token to the local shell integration.
+pub fn shell_command_with_ssh(
+    cwd: Option<&str>,
+    custom: Option<&CustomShell>,
+    ssh: bool,
+    ssh_sock_dir: Option<&Path>,
+    ssh_token: Option<&str>,
     spawn: &SpawnEnv,
 ) -> CommandBuilder {
     if let Some(custom) = custom.filter(|custom| !custom.program.trim().is_empty()) {
@@ -127,17 +141,85 @@ pub fn shell_command(
         spawn.apply_python(&mut cmd, false);
         return cmd;
     }
-    default_shell_command(base_command(cwd), ssh, spawn)
+    default_shell_command(base_command(cwd), ssh, ssh_sock_dir, ssh_token, spawn)
+}
+
+/// Builds a direct-SSH PTY command multiplexed over a known connection's
+/// ControlMaster socket and starting directly in `remote_cwd` (used for
+/// splitting a remote terminal, "Open in new terminal" from a remote Explorer,
+/// or running a Palette command in a remote directory).
+///
+/// Uses `-S <path>` (separate argument) so sockets containing spaces are passed
+/// literally, and when `target.ssh_args` is empty (non-replayable routing flags
+/// such as `-F` or `-o HostName=...`) forces multiplex-only mode
+/// (`ControlMaster=no`, `ProxyCommand=false`) so losing the master fails closed
+/// rather than connecting to a different endpoint.
+#[cfg(unix)]
+pub fn ssh_command(
+    target: &crate::ssh::SshSpawnTarget,
+    remote_cwd: &str,
+    ssh_integration: bool,
+) -> Result<CommandBuilder, String> {
+    let mut cmd = CommandBuilder::new("ssh");
+    cmd.arg("-t");
+    if target.ssh_args.is_empty() {
+        cmd.args(["-F", "/dev/null", "-S"]);
+        cmd.arg(&target.control_path);
+        cmd.args([
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ProxyCommand=false",
+            "-o",
+            "PermitLocalCommand=no",
+            "--",
+            "placeholder",
+        ]);
+    } else {
+        if target.owned_socket {
+            cmd.args(["-o", "ControlMaster=auto", "-S"]);
+            cmd.arg(&target.control_path);
+            cmd.args(["-o", "ControlPersist=60s"]);
+        } else {
+            cmd.arg("-S");
+            cmd.arg(&target.control_path);
+        }
+        cmd.args(["-o", "PermitLocalCommand=no"]);
+        cmd.args(&target.ssh_args);
+    }
+    let remote_cmd = if ssh_integration {
+        super::integration::remote_command_in(Some(remote_cwd))
+    } else {
+        super::integration::plain_remote_command_in(remote_cwd)
+    };
+    cmd.arg(remote_cmd);
+    apply_environment(&mut cmd, None);
+    Ok(cmd)
+}
+
+#[cfg(not(unix))]
+pub fn ssh_command(
+    _target: &crate::ssh::SshSpawnTarget,
+    _remote_cwd: &str,
+    _ssh_integration: bool,
+) -> Result<CommandBuilder, String> {
+    Err("direct SSH terminal panes are only supported on Unix".into())
 }
 
 /// [`shell_command`] for the login shell, from its bare `cmd`.
-fn default_shell_command(mut cmd: CommandBuilder, ssh: bool, spawn: &SpawnEnv) -> CommandBuilder {
+fn default_shell_command(
+    mut cmd: CommandBuilder,
+    ssh: bool,
+    ssh_sock_dir: Option<&Path>,
+    ssh_token: Option<&str>,
+    spawn: &SpawnEnv,
+) -> CommandBuilder {
     spawn.apply_vars(&mut cmd);
     #[cfg(unix)]
-    let integrated = super::integration::setup(&mut cmd, ssh).is_some();
+    let integrated = super::integration::setup_with_ssh(&mut cmd, ssh, ssh_sock_dir, ssh_token).is_some();
     #[cfg(not(unix))]
     let integrated = {
-        let _ = ssh;
+        let _ = (ssh, ssh_sock_dir, ssh_token);
         false
     };
     spawn.apply_python(&mut cmd, integrated);
@@ -301,7 +383,7 @@ mod tests {
         };
         let mut bare = CommandBuilder::new_default_prog();
         bare.env("SHELL", "/bin/zsh");
-        let cmd = default_shell_command(bare, false, &spawn);
+        let cmd = default_shell_command(bare, false, None, None, &spawn);
         if env_of(&cmd, "MIDTERM_SHELL_INTEGRATION").is_none() {
             return; // the scripts could not be written here
         }
@@ -326,7 +408,7 @@ mod tests {
         bare.env("SHELL", "/bin/zsh");
         bare.env("PATH", "/usr/bin");
         bare.env("MIDTERM_PYTHON_CONDA", "stale");
-        let cmd = default_shell_command(bare, false, &python("venv", "/p/.venv"));
+        let cmd = default_shell_command(bare, false, None, None, &python("venv", "/p/.venv"));
         if env_of(&cmd, "MIDTERM_SHELL_INTEGRATION").is_none() {
             return;
         }
@@ -338,7 +420,7 @@ mod tests {
 
         let mut bare = CommandBuilder::new_default_prog();
         bare.env("SHELL", "/bin/zsh");
-        let cmd = default_shell_command(bare, false, &python("conda", "ml"));
+        let cmd = default_shell_command(bare, false, None, None, &python("conda", "ml"));
         assert_eq!(env_of(&cmd, "MIDTERM_PYTHON_CONDA").as_deref(), Some("ml"));
         assert_eq!(env_of(&cmd, "MIDTERM_PYTHON_VENV"), None);
     }

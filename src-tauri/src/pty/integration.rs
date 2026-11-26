@@ -60,8 +60,9 @@ const SCRIPTS: &[(&str, &str)] = &[
     ),
 ];
 
-/// `should-wrap.sh`, written next to the generated `remote-command`.
+/// `should-wrap.sh` and `run.sh`, written next to the generated `remote-command`.
 const SHOULD_WRAP: &str = include_str!("../../shell-integration/ssh/should-wrap.sh");
+const RUN_SSH: &str = include_str!("../../shell-integration/ssh/run.sh");
 const BOOTSTRAP: &str = include_str!("../../shell-integration/ssh/bootstrap.sh");
 
 /// The script with its comment lines, blank lines and indentation left out
@@ -104,12 +105,38 @@ fn bootstrap_script() -> String {
 /// Stage 0 decodes stage 1 (`base64 -d`, BSD `base64 -D`, or `openssl`) and
 /// evals it; if that fails it starts a plain login shell.
 pub fn remote_command() -> String {
+    remote_command_in(None)
+}
+
+/// Like [`remote_command`], optionally instructing stage 1 to `cd` into
+/// `initial_cwd` (base64-encoded so any POSIX path travels safely with no
+/// quoting hazards) before starting the remote login shell.
+pub fn remote_command_in(initial_cwd: Option<&str>) -> String {
     use base64::Engine;
-    let payload = base64::engine::general_purpose::STANDARD.encode(bootstrap_script());
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let payload = b64.encode(bootstrap_script());
+    let cd_prefix = match initial_cwd.filter(|d| !d.is_empty()) {
+        Some(dir) => format!("MIDTERM_REMOTE_CD={}; ", b64.encode(dir)),
+        None => String::new(),
+    };
     format!(
-        "sh -c 'p={payload}; s=$( (printf %s \"$p\" | base64 -d || printf %s \"$p\" | base64 -D || \
+        "sh -c '{cd_prefix}p={payload}; s=$( (printf %s \"$p\" | base64 -d || printf %s \"$p\" | base64 -D || \
          printf %s \"$p\" | openssl base64 -d -A) 2>/dev/null ); \
          if [ -n \"$s\" ]; then eval \"$s\"; fi; exec \"${{SHELL:-/bin/sh}}\" -l'"
+    )
+}
+
+/// Minimal remote login command that only `cd`s to `initial_cwd` (failing
+/// closed if the directory is unavailable) and starts the user's remote login
+/// shell (used for direct-SSH spawns when `sshIntegration` is turned off).
+pub fn plain_remote_command_in(initial_cwd: &str) -> String {
+    use base64::Engine;
+    let cd_b64 = base64::engine::general_purpose::STANDARD.encode(initial_cwd);
+    format!(
+        "sh -c 'd={cd_b64}; c=$( (printf %s \"$d\" | base64 -d || printf %s \"$d\" | base64 -D || \
+         printf %s \"$d\" | openssl base64 -d -A) 2>/dev/null && printf X ); \
+         case $c in *X) c=${{c%X}}; if [ -n \"$c\" ]; then cd -- \"$c\" || exit 1; fi ;; *) exit 1 ;; esac; \
+         exec \"${{SHELL:-/bin/sh}}\" -l'"
     )
 }
 
@@ -161,6 +188,7 @@ pub fn install(dir: &Path) -> io::Result<()> {
     let remote = remote_command();
     let ssh_files = [
         ("ssh/should-wrap.sh", SHOULD_WRAP),
+        ("ssh/run.sh", RUN_SSH),
         ("ssh/remote-command", remote.as_str()),
     ];
     for (name, contents) in SCRIPTS.iter().copied().chain(ssh_files) {
@@ -202,16 +230,46 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// The original values of the variables it changes are taken from `cmd`, so
 /// set any overrides before calling this. With `ssh`, the shell also wraps
 /// `ssh` (see the module docs).
+#[allow(dead_code)]
 pub fn inject(cmd: &mut CommandBuilder, dir: &Path, ssh: bool) -> Option<Shell> {
+    inject_with_ssh(cmd, dir, ssh, None, None)
+}
+
+/// Like [`inject`], also passing the verified private ControlMaster socket
+/// directory and per-PTY authentication token used by `ssh/run.sh`.
+pub fn inject_with_ssh(
+    cmd: &mut CommandBuilder,
+    dir: &Path,
+    ssh: bool,
+    ssh_sock_dir: Option<&Path>,
+    ssh_token: Option<&str>,
+) -> Option<Shell> {
     let program = cmd.get_shell();
-    inject_as(cmd, dir, program, ssh)
+    inject_as(cmd, dir, program, ssh, ssh_sock_dir, ssh_token)
+}
+
+fn valid_pty_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 128
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// [`inject`] for the shell `program`, which `cmd` runs.
-fn inject_as(cmd: &mut CommandBuilder, dir: &Path, program: String, ssh: bool) -> Option<Shell> {
+fn inject_as(
+    cmd: &mut CommandBuilder,
+    dir: &Path,
+    program: String,
+    ssh: bool,
+    ssh_sock_dir: Option<&Path>,
+    ssh_token: Option<&str>,
+) -> Option<Shell> {
     debug_assert!(cmd.is_default_prog());
     // Possibly inherited, e.g. when Midterm was started from Midterm.
     cmd.env_remove("MIDTERM_SSH_DIR");
+    cmd.env_remove("MIDTERM_SSH_SOCK_DIR");
+    cmd.env_remove("MIDTERM_PTY_TOKEN");
     cmd.env_remove("MIDTERM_SI_EPHEMERAL");
     let Some(shell) = Shell::from_path(&program) else {
         cmd.env_remove("MIDTERM_SHELL_INTEGRATION");
@@ -265,6 +323,12 @@ fn inject_as(cmd: &mut CommandBuilder, dir: &Path, program: String, ssh: bool) -
     cmd.env("MIDTERM_SHELL_INTEGRATION", "1");
     if ssh {
         cmd.env("MIDTERM_SSH_DIR", dir.join("ssh"));
+        if let Some(sock_dir) = ssh_sock_dir {
+            cmd.env("MIDTERM_SSH_SOCK_DIR", sock_dir);
+        }
+        if let Some(tok) = ssh_token.filter(|t| valid_pty_token(t)) {
+            cmd.env("MIDTERM_PTY_TOKEN", tok);
+        }
     }
     Some(shell)
 }
@@ -272,7 +336,19 @@ fn inject_as(cmd: &mut CommandBuilder, dir: &Path, program: String, ssh: bool) -
 /// [`install`]s the scripts in [`default_dir`] and [`inject`]s them into
 /// `cmd`. Failing to install is not fatal: the shell then simply starts
 /// without integration.
+#[allow(dead_code)]
 pub fn setup(cmd: &mut CommandBuilder, ssh: bool) -> Option<Shell> {
+    setup_with_ssh(cmd, ssh, None, None)
+}
+
+/// Like [`setup`], also passing the verified private ControlMaster socket
+/// directory and per-PTY token when SSH integration is enabled.
+pub fn setup_with_ssh(
+    cmd: &mut CommandBuilder,
+    ssh: bool,
+    ssh_sock_dir: Option<&Path>,
+    ssh_token: Option<&str>,
+) -> Option<Shell> {
     // Only worth touching the disk for shells we can integrate with.
     let dir = Shell::from_path(&cmd.get_shell())
         .and_then(|_| default_dir())
@@ -287,11 +363,13 @@ pub fn setup(cmd: &mut CommandBuilder, ssh: bool) -> Option<Shell> {
             }
         });
     match dir {
-        Some(dir) => inject(cmd, &dir, ssh),
+        Some(dir) => inject_with_ssh(cmd, &dir, ssh, ssh_sock_dir, ssh_token),
         None => {
             // Possibly inherited, e.g. when Midterm was started from Midterm.
             cmd.env_remove("MIDTERM_SHELL_INTEGRATION");
             cmd.env_remove("MIDTERM_SSH_DIR");
+            cmd.env_remove("MIDTERM_SSH_SOCK_DIR");
+            cmd.env_remove("MIDTERM_PTY_TOKEN");
             None
         }
     }
@@ -364,21 +442,50 @@ mod tests {
     /// even if it is not installed.
     fn inject(cmd: &mut CommandBuilder, dir: &str) -> Option<Shell> {
         let program = cmd.get_env("SHELL").unwrap().to_str().unwrap().to_owned();
-        inject_as(cmd, Path::new(dir), program, false)
+        inject_as(cmd, Path::new(dir), program, false, None, None)
     }
 
     #[test]
     fn ssh_dir_only_when_asked() {
         let mut cmd = default_prog("/bin/zsh");
         cmd.env("MIDTERM_SSH_DIR", "/stale");
+        cmd.env("MIDTERM_SSH_SOCK_DIR", "/stale-sock");
+        cmd.env("MIDTERM_PTY_TOKEN", "stale-tok");
         inject(&mut cmd, "/midterm");
         assert_eq!(env_of(&cmd, "MIDTERM_SSH_DIR"), None);
+        assert_eq!(env_of(&cmd, "MIDTERM_SSH_SOCK_DIR"), None);
+        assert_eq!(env_of(&cmd, "MIDTERM_PTY_TOKEN"), None);
         let mut cmd = default_prog("/bin/zsh");
-        inject_as(&mut cmd, Path::new("/midterm"), "/bin/zsh".into(), true);
+        inject_as(
+            &mut cmd,
+            Path::new("/midterm"),
+            "/bin/zsh".into(),
+            true,
+            Some(Path::new("/tmp/mt-501")),
+            Some("tok_abc-123"),
+        );
         assert_eq!(env_of(&cmd, "MIDTERM_SSH_DIR"), Some("/midterm/ssh".into()));
+        assert_eq!(env_of(&cmd, "MIDTERM_SSH_SOCK_DIR"), Some("/tmp/mt-501".into()));
+        assert_eq!(env_of(&cmd, "MIDTERM_PTY_TOKEN"), Some("tok_abc-123".into()));
         let mut cmd = default_prog("/bin/sh");
-        inject_as(&mut cmd, Path::new("/midterm"), "/bin/sh".into(), true);
+        inject_as(&mut cmd, Path::new("/midterm"), "/bin/sh".into(), true, None, None);
         assert_eq!(env_of(&cmd, "MIDTERM_SSH_DIR"), None);
+    }
+
+    #[test]
+    fn remote_command_in_is_portable_and_encodes_cwd() {
+        let cmd = remote_command_in(Some("/srv/my app's dir"));
+        assert!(cmd.starts_with("sh -c 'MIDTERM_REMOTE_CD=") && cmd.ends_with('\''));
+        assert_eq!(cmd.matches('\'').count(), 2, "{cmd}");
+        for bad in ['\\', '\n', '!'] {
+            assert!(!cmd.contains(bad), "{bad:?} in remote_command_in");
+        }
+        let plain = plain_remote_command_in("/srv/my app's dir");
+        assert!(plain.starts_with("sh -c 'd=") && plain.ends_with('\''));
+        assert_eq!(plain.matches('\'').count(), 2, "{plain}");
+        for bad in ['\\', '\n', '!'] {
+            assert!(!plain.contains(bad), "{bad:?} in plain_remote_command_in");
+        }
     }
 
     #[test]

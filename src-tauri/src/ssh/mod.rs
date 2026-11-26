@@ -86,6 +86,16 @@ pub enum SocketState {
     ProbeTimedOut,
 }
 
+/// Synchronous snapshot of the validated parameters needed by `pty_spawn` to
+/// launch a direct-SSH terminal pane into a known remote without blocking on
+/// async locks.
+#[derive(Debug, Clone)]
+pub struct SshSpawnTarget {
+    pub control_path: PathBuf,
+    pub owned_socket: bool,
+    pub ssh_args: Vec<String>,
+}
+
 /// Managed SSH state owned by Tauri (`app.manage(SshManager::default())`).
 pub struct SshManager {
     inner: Arc<Inner>,
@@ -95,6 +105,7 @@ struct Inner {
     socket_dir: Mutex<Option<PathBuf>>,
     app: Mutex<Option<AppHandle>>,
     connections: AsyncMutex<HashMap<String, ConnectionEntry>>,
+    spawn_targets: Mutex<HashMap<String, SshSpawnTarget>>,
     watches: Mutex<HashMap<u32, RemoteWatch>>,
     searches: Mutex<HashMap<u32, RemoteSearch>>,
 }
@@ -106,6 +117,7 @@ impl Default for SshManager {
                 socket_dir: Mutex::new(None),
                 app: Mutex::new(None),
                 connections: AsyncMutex::new(HashMap::new()),
+                spawn_targets: Mutex::new(HashMap::new()),
                 watches: Mutex::new(HashMap::new()),
                 searches: Mutex::new(HashMap::new()),
             }),
@@ -213,6 +225,18 @@ impl SshManager {
             } else {
                 entry.info.status = SshStatus::Connecting;
             }
+            // Do not synthesize fallback args when `ssh_args` is empty: empty
+            // args indicate non-replayable CLI routing flags (-F, -o HostName,
+            // etc.) where direct panes must stay multiplex-only over the live
+            // master rather than reconnecting to a potentially different host.
+            lock(&self.inner.spawn_targets).insert(
+                reg.id.clone(),
+                SshSpawnTarget {
+                    control_path: entry.control_path.clone(),
+                    owned_socket: entry.owned_socket,
+                    ssh_args: entry.info.ssh_args.clone(),
+                },
+            );
             entry.info.clone()
         };
 
@@ -268,6 +292,14 @@ impl SshManager {
                 },
                 ssh_args: safe_args,
             };
+            lock(&self.inner.spawn_targets).insert(
+                id.clone(),
+                SshSpawnTarget {
+                    control_path: default_sock.clone(),
+                    owned_socket: true,
+                    ssh_args: info.ssh_args.clone(),
+                },
+            );
             map.insert(
                 id,
                 ConnectionEntry {
@@ -283,6 +315,29 @@ impl SshManager {
             info
         };
         Ok(info)
+    }
+
+    /// Synchronously returns validated direct-SSH spawn parameters for
+    /// `remote_id` (used by synchronous `pty_spawn` on the main thread).
+    /// When `ssh_args` is empty (non-replayable routing flags), the returned
+    /// target triggers multiplex-only mode in `shell::ssh_command`.
+    pub fn spawn_info_sync(&self, remote_id: &str) -> Result<SshSpawnTarget, String> {
+        let sock_dir = self.socket_dir()?;
+        let target = lock(&self.inner.spawn_targets)
+            .get(remote_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown SSH connection '{remote_id}'"))?;
+        let path_str = target
+            .control_path
+            .to_str()
+            .ok_or("control socket path is not valid UTF-8")?;
+        validate_control_path(path_str, &sock_dir, target.owned_socket)?;
+        let safe_args = validate_safe_ssh_args(&target.ssh_args)?;
+        Ok(SshSpawnTarget {
+            control_path: target.control_path,
+            owned_socket: target.owned_socket,
+            ssh_args: safe_args,
+        })
     }
 
     pub async fn terminal_ended(&self, remote_id: &str) {
@@ -336,11 +391,7 @@ impl SshManager {
             let entry = map
                 .get(remote_id)
                 .ok_or_else(|| format!("unknown SSH connection '{remote_id}'"))?;
-            let args = if entry.info.ssh_args.is_empty() {
-                fallback_ssh_args(&entry.info.host, &entry.info.user, entry.info.port)?
-            } else {
-                validate_safe_ssh_args(&entry.info.ssh_args)?
-            };
+            let args = validate_safe_ssh_args(&entry.info.ssh_args)?;
             (entry.control_path.clone(), entry.owned_socket, args)
         };
 
@@ -354,6 +405,12 @@ impl SshManager {
                 return Err("SSH control socket probe timed out; try again shortly".into());
             }
             SocketState::Stale | SocketState::Missing => {
+                if safe_args.is_empty() {
+                    return Err(
+                        "Cannot reconnect automatically because this session used custom SSH options; reconnect in your terminal."
+                            .into(),
+                    );
+                }
                 // Revalidate socket-directory trust BEFORE launching OpenSSH to
                 // create or bind a master socket (both when stale AND when missing).
                 let path_str = control_path
@@ -375,8 +432,8 @@ impl SshManager {
                 let mut cmd = Command::new("ssh");
                 cmd.arg("-o")
                     .arg("ControlMaster=auto")
-                    .arg("-o")
-                    .arg(format!("ControlPath={}", control_path.display()))
+                    .arg("-S")
+                    .arg(&control_path)
                     .arg("-o")
                     .arg("ControlPersist=60s")
                     .arg("-o")
@@ -1099,6 +1156,7 @@ impl SshManager {
             let Ok(rt) = rt else { return };
             rt.block_on(async move {
                 let entries: Vec<(Option<Arc<RemoteClient>>, PathBuf, bool)> = {
+                    lock(&mgr.inner.spawn_targets).clear();
                     let mut map = mgr.inner.connections.lock().await;
                     map.drain()
                         .map(|(_, e)| (e.client, e.control_path, e.owned_socket))
@@ -1183,8 +1241,16 @@ pub async fn probe_control_socket(control_path: &Path) -> SocketState {
 }
 
 /// Derives a short deterministic socket filename (<= 16 chars) from a remote id.
+/// Matches `run.sh`'s `s-<12-hex>` convention when `remote_id` ends with a
+/// 12-hex hash suffix so sockets stay consistent across app restarts.
 pub fn socket_filename_for(remote_id: &str) -> String {
-    // Simple FNV-1a 64-bit hex hash — short, deterministic, no extra crate needed.
+    if let Some((_, suffix)) = remote_id.rsplit_once('-')
+        && suffix.len() == 12
+        && suffix.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return format!("s-{suffix}");
+    }
+    // Fallback FNV-1a 64-bit hex hash for synthetic IDs in tests.
     let mut h: u64 = 0xcbf29ce484222325;
     for b in remote_id.as_bytes() {
         h ^= u64::from(*b);

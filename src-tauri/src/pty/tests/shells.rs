@@ -1146,7 +1146,111 @@ fn bootstrap_falls_back_to_a_plain_shell() {
     let text = run_plain_remote(&sandbox, &tmp);
     assert!(text.contains("plain-shell-up"), "{text:?}");
     assert!(osc133_marks(&text).is_empty(), "{text:?}");
+    assert!(text.contains("\x1b]6974;meta=1;home="), "missing plain-shell meta OSC: {text:?}");
     assert!(fs::read_dir(&tmp).unwrap().next().is_none());
+}
+
+#[test]
+fn bootstrap_cds_into_initial_remote_dir_and_emits_meta() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("boot-remote-cd");
+    sandbox.write(".zshrc", "PS1='cd-zsh> '\n");
+    let sub = sandbox.home.join("proj dir");
+    fs::create_dir_all(&sub).unwrap();
+    let mut cmd = CommandBuilder::new(&zsh);
+    cmd.args(["-c", &integration::remote_command_in(Some(sub.to_str().unwrap()))]);
+    cmd.cwd(&sandbox.home);
+    cmd.env("SHELL", &zsh);
+    cmd.env("HOME", &sandbox.home);
+    cmd.env("TERM", "xterm-256color");
+    let mut h = Harness::spawn(cmd);
+    h.wait_for_output("cd-zsh> ");
+    h.session.write(b"pwd; exit\n".to_vec()).unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let text = h.text();
+    assert!(text.contains("proj dir"), "did not cd into initial remote dir: {text:?}");
+    assert!(text.contains("\x1b]6974;meta=1;home="), "missing meta OSC: {text:?}");
+    assert!(text.contains(";shell=zsh;aid="), "missing shell name in meta OSC: {text:?}");
+}
+
+#[test]
+fn ssh_run_emits_osc_6974_controlmaster_and_preserves_exit_code() {
+    let Some(zsh) = find_shell("zsh") else {
+        eprintln!("zsh not installed; skipped");
+        return;
+    };
+    let sandbox = Sandbox::new("zsh-ssh-6974");
+    let sock_dir = sandbox.root.join("socks");
+    fs::create_dir_all(&sock_dir).unwrap();
+    sandbox.fake_program(
+        "ssh",
+        "case \"$1\" in\n\
+           -G)\n\
+             echo 'hostname prod.internal'\n\
+             echo 'user deploy'\n\
+             echo 'port 2222'\n\
+             echo 'controlpath none'\n\
+             echo 'controlmaster false'\n\
+             exit 0\n\
+             ;;\n\
+         esac\n\
+         printf 'ENVTOK=[%s:%s] ' \"${MIDTERM_PTY_TOKEN-}\" \"${MIDTERM_RUN_TOKEN-}\"\n\
+         printf 'FAKE-SSH[%s]' \"$@\"; echo\n\
+         exit 42\n",
+    );
+    sandbox.write(
+        ".zshrc",
+        &format!("PS1='zsh> '\nPATH='{}':$PATH\n", sandbox.bin().display()),
+    );
+    let mut cmd = sandbox.command(&zsh, &sandbox.home);
+    integration::install(&sandbox.scripts()).expect("install failed");
+    assert!(
+        integration::inject_with_ssh(
+            &mut cmd,
+            &sandbox.scripts(),
+            true,
+            Some(&sock_dir),
+            Some("secret_tok_99"),
+        )
+        .is_some()
+    );
+    let mut h = Harness::spawn(cmd);
+    h.wait_for_marks(2);
+    h.session
+        .write(b"ssh -p 2222 -o ServerAliveInterval=5 prod; echo \"RC=$? ENV=$MIDTERM_PTY_TOKEN:$MIDTERM_SSH_SOCK_DIR\"\nexit\n".to_vec())
+        .unwrap();
+    assert_eq!(h.wait_for_exit(), Some(0));
+    let text = h.text();
+
+    // Must announce start before ssh runs, with safe allowlisted args only (no -o).
+    let start_pos = text.find("\x1b]6974;ssh=start;id=prod-").expect("missing ssh=start");
+    let ssh_pos = text
+        .find("FAKE-SSH[-t]FAKE-SSH[-o]FAKE-SSH[ControlMaster=auto]FAKE-SSH[-S]")
+        .expect("missing ControlMaster flags with -S");
+    let end_pos = text.find("\x1b]6974;ssh=end;id=prod-").expect("missing ssh=end");
+    assert!(start_pos < ssh_pos && ssh_pos < end_pos, "wrong OSC 6974 ordering: {text:?}");
+    assert!(text.contains(";owned=1;args=-p,2222,prod;token=secret_tok_99\x07"), "bad start payload: {text:?}");
+    assert!(text.contains(";token=secret_tok_99\x07"), "bad end payload: {text:?}");
+    assert!(text.contains("FAKE-SSH[-o]FAKE-SSH[ServerAliveInterval=5]"), "user -o not forwarded to ssh: {text:?}");
+    assert!(text.contains("ENVTOK=[:]"), "token leaked into ssh env: {text:?}");
+    assert!(text.contains("RC=42 ENV=:"), "exit code not preserved or env leaked: {text:?}");
+}
+
+#[test]
+fn bootstrap_fails_closed_when_requested_remote_dir_is_missing() {
+    let sandbox = Sandbox::new("boot-missing-cd");
+    let missing = sandbox.root.join("does-not-exist");
+    let mut cmd = CommandBuilder::new("/bin/sh");
+    cmd.args(["-c", &integration::remote_command_in(Some(missing.to_str().unwrap()))]);
+    cmd.cwd(&sandbox.home);
+    cmd.env("SHELL", "/bin/sh");
+    cmd.env("HOME", &sandbox.home);
+    let mut h = Harness::spawn(cmd);
+    assert_eq!(h.wait_for_exit(), Some(1));
+    assert!(h.text().contains("cannot change remote directory"));
 }
 
 #[test]

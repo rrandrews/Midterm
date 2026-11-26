@@ -94,16 +94,16 @@ builtin unset -f _midterm_activate_python
 # unless the user's startup files defined their own.
 if [ -n "${MIDTERM_SSH_DIR-}" ]; then
   _midterm_ssh_dir=$MIDTERM_SSH_DIR
-  builtin unset MIDTERM_SSH_DIR
+  _midterm_ssh_sock_dir=${MIDTERM_SSH_SOCK_DIR-}
+  _midterm_pty_token=${MIDTERM_PTY_TOKEN-}
+  builtin unset MIDTERM_SSH_DIR MIDTERM_SSH_SOCK_DIR MIDTERM_PTY_TOKEN
   if ! builtin declare -F ssh >/dev/null; then
     ssh() {
-      if command sh "$_midterm_ssh_dir/should-wrap.sh" "$@"; then
-        command ssh -t "$@" "$(<"$_midterm_ssh_dir/remote-command")"
-      else
-        command ssh "$@"
-      fi
+      MIDTERM_RUN_SOCK_DIR="${_midterm_ssh_sock_dir-}" MIDTERM_RUN_TOKEN="${_midterm_pty_token-}" command sh "$_midterm_ssh_dir/run.sh" "$@"
     }
   fi
+else
+  builtin unset MIDTERM_SSH_SOCK_DIR MIDTERM_PTY_TOKEN
 fi
 
 # Percent-encodes $1 byte by byte for a file:// URL into _midterm_encoded.
@@ -145,6 +145,14 @@ _midterm_report_path() {
   builtin printf '\033]6973;path=%s;aid=%s\007' "$_midterm_encoded" "$_midterm_aid"
 }
 
+# OSC 6974 (meta): reports this shell's HOME and shell name once, scoped by aid.
+_midterm_report_meta() {
+  [[ -n ${_midterm_reported_meta+set} ]] && builtin return
+  _midterm_reported_meta=1
+  _midterm_urlencode "${HOME-}"
+  builtin printf '\033]6974;meta=1;home=%s;shell=bash;aid=%s\007' "$_midterm_encoded" "$_midterm_aid"
+}
+
 # OSC 133 state: _midterm_ran is set once a C has been emitted for the
 # current command line (so the next prompt emits D), _midterm_armed from the
 # end of PROMPT_COMMAND until the first command of the next command line.
@@ -163,6 +171,7 @@ _midterm_prompt_command() {
     _midterm_ran=
     builtin printf '\033]133;D;%s;aid=%s\007' "$ret" "$_midterm_aid"
   fi
+  _midterm_report_meta
   _midterm_report_path
   _midterm_report_cwd
   builtin printf '\033]133;A;aid=%s\007' "$_midterm_aid"
