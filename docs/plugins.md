@@ -121,10 +121,14 @@ all use this helper; plugins get it as `api.panes.createState`.
   Move to tab, a divider and **Close pane**. A plugin may hide any built-in
   item except Settings… and Close pane (`pane.hideMenuItems`); the Agent
   pane hides "Agent", the explorer hides "Maximize" and "Move to tab".
-- A `MenuItemSpec` item may have `onHighlight(on)`, called as the pointer
-  or keyboard highlight enters (`true`) and leaves (`false`) it, and with
-  `false` when the menu closes. The explorer uses it to outline the
-  terminal an item names (`highlightPane`, `src/layout/paneHighlight.ts`).
+- A `MenuItemSpec` item may set `checked` (with `checkSide: "left" | "right"`,
+  default `"left"`), `keepOpen: true` (keeps the menu open when selected and
+  re-evaluates the menu's items in place), and `onHighlight(on)`, called as
+  the pointer or keyboard highlight enters (`true`) and leaves (`false`) it,
+  and with `false` when the menu closes. The explorer uses `onHighlight` to
+  outline the terminal an item names (`highlightPane`,
+  `src/layout/paneHighlight.ts`), and `checkSide: "right"` + `keepOpen: true`
+  for "Show hidden files".
 - `plugin.commands` are registered while the plugin is enabled.
   `CommandCategory` is any string. `command.menu` names a native menu bar
   submenu ("File", "Edit", "View", "Pane", "Window"); the command is listed

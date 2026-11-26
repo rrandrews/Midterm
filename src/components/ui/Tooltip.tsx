@@ -11,7 +11,7 @@ import { createPortal } from "react-dom";
  */
 
 const CONTENT =
-  "z-[70] max-w-[260px] rounded-md bg-popover px-2.5 py-1.5 text-meta leading-snug text-fg-soft shadow-menu select-none " +
+  "pointer-events-none z-[70] max-w-[260px] rounded-md bg-popover px-2.5 py-1.5 text-meta leading-snug text-fg-soft shadow-menu select-none " +
   "data-[state=delayed-open]:animate-[tip-in_120ms_ease-out]";
 
 export function Tip({
@@ -31,8 +31,12 @@ export function Tip({
   const [open, setOpen] = useState(false);
   if (!content) return <>{children}</>;
   return (
-    <Primitive.Provider delayDuration={delay} skipDelayDuration={200}>
-      <Primitive.Root open={disabled ? false : open} onOpenChange={(next) => setOpen(!disabled && next)}>
+    <Primitive.Provider delayDuration={delay} skipDelayDuration={disabled ? 0 : 200}>
+      <Primitive.Root
+        disableHoverableContent
+        open={disabled ? false : open}
+        onOpenChange={(next) => setOpen(!disabled && next)}
+      >
         <Primitive.Trigger asChild>{children}</Primitive.Trigger>
         <Primitive.Portal>
           <Primitive.Content side={side} sideOffset={5} collisionPadding={8} className={CONTENT}>

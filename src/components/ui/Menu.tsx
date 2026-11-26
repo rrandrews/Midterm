@@ -102,23 +102,63 @@ function Shortcut({ children }: { children: ReactNode }) {
 type MenuItemProps = ComponentProps<typeof DropdownPrimitive.Item> & {
   /** Key hint shown on the right, e.g. "⌘D". */
   shortcut?: string;
-  /** Shows a check mark; reserves its space when `false`. */
+  /** Shows a check mark; reserves its space on the left when `false`. */
   checked?: boolean;
+  /** Which side the check mark is placed on (default `"left"`). */
+  checkSide?: "left" | "right";
+  /** True for an independent on/off toggle (`menuitemcheckbox`); omit for mutually exclusive choices (`menuitemradio`). */
+  toggle?: boolean;
   /** Destructive (delete): drawn in the theme's error color. */
   danger?: boolean;
 };
 
 const DANGER = "text-err! data-[highlighted]:bg-err/12";
 
-export function MenuItem({ children, shortcut, checked, danger, className = "", ...props }: MenuItemProps) {
+export function MenuItem({
+  children,
+  shortcut,
+  checked,
+  checkSide = "left",
+  toggle = false,
+  danger,
+  className = "",
+  ...props
+}: MenuItemProps) {
   const Primitive = usePrimitive();
-  return (
-    <Primitive.Item className={`${ITEM} ${danger ? DANGER : ""} ${className}`} {...props}>
-      {checked !== undefined && (
-        <span className="flex w-3 flex-none text-fg-dim">{checked && <Check size={12} />}</span>
+  const content = (
+    <>
+      {checked !== undefined && checkSide === "left" && (
+        <span className="flex w-3 flex-none text-fg-dim" aria-hidden="true">
+          {checked && <Check size={12} />}
+        </span>
       )}
       <span className="min-w-0 flex-1 truncate">{children}</span>
       {shortcut && <Shortcut>{shortcut}</Shortcut>}
+      {checked !== undefined && checkSide === "right" && (
+        <span className="flex w-3 flex-none justify-end text-fg-dim" aria-hidden="true">
+          {checked && <Check size={12} />}
+        </span>
+      )}
+    </>
+  );
+  const classes = `${ITEM} ${danger ? DANGER : ""} ${className}`;
+  if (checked !== undefined && toggle) {
+    return (
+      <Primitive.CheckboxItem checked={checked} className={classes} {...props}>
+        {content}
+      </Primitive.CheckboxItem>
+    );
+  }
+  if (checked !== undefined) {
+    return (
+      <Primitive.Item role="menuitemradio" aria-checked={checked} className={classes} {...props}>
+        {content}
+      </Primitive.Item>
+    );
+  }
+  return (
+    <Primitive.Item className={classes} {...props}>
+      {content}
     </Primitive.Item>
   );
 }

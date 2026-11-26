@@ -8,6 +8,7 @@ Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with eac
 - When given tasks directly (rather than pointed to an issue) that require modification of the codebase, first create a proper issue and/or project on Linear for the task.
 - Mark tasks as done when you finish.
 - Prefer trusted, actively maintained open-source libraries over rolling your own when a library solves the problem well. Before adding a dependency, check recent releases and adoption. Don't add a dependency for something a few lines of code handle, and don't reimplement what an existing dependency already does.
+- Always use Midterm's tooltip component (`Tip`, `Help`, or `AnchoredTip` from `src/components/ui/Tooltip.tsx`) rather than native HTML `title` attributes (system tooltips).
 
 ## Testing
 - Developer `tauri dev` builds: `MIDTERM_KEYSTORE=file` keeps AI keys in `~/.config/midterm-dev/keys.json` instead of the Keychain (no password prompt per rebuild; debug builds on macOS/Unix only, ignored by release and `dev:mcp` builds). See docs/ai.md#keys.

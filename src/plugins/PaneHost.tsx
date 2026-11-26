@@ -1,4 +1,4 @@
-import { Component, type CSSProperties, type ErrorInfo, type ReactNode, memo, useEffect, useMemo, useRef } from "react";
+import { Component, type CSSProperties, type ErrorInfo, type ReactNode, memo, useEffect, useMemo, useReducer, useRef } from "react";
 import { usePaneNumbers } from "../layout/paneNumbers";
 import { usePaneThemeStyle } from "../theme/paneTheme";
 import { focusPane, notePaneFocused, registerPaneFocuser } from "../layout/dock";
@@ -161,6 +161,8 @@ function MountedContent({ mount, ctx }: { mount: NonNullable<PanePlugin["pane"][
 
 /** The plugin's right-click (`menu`) or … menu (`optionsMenu`) items; the pane's "Settings…" follows them. */
 export function PluginMenuItems({ plugin, ctx, menu }: { plugin: PanePlugin; ctx: PaneContext; menu: "menu" | "optionsMenu" }) {
+  // Re-evaluate declarative items after a `keepOpen` toggle runs so check marks update while open.
+  const [, refresh] = useReducer((count: number) => count + 1, 0);
   let items: MenuItemSpec[] = [];
   try {
     items = plugin.pane[menu]?.(ctx) ?? [];
@@ -168,7 +170,7 @@ export function PluginMenuItems({ plugin, ctx, menu }: { plugin: PanePlugin; ctx
     console.error(`The ${plugin.id} plugin's ${menu} failed:`, error);
   }
   if (items.length === 0) return null;
-  return <MenuItems items={items} />;
+  return <MenuItems items={items} onRefresh={refresh} />;
 }
 
 type BoundaryState = { error: Error | null };

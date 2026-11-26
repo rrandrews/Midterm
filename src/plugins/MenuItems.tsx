@@ -14,6 +14,23 @@ const later = (run: () => unknown) =>
     }
   }, 0);
 
+/** Runs immediately for `keepOpen` items, then refreshes the menu so toggles update in place. */
+const runNow = (run: () => unknown, onRefresh?: () => void) => {
+  try {
+    const result = run();
+    if (result instanceof Promise) {
+      result
+        .catch((error) => console.error("Menu item failed:", error))
+        .finally(() => onRefresh?.());
+    } else {
+      onRefresh?.();
+    }
+  } catch (error) {
+    console.error("Menu item failed:", error);
+    onRefresh?.();
+  }
+};
+
 /** Drops leading, trailing and doubled separators. */
 function tidy(items: MenuItemSpec[]): MenuItemSpec[] {
   const result: MenuItemSpec[] = [];
@@ -26,7 +43,7 @@ function tidy(items: MenuItemSpec[]): MenuItemSpec[] {
 }
 
 /** Renders declarative menu items (a plugin's right-click items) in a dropdown or context menu. */
-export function MenuItems({ items }: { items: MenuItemSpec[] }) {
+export function MenuItems({ items, onRefresh }: { items: MenuItemSpec[]; onRefresh?: () => void }) {
   // A highlighted item that unmounts with the menu gets no blur: end its highlight here.
   const highlighted = useRef<((on: boolean) => void) | null>(null);
   useEffect(() => () => highlighted.current?.(false), []);
@@ -48,7 +65,7 @@ export function MenuItems({ items }: { items: MenuItemSpec[] }) {
             <MenuSub key={index}>
               <MenuSubTrigger>{item.label}</MenuSubTrigger>
               <MenuSubContent>
-                <MenuItems items={item.items} />
+                <MenuItems items={item.items} onRefresh={onRefresh} />
               </MenuSubContent>
             </MenuSub>
           );
@@ -57,9 +74,18 @@ export function MenuItems({ items }: { items: MenuItemSpec[] }) {
           <MenuItem
             key={index}
             checked={item.checked}
+            checkSide={item.checkSide}
+            toggle={item.keepOpen}
             disabled={item.disabled}
             shortcut={item.shortcut ?? (item.commandId ? shortcutLabel(item.commandId) : undefined)}
-            onSelect={() => later(item.run)}
+            onSelect={(event) => {
+              if (item.keepOpen) {
+                event.preventDefault();
+                runNow(item.run, onRefresh);
+              } else {
+                later(item.run);
+              }
+            }}
             onFocus={item.onHighlight && (() => highlight(item, true))}
             onBlur={item.onHighlight && (() => highlight(item, false))}
           >

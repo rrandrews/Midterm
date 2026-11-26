@@ -163,6 +163,14 @@ Right-click menus:
 - Pane plugins declare their items (`menu(ctx)` returning `MenuItemSpec`s);
   see [plugins.md](plugins.md).
 
+## Tooltips
+
+Always use Midterm's tooltip components (`Tip`, `Help`, `AnchoredTip` in
+`src/components/ui/Tooltip.tsx`) rather than native HTML `title` attributes
+(system tooltips). Use `Tip`'s `disabled` prop (rather than clearing `content`)
+whenever a tooltip needs to be suppressed temporarily on an interactive element
+so its DOM trigger node is never remounted.
+
 ## Content Security Policy
 
 Set in `src-tauri/tauri.conf.json` (`app.security`):

@@ -38,6 +38,7 @@ import {
 import { InlineEdit } from "../ui/InlineEdit";
 import { PaneMenuItems } from "../layout/PaneMenuItems";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "../ui/Menu";
+import { Tip } from "../ui/Tooltip";
 import { MenuItems } from "../../plugins/MenuItems";
 import { usePluginSettings } from "../../plugins/settings";
 import { EntryMenuItems, confirmTrash, copyEntries, copyPaths, explorerMenu, pasteInto } from "./ExplorerMenus";
@@ -311,7 +312,13 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
 
   return (
     <div className="explorer relative flex h-full flex-col">
-      <RootHeader snap={snap} dropping={dropInto === snap.root} onCreate={createIn} onClick={() => model.select(null)} />
+      <RootHeader
+        snap={snap}
+        dropping={dropInto === snap.root}
+        dragging={drag !== null}
+        onCreate={createIn}
+        onClick={() => model.select(null)}
+      />
       {remoteId && disconnected && (
         <DisconnectedBanner
           paneId={paneId}
@@ -359,6 +366,7 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
                     stripe={striped && item.index % 2 === 1}
                     cut={cut.has(id)}
                     dropping={dropInto === id}
+                    dragging={drag !== null}
                     onClick={(event) => onRowClick(event, row)}
                     onPointerDown={(event) => onRowPointerDown(event, id)}
                     onActivate={(newPane) => activate(row, newPane)}
@@ -434,6 +442,8 @@ type RootHeaderProps = {
   snap: ExplorerSnapshot;
   /** Entries dragged over it would drop into the root. */
   dropping: boolean;
+  /** An explorer drag is in progress (suppresses hover tooltips). */
+  dragging: boolean;
   onCreate: (kind: "file" | "dir") => void;
   onClick: () => void;
 };
@@ -441,9 +451,9 @@ type RootHeaderProps = {
 /**
  * The top folder: the root, a little larger than the rows, which sit
  * under it without an indent. New file and new folder buttons show while
- * the explorer has focus.
+ * the explorer is hovered or has focus.
  */
-function RootHeader({ snap, dropping, onCreate, onClick }: RootHeaderProps) {
+function RootHeader({ snap, dropping, dragging, onCreate, onClick }: RootHeaderProps) {
   const icons = useActiveIconSet();
   const remoteId = remoteIdOf(snap.root);
   const remote = useSshConnection(remoteId);
@@ -455,53 +465,68 @@ function RootHeader({ snap, dropping, onCreate, onClick }: RootHeaderProps) {
     remote?.status === "connected" ? "bg-ok" : remote?.status === "connecting" ? "bg-warn" : "bg-err";
   const hostLabel = remote?.label ?? (remoteId ? fallbackHostLabel(remoteId) : null);
   return (
-    // Right padding leaves room for the pane's hover controls.
     <div
-      className={`explorer-root flex h-[30px] flex-none items-center gap-1.5 pt-0.5 pr-14 pl-3 ${dropping ? "is-drop-target" : ""}`}
-      title={full}
+      className={`explorer-root flex h-[30px] flex-none items-center gap-1.5 pt-0.5 pl-3 ${dropping ? "is-drop-target" : ""}`}
       data-drop-dir={snap.root}
       onClick={onClick}
     >
-      <FileIcon set={icons.set} light={icons.light} name={name} path={snap.root} kind="dir" expanded />
-      <span className="min-w-0 truncate text-input font-semibold text-fg-bright">{name}</span>
-      {hostLabel && (
-        <span
-          className="inline-flex max-w-[45%] flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-dim"
-          title={`SSH: ${hostLabel} (${remote?.status ?? "disconnected"})`}
-        >
-          <span className={`size-1.5 flex-none rounded-full ${statusDot}`} aria-hidden="true" />
-          <span className="truncate">{hostLabel}</span>
+      <Tip content={full} side="bottom" disabled={dragging}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <FileIcon set={icons.set} light={icons.light} name={name} path={snap.root} kind="dir" expanded />
+          <span className="min-w-0 truncate text-input font-semibold text-fg-bright">{name}</span>
         </span>
+      </Tip>
+      {hostLabel && (
+        <Tip content={`SSH: ${hostLabel} (${remote?.status ?? "disconnected"})`} side="bottom" disabled={dragging}>
+          <span className="inline-flex max-w-[45%] flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-dim">
+            <span className={`size-1.5 flex-none rounded-full ${statusDot}`} aria-hidden="true" />
+            <span className="truncate">{hostLabel}</span>
+          </span>
+        </Tip>
       )}
-      {snap.pinned && <Pin size={10} strokeWidth={2} className="flex-none text-fg-dim" aria-label="Pinned" />}
-      {snap.link && <Link2 size={11} strokeWidth={2} className="flex-none text-fg-dim" aria-label="Linked to a terminal" />}
+      {snap.pinned && (
+        <Tip content="Pinned to this folder" side="bottom" disabled={dragging}>
+          <span role="img" className="flex flex-none text-fg-dim" aria-label="Pinned">
+            <Pin size={10} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tip>
+      )}
+      {snap.link && (
+        <Tip content="Linked to a terminal" side="bottom" disabled={dragging}>
+          <span role="img" className="flex flex-none text-fg-dim" aria-label="Linked to a terminal">
+            <Link2 size={11} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tip>
+      )}
       <span className="explorer-root-actions ml-auto flex flex-none items-center gap-0.5">
-        <button
-          type="button"
-          aria-label="New file"
-          title="New file"
-          className="explorer-root-button"
-          onPointerDown={keepFocus}
-          onClick={(event) => {
-            event.stopPropagation();
-            onCreate("file");
-          }}
-        >
-          <FilePlus size={13} strokeWidth={1.75} />
-        </button>
-        <button
-          type="button"
-          aria-label="New folder"
-          title="New folder"
-          className="explorer-root-button"
-          onPointerDown={keepFocus}
-          onClick={(event) => {
-            event.stopPropagation();
-            onCreate("dir");
-          }}
-        >
-          <FolderPlus size={13} strokeWidth={1.75} />
-        </button>
+        <Tip content="New file" side="bottom" disabled={dragging}>
+          <button
+            type="button"
+            aria-label="New file"
+            className="explorer-root-button"
+            onPointerDown={keepFocus}
+            onClick={(event) => {
+              event.stopPropagation();
+              onCreate("file");
+            }}
+          >
+            <FilePlus size={13} strokeWidth={1.75} />
+          </button>
+        </Tip>
+        <Tip content="New folder" side="bottom" disabled={dragging}>
+          <button
+            type="button"
+            aria-label="New folder"
+            className="explorer-root-button"
+            onPointerDown={keepFocus}
+            onClick={(event) => {
+              event.stopPropagation();
+              onCreate("dir");
+            }}
+          >
+            <FolderPlus size={13} strokeWidth={1.75} />
+          </button>
+        </Tip>
       </span>
     </div>
   );
@@ -554,17 +579,22 @@ function DisconnectedBanner({
           <RefreshCw size={10} className={busy ? "animate-spin" : undefined} />
           {busy ? "Reconnecting…" : "Reconnect"}
         </button>
-        <button
-          type="button"
-          title={canReplaySsh ? "Open SSH terminal" : "Open local terminal to reconnect"}
-          onClick={() => openTerminalAt(canReplaySsh ? root : undefined, paneId)}
-          className="inline-flex flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-dim hover:text-fg-bright"
-        >
-          <Terminal size={10} />
-          Terminal
-        </button>
+        <Tip content={canReplaySsh ? "Open SSH terminal" : "Open local terminal to reconnect"} side="bottom">
+          <button
+            type="button"
+            onClick={() => openTerminalAt(canReplaySsh ? root : undefined, paneId)}
+            className="inline-flex flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-dim hover:text-fg-bright"
+          >
+            <Terminal size={10} />
+            Terminal
+          </button>
+        </Tip>
       </div>
-      {error && <div className="truncate text-micro text-err" title={error}>{error}</div>}
+      {error && (
+        <Tip content={error} side="bottom">
+          <div className="truncate text-micro text-err">{error}</div>
+        </Tip>
+      )}
     </div>
   );
 }
@@ -593,6 +623,8 @@ type TreeRowProps = {
   cut: boolean;
   /** Dragged entries would drop into this folder. */
   dropping: boolean;
+  /** An explorer drag is in progress (suppresses hover tooltips). */
+  dragging: boolean;
   onClick: (event: MouseEvent) => void;
   onPointerDown: (event: PointerEvent) => void;
   onActivate: (newPane: boolean) => void;
@@ -601,7 +633,7 @@ type TreeRowProps = {
 /** Width the icon and its gap take, when the set draws icons. */
 const ICON_SPACE = 16 + 6;
 
-function TreeRow({ paneId, model, snap, row, icons, top, stripe, cut, dropping, onClick, onPointerDown, onActivate }: TreeRowProps) {
+function TreeRow({ paneId, model, snap, row, icons, top, stripe, cut, dropping, dragging, onClick, onPointerDown, onActivate }: TreeRowProps) {
   const indent = PAD_LEFT + row.depth * INDENT;
   const style = { top, height: ROW_HEIGHT, paddingLeft: indent };
   const base = `absolute inset-x-0 flex items-center gap-1.5 pr-3 whitespace-nowrap ${stripe ? "is-stripe" : ""}`;
@@ -651,9 +683,9 @@ function TreeRow({ paneId, model, snap, row, icons, top, stripe, cut, dropping, 
       aria-level={row.depth + 1}
       aria-expanded={entry.kind === "dir" ? expanded : undefined}
       aria-selected={selected}
+      aria-description={entry.symlink ? "symbolic link" : undefined}
       data-path={entry.path}
       data-drop-dir={entry.kind === "dir" ? entry.path : parentPath(entry.path)}
-      title={entry.symlink ? `${entry.name} (symbolic link)` : undefined}
       className={`${base} explorer-row cursor-default text-ui ${
         selected ? "is-selected text-fg-bright" : dim ? "text-fg-faint" : "text-fg-mid"
       } ${cursor ? "is-cursor" : ""} ${dim ? "is-dim" : ""} ${cut ? "is-cut" : ""} ${dropping ? "is-drop-target" : ""}`}
@@ -689,15 +721,22 @@ function TreeRow({ paneId, model, snap, row, icons, top, stripe, cut, dropping, 
           onDone={finishEditing}
         />
       ) : (
-        <span className={`min-w-0 truncate ${entry.symlink ? "italic" : ""}`}>{entry.name}</span>
+        <Tip content={entry.symlink ? `${entry.name} (symbolic link)` : undefined} side="right" disabled={dragging}>
+          <span className={`min-w-0 truncate ${entry.symlink ? "italic" : ""}`}>{entry.name}</span>
+        </Tip>
       )}
       {badge && !renaming && (
-        <span
-          className={`ml-auto flex-none text-meta ${BADGE_COLOR[badge]} ${entry.kind === "dir" ? "opacity-70" : ""}`}
-          title={entry.kind === "dir" ? `Contains ${BADGE_TITLE[badge].toLowerCase()} files` : BADGE_TITLE[badge]}
+        <Tip
+          content={entry.kind === "dir" ? `Contains ${BADGE_TITLE[badge].toLowerCase()} files` : BADGE_TITLE[badge]}
+          side="left"
+          disabled={dragging}
         >
-          {entry.kind === "dir" ? "•" : badge}
-        </span>
+          <span
+            className={`ml-auto flex-none text-meta ${BADGE_COLOR[badge]} ${entry.kind === "dir" ? "opacity-70" : ""}`}
+          >
+            {entry.kind === "dir" ? "•" : badge}
+          </span>
+        </Tip>
       )}
     </div>
   );

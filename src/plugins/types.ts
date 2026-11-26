@@ -68,8 +68,12 @@ export type MenuItemSpec =
       shortcut?: string;
       /** A command whose binding is shown as the shortcut. */
       commandId?: string;
-      /** Shows a check mark (reserving its space when `false`). */
+      /** Shows a check mark (reserving its space on the left when `false`). */
       checked?: boolean;
+      /** Which side the check mark is placed on when `checked` is set (default `"left"`). */
+      checkSide?: "left" | "right";
+      /** Keep the menu open after selecting this item (e.g. a toggle). */
+      keepOpen?: boolean;
       disabled?: boolean;
       run: () => unknown;
       /**

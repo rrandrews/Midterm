@@ -254,8 +254,10 @@ There is no path header: the root is the top folder, a fixed row above
 the tree (`~` for home, `/`, else its name; full path in its tooltip),
 in a slightly larger, bold font. Its entries sit at depth 0 under it,
 not indented. A pin or link icon follows the name. While the explorer
-has focus, New file and New folder buttons show at its right (left of
-the pane's hover controls); they create in `targetDir()`: the cursor if
+is hovered or has focus, right-aligned New file and New folder buttons
+show at its right (flush right when in a subtab frame, or immediately
+left of the pane's floating hover controls otherwise) with `Tip`
+tooltips; they create in `targetDir()`: the cursor if
 it is a folder, else the cursor's folder, else the root. A click on the
 top folder clears the selection; right-click gives the explorer menu;
 it is a drop target for the root.
@@ -275,7 +277,9 @@ and right-click menu):
   "Go to parent folder" also pin.
 
 **Show hidden files** (… menu and right-click menu) is per explorer
-(saved as `showHidden`); new explorers start without. Neither option is
+(saved as `showHidden`); new explorers start without. Its check mark sits
+on the right side and toggling it keeps the menu open so the tree updates
+live underneath. Neither option is
 in Settings any more; Settings → Explorer has **Striped rows**, which
 shades every other row (`.is-stripe`).
 

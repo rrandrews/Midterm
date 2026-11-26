@@ -70,11 +70,25 @@
 }
 
 /* The top folder (the root), above the rows. */
-.explorer-root-actions {
-  visibility: hidden;
+.explorer-root {
+  padding-right: 10px;
 }
+/* Leave just enough room for floating pane hover controls when there is no subtab strip. */
+.pane-frame:not(.has-subtabs) .explorer-root {
+  padding-right: 48px;
+}
+.pane-frame:not(.has-subtabs):has(.pane-header [data-disabled]) .explorer-root {
+  padding-right: 28px;
+}
+.explorer-root-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms;
+}
+.explorer:hover .explorer-root-actions,
 .explorer:focus-within .explorer-root-actions {
-  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
 }
 .explorer-root-button {
   display: flex;

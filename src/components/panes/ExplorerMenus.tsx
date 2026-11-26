@@ -207,7 +207,13 @@ function linkMenu(model: ExplorerModel): MenuItemSpec {
 
 function showHiddenItem(model: ExplorerModel): MenuItemSpec {
   const { showHidden } = model.snapshot();
-  return { label: "Show hidden files", checked: showHidden, run: () => model.setShowHidden(!showHidden) };
+  return {
+    label: "Show hidden files",
+    checked: showHidden,
+    checkSide: "right",
+    keepOpen: true,
+    run: () => model.setShowHidden(!model.snapshot().showHidden),
+  };
 }
 
 /** The plugin's part of the pane's … menu. */
