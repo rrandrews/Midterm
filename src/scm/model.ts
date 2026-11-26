@@ -17,6 +17,7 @@ import { homeDirectory } from "../ipc/system";
 import { pluginSettings } from "../plugins/settings";
 import { refreshTabTitles } from "../plugins/tabTitles";
 import { getConnection, hostLabelForLocation, subscribeConnections } from "../ssh/connections";
+import { DEFAULT_SCM_WEIGHTS, type ScmPaneKey, type ScmPaneWeights } from "./layout";
 
 /*
  * Per-pane Source Control model (outside React, keyed by pane id in
@@ -58,6 +59,7 @@ export type ScmSnapshot = {
   stashFiles: Readonly<Record<string, ScmCommitFile[]>>;
   collapsedSections: ReadonlySet<string>;
   collapsedDirs: ReadonlySet<string>;
+  sectionWeights: ScmPaneWeights;
 };
 
 const WATCH_DEBOUNCE_MS = 280;
@@ -150,6 +152,7 @@ export class ScmModel {
   private stashFiles: Record<string, ScmCommitFile[]> = {};
   private collapsedSections = new Set<string>();
   private collapsedDirs = new Set<string>();
+  private sectionWeights: ScmPaneWeights = { ...DEFAULT_SCM_WEIGHTS };
 
   private listeners = new Set<() => void>();
   private snap: ScmSnapshot;
@@ -233,6 +236,7 @@ export class ScmModel {
       stashFiles: this.stashFiles,
       collapsedSections: new Set(this.collapsedSections),
       collapsedDirs: new Set(this.collapsedDirs),
+      sectionWeights: { ...this.sectionWeights },
     };
   }
 
@@ -532,6 +536,17 @@ export class ScmModel {
   toggleSection(id: string): void {
     if (this.collapsedSections.has(id)) this.collapsedSections.delete(id);
     else this.collapsedSections.add(id);
+    this.emit();
+  }
+
+  /** Applies an interactive sash resize across the Changes / Graph / Stashes accordion. */
+  setSectionLayout(collapsedPanes: ReadonlySet<string>, weights: ScmPaneWeights): void {
+    const keys: readonly ScmPaneKey[] = ["changes", "graph", "stashes"];
+    for (const key of keys) {
+      if (collapsedPanes.has(key)) this.collapsedSections.add(key);
+      else this.collapsedSections.delete(key);
+    }
+    this.sectionWeights = { ...weights };
     this.emit();
   }
 

@@ -12,11 +12,13 @@ type Props = {
   paneId: string;
   model: ScmModel;
   snap: ScmSnapshot;
+  collapsed: boolean;
+  bodyHeight: number;
+  onToggleCollapse: () => void;
 };
 
-export function StashList({ paneId, model, snap }: Props) {
+export function StashList({ paneId, model, snap, collapsed, bodyHeight, onToggleCollapse }: Props) {
   const icons = useActiveIconSet();
-  const collapsed = snap.collapsedSections.has("stashes");
   const [composing, setComposing] = useState(false);
   const [message, setMessage] = useState("");
   const [includeUntracked, setIncludeUntracked] = useState(false);
@@ -70,11 +72,15 @@ export function StashList({ paneId, model, snap }: Props) {
   };
 
   return (
-    <section className="scm-section border-t border-line">
-      <div className="scm-section-header group flex h-7 items-center pr-1.5 pl-2 hover:bg-hover">
+    <section
+      data-scm-section="stashes"
+      className="scm-section flex min-h-0 flex-none flex-col overflow-hidden"
+    >
+      <div className="scm-section-header group flex h-7 flex-none items-center pr-1.5 pl-2 hover:bg-hover">
         <button
           type="button"
-          onClick={() => model.toggleSection("stashes")}
+          onClick={onToggleCollapse}
+          aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-micro font-semibold tracking-wide text-fg-muted uppercase hover:text-fg-bright"
         >
           {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
@@ -92,7 +98,7 @@ export function StashList({ paneId, model, snap }: Props) {
             aria-label="Stash changes"
             disabled={!canStash || Boolean(snap.busyAction)}
             onClick={() => {
-              if (collapsed) model.toggleSection("stashes");
+              if (collapsed) onToggleCollapse();
               setComposing((v) => !v);
             }}
             className="flex rounded p-1 text-fg-dim hover:bg-raised hover:text-fg-bright disabled:opacity-35"
@@ -103,7 +109,7 @@ export function StashList({ paneId, model, snap }: Props) {
       </div>
 
       {!collapsed && (
-        <div className="pb-1">
+        <div style={{ height: bodyHeight }} className="scm-section-body min-h-0 flex-none overflow-y-auto pb-1">
           {composing && (
             <div className="mx-2 mb-1.5 flex flex-col gap-1.5 rounded-[6px] border border-line-strong bg-field p-2">
               <input

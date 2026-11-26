@@ -233,3 +233,20 @@ export function formatRelativeTime(unixSeconds: number, nowSeconds = Math.floor(
   const years = Math.floor(days / 365);
   return `${years}y ago`;
 }
+
+/** Compact relative age without "ago" for dense rows like the commit graph title line. */
+export function formatCompactRelativeTime(unixSeconds: number, nowSeconds = Math.floor(Date.now() / 1000)): string {
+  if (!unixSeconds || unixSeconds <= 0) return "";
+  const delta = Math.max(0, nowSeconds - unixSeconds);
+  if (delta < 60) return "now";
+  const mins = Math.floor(delta / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo`;
+  const years = Math.floor(days / 365);
+  return `${years}y`;
+}

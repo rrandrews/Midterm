@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ScmDiff, ScmFileChange } from "../ipc/scm";
-import { buildChangeTree, buildHunkPatch, flattenChangeTree, formatRelativeTime, splitRelPath } from "./tree";
+import {
+  buildChangeTree,
+  buildHunkPatch,
+  flattenChangeTree,
+  formatCompactRelativeTime,
+  formatRelativeTime,
+  splitRelPath,
+} from "./tree";
 
 describe("scm/tree", () => {
   it("splits relative paths into filename and directory", () => {
@@ -97,5 +104,10 @@ describe("scm/tree", () => {
     expect(formatRelativeTime(now - 180, now)).toBe("3m ago");
     expect(formatRelativeTime(now - 7200, now)).toBe("2h ago");
     expect(formatRelativeTime(now - 86400 * 5, now)).toBe("5d ago");
+
+    expect(formatCompactRelativeTime(now - 10, now)).toBe("now");
+    expect(formatCompactRelativeTime(now - 180, now)).toBe("3m");
+    expect(formatCompactRelativeTime(now - 7200, now)).toBe("2h");
+    expect(formatCompactRelativeTime(now - 86400 * 5, now)).toBe("5d");
   });
 });

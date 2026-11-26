@@ -23,7 +23,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { openFile } from "../actions";
 import { registerPaneActions } from "../commands/registry";
 import {
@@ -51,6 +51,13 @@ import { displayLocation, reconnectConnection, useSshConnection } from "../ssh/c
 import { BranchPicker } from "./BranchPicker";
 import { CommitGraph } from "./CommitGraph";
 import { ScmDiffPane } from "./DiffView";
+import {
+  applyScmSashDrag,
+  availableScmBodyHeight,
+  computeScmPaneHeights,
+  SCM_COLLAPSE_BODY_PX,
+  type ScmPaneHeights,
+} from "./layout";
 import { type ScmModel, type ScmSnapshot } from "./model";
 import { acquireScm, openScmDiff, releaseScm, type SourceControlData } from "./registry";
 import { StashList } from "./StashList";
@@ -90,7 +97,83 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
   const snap = useSyncExternalStore(model.subscribe, model.snapshot);
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const accordionRef = useRef<HTMLDivElement>(null);
+  const [accordionHeight, setAccordionHeight] = useState(0);
+  const [draggingSash, setDraggingSash] = useState<0 | 1 | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+
+  const hasStatus = snap.status !== null;
+  useEffect(() => {
+    const el = accordionRef.current;
+    if (!el) return;
+    const measure = () => setAccordionHeight(el.clientHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasStatus]);
+
+  const effectiveAccordionHeight = accordionHeight > 0 ? accordionHeight : 420;
+  const paneHeights: ScmPaneHeights = useMemo(
+    () => computeScmPaneHeights(effectiveAccordionHeight, snap.collapsedSections, snap.sectionWeights),
+    [effectiveAccordionHeight, snap.collapsedSections, snap.sectionWeights],
+  );
+
+  const startSashDrag = (sashIndex: 0 | 1, event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const target = event.currentTarget;
+    target.setPointerCapture?.(event.pointerId);
+    const startY = event.clientY;
+    const containerHeight = accordionRef.current?.clientHeight || effectiveAccordionHeight;
+    const startCollapsed = new Set(model.snapshot().collapsedSections);
+    const startWeights = { ...model.snapshot().sectionWeights };
+    const startHeights = computeScmPaneHeights(containerHeight, startCollapsed, startWeights);
+    setDraggingSash(sashIndex);
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const result = applyScmSashDrag({
+        sashIndex,
+        deltaY: moveEvent.clientY - startY,
+        containerHeight,
+        startHeights,
+        startCollapsed,
+        startWeights,
+      });
+      model.setSectionLayout(result.collapsed, result.weights);
+    };
+    const onEnd = () => {
+      setDraggingSash(null);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+  };
+
+  const nudgeSash = (sashIndex: 0 | 1, direction: -1 | 1) => {
+    const containerHeight = accordionRef.current?.clientHeight || effectiveAccordionHeight;
+    const startCollapsed = new Set(model.snapshot().collapsedSections);
+    const startWeights = { ...model.snapshot().sectionWeights };
+    const startHeights = computeScmPaneHeights(containerHeight, startCollapsed, startWeights);
+    const aboveKey = sashIndex === 0 ? "changes" : "graph";
+    const belowKey = sashIndex === 0 ? "graph" : "stashes";
+    const openingCollapsed =
+      (direction > 0 && startCollapsed.has(aboveKey)) || (direction < 0 && startCollapsed.has(belowKey));
+    const step = openingCollapsed ? SCM_COLLAPSE_BODY_PX + 16 : 24;
+    const result = applyScmSashDrag({
+      sashIndex,
+      deltaY: direction * step,
+      containerHeight,
+      startHeights,
+      startCollapsed,
+      startWeights,
+    });
+    model.setSectionLayout(result.collapsed, result.weights);
+  };
 
   const root = snap.status?.root ?? snap.root;
   const remoteId = remoteIdOf(root);
@@ -404,13 +487,13 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
           </div>
         )
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* Commit box */}
-          <div className="flex flex-col gap-1.5 p-2">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {/* Commit box (fixed above the resizable Changes / Graph / Stashes accordion) */}
+          <div className="flex flex-none flex-col gap-1.5 border-b border-line p-2">
             <div className="relative">
               <textarea
                 ref={textareaRef}
-                rows={3}
+                rows={2}
                 value={snap.commitMessage}
                 onChange={(e) => model.setCommitMessage(e.target.value)}
                 onKeyDown={(e) => {
@@ -437,7 +520,16 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
             </div>
 
             <div className="flex items-center justify-between gap-1.5">
-              <div className="flex items-center gap-1">
+              {snap.busyAction ? (
+                <span className="flex min-w-0 items-center gap-1 truncate text-micro text-fg-dim">
+                  <Loader2 size={10} className="flex-none animate-spin" />
+                  <span className="truncate">{snap.busyAction}</span>
+                </span>
+              ) : (
+                <span className="flex-1" />
+              )}
+
+              <div className="ml-auto flex flex-none items-center gap-1">
                 <Tip content="Amend the previous commit instead of creating a new one" side="bottom">
                   <button
                     type="button"
@@ -467,13 +559,6 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
                   </button>
                 </Tip>
               </div>
-
-              {snap.busyAction && (
-                <span className="flex min-w-0 items-center gap-1 truncate text-micro text-fg-dim">
-                  <Loader2 size={10} className="flex-none animate-spin" />
-                  <span className="truncate">{snap.busyAction}</span>
-                </span>
-              )}
             </div>
 
             {/* Split primary Commit / Sync / Publish button */}
@@ -551,54 +636,84 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
             </div>
           </div>
 
-          {/* Merge Conflicts section */}
-          {status.conflicted.length > 0 && (
-            <ChangeSection
-              id="conflicts"
-              title="Merge Conflicts"
-              changes={status.conflicted}
-              kind="conflicts"
+          {/* Resizable vertical accordion: Changes, Graph, Stashes */}
+          <div ref={accordionRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <ChangesPane
               root={status.root}
+              conflicted={status.conflicted}
+              staged={status.staged}
+              unstaged={allUnstagedChanges}
               model={model}
               snap={snap}
-              onOpenDiff={(c) => openChangeFile(c)}
+              collapsed={snap.collapsedSections.has("changes")}
+              bodyHeight={paneHeights.changes}
+              onToggleCollapse={() => model.toggleSection("changes")}
+              onOpenDiff={openChangeDiff}
               onOpenFile={openChangeFile}
             />
-          )}
 
-          {/* Staged Changes section */}
-          {status.staged.length > 0 && (
-            <ChangeSection
-              id="staged"
-              title="Staged Changes"
-              changes={status.staged}
-              kind="staged"
-              root={status.root}
+            <div
+              role="separator"
+              tabIndex={0}
+              aria-orientation="horizontal"
+              aria-label="Resize Changes and Graph"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(availableScmBodyHeight(effectiveAccordionHeight))}
+              aria-valuenow={Math.round(paneHeights.changes)}
+              data-dragging={draggingSash === 0 ? "true" : undefined}
+              onPointerDown={(e) => startSashDrag(0, e)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  nudgeSash(0, -1);
+                } else if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  nudgeSash(0, 1);
+                }
+              }}
+              className="scm-sash"
+            />
+
+            <CommitGraph
+              paneId={paneId}
               model={model}
               snap={snap}
-              onOpenDiff={(c, np) => openChangeDiff(c, "staged", np)}
-              onOpenFile={openChangeFile}
+              collapsed={snap.collapsedSections.has("graph")}
+              bodyHeight={paneHeights.graph}
+              onToggleCollapse={() => model.toggleSection("graph")}
             />
-          )}
 
-          {/* Unstaged + Untracked Changes section */}
-          <ChangeSection
-            id="changes"
-            title="Changes"
-            changes={allUnstagedChanges}
-            kind="changes"
-            root={status.root}
-            model={model}
-            snap={snap}
-            onOpenDiff={(c, np) => openChangeDiff(c, c.status === "U" ? "untracked" : "unstaged", np)}
-            onOpenFile={openChangeFile}
-          />
+            <div
+              role="separator"
+              tabIndex={0}
+              aria-orientation="horizontal"
+              aria-label="Resize Graph and Stashes"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(availableScmBodyHeight(effectiveAccordionHeight))}
+              aria-valuenow={Math.round(paneHeights.graph)}
+              data-dragging={draggingSash === 1 ? "true" : undefined}
+              onPointerDown={(e) => startSashDrag(1, e)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  nudgeSash(1, -1);
+                } else if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  nudgeSash(1, 1);
+                }
+              }}
+              className="scm-sash"
+            />
 
-          {/* Commit Graph */}
-          <CommitGraph paneId={paneId} model={model} snap={snap} />
-
-          {/* Stashes */}
-          <StashList paneId={paneId} model={model} snap={snap} />
+            <StashList
+              paneId={paneId}
+              model={model}
+              snap={snap}
+              collapsed={snap.collapsedSections.has("stashes")}
+              bodyHeight={paneHeights.stashes}
+              onToggleCollapse={() => model.toggleSection("stashes")}
+            />
+          </div>
         </div>
       )}
 
@@ -675,6 +790,169 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
 
 type SectionKind = "conflicts" | "staged" | "changes";
 
+/**
+ * Top-level resizable Changes accordion pane. When only unstaged/untracked
+ * changes exist, renders rows directly under its header; when conflicts or
+ * staged changes are present, renders collapsible sub-groups inside its
+ * scrollable body.
+ */
+function ChangesPane({
+  root,
+  conflicted,
+  staged,
+  unstaged,
+  model,
+  snap,
+  collapsed,
+  bodyHeight,
+  onToggleCollapse,
+  onOpenDiff,
+  onOpenFile,
+}: {
+  root: string;
+  conflicted: ScmFileChange[];
+  staged: ScmFileChange[];
+  unstaged: ScmFileChange[];
+  model: ScmModel;
+  snap: ScmSnapshot;
+  collapsed: boolean;
+  bodyHeight: number;
+  onToggleCollapse: () => void;
+  onOpenDiff: (change: ScmFileChange, mode: ScmDiffMode, newPane?: boolean) => void;
+  onOpenFile: (change: ScmFileChange) => void;
+}) {
+  const busy = Boolean(snap.busyAction);
+  const totalCount = conflicted.length + staged.length + unstaged.length;
+  const hasMultipleGroups = conflicted.length > 0 || staged.length > 0;
+
+  return (
+    <section
+      data-scm-section="changes"
+      className="scm-section flex min-h-0 flex-none flex-col overflow-hidden"
+    >
+      <div className="scm-section-header group flex h-7 flex-none items-center pr-1.5 pl-2 hover:bg-hover">
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          aria-expanded={!collapsed}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-micro font-semibold tracking-wide text-fg-muted uppercase hover:text-fg-bright"
+        >
+          {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+          <span className="truncate">Changes</span>
+          <span className="rounded-full bg-raised px-1.5 py-px font-mono text-[10px] font-normal text-fg-dim">
+            {totalCount}
+          </span>
+        </button>
+
+        {totalCount > 0 && (
+          <div className="flex flex-none items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            {unstaged.length > 0 && (
+              <>
+                <Tip content="Discard all changes" side="top">
+                  <button
+                    type="button"
+                    aria-label="Discard all changes"
+                    disabled={busy}
+                    onClick={() => void model.discardAll()}
+                    className="scm-row-btn hover:text-err!"
+                  >
+                    <RotateCcw size={12} />
+                  </button>
+                </Tip>
+                <Tip content={conflicted.length > 0 ? "Stage unstaged changes" : "Stage all changes"} side="top">
+                  <button
+                    type="button"
+                    aria-label="Stage all changes"
+                    disabled={busy}
+                    onClick={() =>
+                      void (conflicted.length > 0 ? model.stage(unstaged.map((c) => c.path)) : model.stageAll())
+                    }
+                    className="scm-row-btn hover:text-ok!"
+                  >
+                    <Plus size={12} />
+                  </button>
+                </Tip>
+              </>
+            )}
+            {unstaged.length === 0 && staged.length > 0 && (
+              <Tip content="Unstage all changes" side="top">
+                <button
+                  type="button"
+                  aria-label="Unstage all changes"
+                  disabled={busy}
+                  onClick={() => void model.unstageAll()}
+                  className="scm-row-btn hover:text-warn!"
+                >
+                  <Minus size={12} />
+                </button>
+              </Tip>
+            )}
+          </div>
+        )}
+      </div>
+
+      {!collapsed && (
+        <div style={{ height: bodyHeight }} className="scm-section-body min-h-0 flex-none overflow-y-auto pb-1">
+          {!hasMultipleGroups ? (
+            <ChangeSection
+              id="sub:changes"
+              title="Changes"
+              changes={unstaged}
+              kind="changes"
+              root={root}
+              model={model}
+              snap={snap}
+              hideHeader
+              onOpenDiff={(c, np) => onOpenDiff(c, c.status === "U" ? "untracked" : "unstaged", np)}
+              onOpenFile={onOpenFile}
+            />
+          ) : (
+            <>
+              {conflicted.length > 0 && (
+                <ChangeSection
+                  id="sub:conflicts"
+                  title="Merge Conflicts"
+                  changes={conflicted}
+                  kind="conflicts"
+                  root={root}
+                  model={model}
+                  snap={snap}
+                  onOpenDiff={(c) => onOpenFile(c)}
+                  onOpenFile={onOpenFile}
+                />
+              )}
+              {staged.length > 0 && (
+                <ChangeSection
+                  id="sub:staged"
+                  title="Staged Changes"
+                  changes={staged}
+                  kind="staged"
+                  root={root}
+                  model={model}
+                  snap={snap}
+                  onOpenDiff={(c, np) => onOpenDiff(c, "staged", np)}
+                  onOpenFile={onOpenFile}
+                />
+              )}
+              <ChangeSection
+                id="sub:unstaged"
+                title="Unstaged Changes"
+                changes={unstaged}
+                kind="changes"
+                root={root}
+                model={model}
+                snap={snap}
+                onOpenDiff={(c, np) => onOpenDiff(c, c.status === "U" ? "untracked" : "unstaged", np)}
+                onOpenFile={onOpenFile}
+              />
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ChangeSection({
   id,
   title,
@@ -683,6 +961,7 @@ function ChangeSection({
   root,
   model,
   snap,
+  hideHeader = false,
   onOpenDiff,
   onOpenFile,
 }: {
@@ -693,11 +972,12 @@ function ChangeSection({
   root: string;
   model: ScmModel;
   snap: ScmSnapshot;
+  hideHeader?: boolean;
   onOpenDiff: (change: ScmFileChange, newPane?: boolean) => void;
   onOpenFile: (change: ScmFileChange) => void;
 }) {
   const icons = useActiveIconSet();
-  const collapsed = snap.collapsedSections.has(id);
+  const collapsed = !hideHeader && snap.collapsedSections.has(id);
   const busy = Boolean(snap.busyAction);
   const remote = isRemotePath(root);
 
@@ -934,73 +1214,77 @@ function ChangeSection({
   };
 
   return (
-    <section className="scm-section border-t border-line">
-      <div className="scm-section-header group flex h-7 items-center pr-1.5 pl-2 hover:bg-hover">
-        <button
-          type="button"
-          onClick={() => model.toggleSection(id)}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-micro font-semibold tracking-wide text-fg-muted uppercase hover:text-fg-bright"
-        >
-          {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-          <span className={`truncate ${kind === "conflicts" ? "text-err" : ""}`}>{title}</span>
-          <span
-            className={`rounded-full px-1.5 py-px font-mono text-[10px] font-normal ${
-              kind === "conflicts" ? "bg-err/15 text-err" : "bg-raised text-fg-dim"
-            }`}
+    <div className={hideHeader ? "" : "border-b border-line/60 last:border-b-0"}>
+      {!hideHeader && (
+        <div className="scm-subsection-header group flex h-6 items-center pr-1.5 pl-3 hover:bg-hover">
+          <button
+            type="button"
+            onClick={() => model.toggleSection(id)}
+            className="flex min-w-0 flex-1 items-center gap-1 text-left text-[10px] font-semibold tracking-wide text-fg-dim uppercase hover:text-fg-bright"
           >
-            {changes.length}
-          </span>
-        </button>
+            {collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+            <span className={`truncate ${kind === "conflicts" ? "text-err" : ""}`}>{title}</span>
+            <span
+              className={`rounded-full px-1.5 py-px font-mono text-[9.5px] font-normal ${
+                kind === "conflicts" ? "bg-err/15 text-err" : "bg-raised text-fg-dim"
+              }`}
+            >
+              {changes.length}
+            </span>
+          </button>
 
-        {changes.length > 0 && (
-          <div className="flex flex-none items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            {kind === "changes" && (
-              <>
-                <Tip content="Discard all changes" side="top">
+          {changes.length > 0 && (
+            <div className="flex flex-none items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+              {kind === "changes" && (
+                <>
+                  <Tip content="Discard all unstaged changes" side="top">
+                    <button
+                      type="button"
+                      aria-label="Discard all unstaged changes"
+                      disabled={busy}
+                      onClick={() => discardSubset(changes)}
+                      className="scm-row-btn hover:text-err!"
+                    >
+                      <RotateCcw size={11} />
+                    </button>
+                  </Tip>
+                  <Tip content="Stage all unstaged changes" side="top">
+                    <button
+                      type="button"
+                      aria-label="Stage all unstaged changes"
+                      disabled={busy}
+                      onClick={() => void model.stage(changes.map((c) => c.path))}
+                      className="scm-row-btn hover:text-ok!"
+                    >
+                      <Plus size={11} />
+                    </button>
+                  </Tip>
+                </>
+              )}
+              {kind === "staged" && (
+                <Tip content="Unstage all changes" side="top">
                   <button
                     type="button"
-                    aria-label="Discard all changes"
+                    aria-label="Unstage all changes"
                     disabled={busy}
-                    onClick={() => discardSubset(changes)}
-                    className="scm-row-btn hover:text-err!"
+                    onClick={() => void model.unstageAll()}
+                    className="scm-row-btn hover:text-warn!"
                   >
-                    <RotateCcw size={12} />
+                    <Minus size={11} />
                   </button>
                 </Tip>
-                <Tip content="Stage all changes" side="top">
-                  <button
-                    type="button"
-                    aria-label="Stage all changes"
-                    disabled={busy}
-                    onClick={() => void model.stageAll()}
-                    className="scm-row-btn hover:text-ok!"
-                  >
-                    <Plus size={12} />
-                  </button>
-                </Tip>
-              </>
-            )}
-            {kind === "staged" && (
-              <Tip content="Unstage all changes" side="top">
-                <button
-                  type="button"
-                  aria-label="Unstage all changes"
-                  disabled={busy}
-                  onClick={() => void model.unstageAll()}
-                  className="scm-row-btn hover:text-warn!"
-                >
-                  <Minus size={12} />
-                </button>
-              </Tip>
-            )}
-          </div>
-        )}
-      </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {!collapsed && (
-        <div className="pb-1">
+        <div className={hideHeader ? "" : "pb-0.5"}>
           {changes.length === 0 ? (
-            <div className="px-3 py-2 text-meta text-fg-faint">Working tree clean</div>
+            <div className="px-3 py-2 text-meta text-fg-faint">
+              {kind === "changes" && !hideHeader ? "No unstaged changes" : "Working tree clean"}
+            </div>
           ) : snap.viewMode === "list" ? (
             sortedFlat.map((change) => renderFileRow(change, 0, true))
           ) : (
@@ -1084,6 +1368,6 @@ function ChangeSection({
           )}
         </div>
       )}
-    </section>
+    </div>
   );
 }

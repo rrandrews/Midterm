@@ -8,7 +8,13 @@ import type { ScmCommit, ScmCommitFile, ScmRef } from "../ipc/scm";
 import { computeGraphLayout, GRAPH_LANE_COLORS, type GraphRowLayout } from "./graph";
 import type { ScmModel, ScmSnapshot } from "./model";
 import { openScmDiff } from "./registry";
-import { formatRelativeTime, SCM_BADGE_CLASS, SCM_BADGE_LABEL, splitRelPath } from "./tree";
+import {
+  formatCompactRelativeTime,
+  formatRelativeTime,
+  SCM_BADGE_CLASS,
+  SCM_BADGE_LABEL,
+  splitRelPath,
+} from "./tree";
 
 const LANE_WIDTH = 12;
 const MAX_VISIBLE_LANES = 8;
@@ -19,9 +25,13 @@ function laneX(lane: number): number {
   return 8 + Math.min(lane, MAX_VISIBLE_LANES - 1) * LANE_WIDTH;
 }
 
-function GraphCell({ row, maxLanes }: { row: GraphRowLayout; maxLanes: number }) {
+function graphColumnWidth(maxLanes: number): number {
   const cols = Math.max(1, Math.min(maxLanes, MAX_VISIBLE_LANES));
-  const width = Math.max(18, 14 + (cols - 1) * LANE_WIDTH);
+  return Math.max(18, 14 + (cols - 1) * LANE_WIDTH);
+}
+
+function GraphCell({ row, maxLanes }: { row: GraphRowLayout; maxLanes: number }) {
+  const width = graphColumnWidth(maxLanes);
   const midY = ROW_HEIGHT / 2;
   const cx = laneX(row.lane);
   const dotColor = GRAPH_LANE_COLORS[row.colorIndex % GRAPH_LANE_COLORS.length];
@@ -87,6 +97,34 @@ function GraphCell({ row, maxLanes }: { row: GraphRowLayout; maxLanes: number })
   );
 }
 
+/**
+ * Continuous vertical rails rendered alongside an expanded commit detail panel
+ * so opening a commit never breaks or obscures active graph lines passing down.
+ */
+function GraphContinuationCell({ row, maxLanes }: { row: GraphRowLayout; maxLanes: number }) {
+  const width = graphColumnWidth(maxLanes);
+  // Deduplicate outgoing rails by their destination lane so each active rail is drawn once.
+  const rails: { lane: number; colorIndex: number }[] = [];
+  const seen = new Set<number>();
+  for (const edge of row.outgoing) {
+    if (seen.has(edge.toLane)) continue;
+    seen.add(edge.toLane);
+    rails.push({ lane: edge.toLane, colorIndex: edge.colorIndex });
+  }
+
+  return (
+    <div style={{ width }} className="scm-graph-continuation relative flex-none self-stretch" aria-hidden="true">
+      <svg className="block h-full w-full overflow-hidden">
+        {rails.map((rail) => {
+          const x = laneX(rail.lane);
+          const stroke = GRAPH_LANE_COLORS[rail.colorIndex % GRAPH_LANE_COLORS.length];
+          return <line key={rail.lane} x1={x} y1="0" x2={x} y2="100%" stroke={stroke} strokeWidth={1.6} />;
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function RefPill({ item }: { item: ScmRef }) {
   const cls =
     item.kind === "head"
@@ -110,11 +148,13 @@ type Props = {
   paneId: string;
   model: ScmModel;
   snap: ScmSnapshot;
+  collapsed: boolean;
+  bodyHeight: number;
+  onToggleCollapse: () => void;
 };
 
-export function CommitGraph({ paneId, model, snap }: Props) {
+export function CommitGraph({ paneId, model, snap, collapsed, bodyHeight, onToggleCollapse }: Props) {
   const icons = useActiveIconSet();
-  const collapsed = snap.collapsedSections.has("commits");
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [loadingHash, setLoadingHash] = useState<string | null>(null);
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
@@ -162,11 +202,15 @@ export function CommitGraph({ paneId, model, snap }: Props) {
   };
 
   return (
-    <section className="scm-section border-t border-line">
+    <section
+      data-scm-section="graph"
+      className="scm-section flex min-h-0 flex-none flex-col overflow-hidden"
+    >
       <button
         type="button"
-        onClick={() => model.toggleSection("commits")}
-        className="scm-section-header flex h-7 w-full items-center gap-1.5 px-2 text-left text-micro font-semibold tracking-wide text-fg-muted uppercase hover:bg-hover hover:text-fg-bright"
+        onClick={onToggleCollapse}
+        aria-expanded={!collapsed}
+        className="scm-section-header flex h-7 flex-none w-full items-center gap-1.5 px-2 text-left text-micro font-semibold tracking-wide text-fg-muted uppercase hover:bg-hover hover:text-fg-bright"
       >
         {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
         <span className="min-w-0 flex-1 truncate">Graph</span>
@@ -179,7 +223,7 @@ export function CommitGraph({ paneId, model, snap }: Props) {
       </button>
 
       {!collapsed && (
-        <div className="pb-1">
+        <div style={{ height: bodyHeight }} className="scm-section-body min-h-0 flex-none overflow-y-auto pb-1">
           {snap.commits.length === 0 ? (
             <div className="px-3 py-2 text-meta text-fg-faint">No commits yet</div>
           ) : (
@@ -188,9 +232,12 @@ export function CommitGraph({ paneId, model, snap }: Props) {
               const isExpanded = expandedHash === commit.hash;
               const files = snap.commitFiles[commit.hash];
               const isLoadingFiles = loadingHash === commit.hash && !files;
+              // Omit local branch badges (`head` and `branch`) from the dense title line;
+              // tags and remotes remain visible, and all refs show inside the expanded panel.
+              const titleRefs = commit.refs.filter((r) => r.kind !== "head" && r.kind !== "branch");
 
               return (
-                <div key={commit.hash} className={isExpanded ? "bg-selected/40" : ""}>
+                <div key={commit.hash} className={isExpanded ? "bg-selected/25" : ""}>
                   <Tip
                     content={`${commit.shortHash} · ${commit.subject} — ${commit.author} (${formatRelativeTime(commit.date)})`}
                     side="right"
@@ -203,103 +250,124 @@ export function CommitGraph({ paneId, model, snap }: Props) {
                     >
                       <GraphCell row={row} maxLanes={maxLanes} />
                       <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                        {commit.refs.slice(0, 2).map((refItem) => (
+                        {titleRefs.slice(0, 2).map((refItem) => (
                           <RefPill key={`${refItem.kind}:${refItem.name}`} item={refItem} />
                         ))}
-                        {commit.refs.length > 2 && (
+                        {titleRefs.length > 2 && (
                           <span className="flex-none font-mono text-[9.5px] text-fg-faint">
-                            +{commit.refs.length - 2}
+                            +{titleRefs.length - 2}
                           </span>
                         )}
                         <span className="min-w-0 flex-1 truncate text-menu text-fg-soft">{commit.subject}</span>
-                        <span className="flex-none text-micro text-fg-faint">{formatRelativeTime(commit.date)}</span>
+                        <span className="flex-none text-micro text-fg-faint">
+                          {formatCompactRelativeTime(commit.date)}
+                        </span>
                       </div>
                     </button>
                   </Tip>
 
                   {isExpanded && (
-                    <div className="border-y border-line/70 bg-field/70 px-3 py-2 text-meta">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1 select-text">
-                          <div className="font-medium break-words text-fg-bright">{commit.subject}</div>
-                          {commit.body && (
-                            <pre className="mt-1 font-sans text-micro whitespace-pre-wrap break-words text-fg-mid">
-                              {commit.body}
-                            </pre>
-                          )}
-                          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-fg-dim">
-                            <span>{commit.author}</span>
-                            <span>·</span>
-                            <span className="font-mono text-fg-muted">{commit.shortHash}</span>
-                            <span>·</span>
-                            <span>{formatRelativeTime(commit.date)}</span>
-                          </div>
-                          {commit.refs.length > 0 && (
-                            <div className="mt-1.5 flex flex-wrap gap-1">
-                              {commit.refs.map((refItem) => (
-                                <RefPill key={`full:${refItem.kind}:${refItem.name}`} item={refItem} />
-                              ))}
+                    <div className="scm-commit-details flex items-stretch gap-1.5 pr-2 pl-1">
+                      <GraphContinuationCell row={row} maxLanes={maxLanes} />
+                      <div className="my-1 min-w-0 flex-1 rounded-[6px] border border-line/80 bg-field/85 px-2.5 py-2 text-meta">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1 select-text">
+                            <div className="font-medium break-words text-fg-bright">{commit.subject}</div>
+                            {commit.body && (
+                              <pre className="mt-1 font-sans text-micro whitespace-pre-wrap break-words text-fg-mid">
+                                {commit.body}
+                              </pre>
+                            )}
+                            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-fg-dim">
+                              <span>{commit.author}</span>
+                              <span>·</span>
+                              <span className="font-mono text-fg-muted">{commit.shortHash}</span>
+                              <span>·</span>
+                              <span>{formatRelativeTime(commit.date)}</span>
                             </div>
+                            {commit.refs.length > 0 && (
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                {commit.refs.map((refItem) => (
+                                  <RefPill key={`full:${refItem.kind}:${refItem.name}`} item={refItem} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <Tip content={copiedHash === commit.hash ? "Copied SHA" : "Copy commit SHA"} side="left">
+                            <button
+                              type="button"
+                              aria-label="Copy commit SHA"
+                              onClick={() => copySha(commit.hash)}
+                              className="flex flex-none rounded p-1 text-fg-dim hover:bg-hover hover:text-fg-bright"
+                            >
+                              {copiedHash === commit.hash ? (
+                                <Check size={12} className="text-ok" />
+                              ) : (
+                                <Copy size={12} />
+                              )}
+                            </button>
+                          </Tip>
+                        </div>
+
+                        <div className="mt-2 border-t border-line/70 pt-1.5">
+                          {isLoadingFiles ? (
+                            <div className="flex items-center gap-1.5 py-1 text-micro text-fg-faint">
+                              <Loader2 size={11} className="animate-spin" />
+                              <span>Loading changed files…</span>
+                            </div>
+                          ) : files && files.length > 0 ? (
+                            <div className="flex flex-col">
+                              {files.map((file) => {
+                                const { name, dir } = splitRelPath(file.path);
+                                return (
+                                  <Tip
+                                    key={file.path}
+                                    content={file.origPath ? `${file.origPath} → ${file.path}` : file.path}
+                                    side="right"
+                                    delay={450}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => openFileDiff(commit, file)}
+                                      className="flex h-6 w-full items-center gap-1.5 rounded px-1 text-left hover:bg-hover"
+                                    >
+                                      <FileIcon
+                                        set={icons.set}
+                                        light={icons.light}
+                                        name={name}
+                                        path={file.path}
+                                        kind="file"
+                                      />
+                                      <span className="truncate text-meta text-fg-soft">{name}</span>
+                                      {dir && (
+                                        <span className="min-w-0 flex-1 truncate text-micro text-fg-faint">{dir}</span>
+                                      )}
+                                      {!dir && <span className="flex-1" />}
+                                      {!file.binary && (file.additions !== undefined || file.deletions !== undefined) && (
+                                        <span className="flex flex-none items-center gap-1 font-mono text-[10px]">
+                                          {(file.additions ?? 0) > 0 && (
+                                            <span className="text-ok">+{file.additions}</span>
+                                          )}
+                                          {(file.deletions ?? 0) > 0 && (
+                                            <span className="text-err">-{file.deletions}</span>
+                                          )}
+                                        </span>
+                                      )}
+                                      <span
+                                        aria-label={SCM_BADGE_LABEL[file.status]}
+                                        className={`w-3 flex-none text-center font-mono text-micro font-semibold ${SCM_BADGE_CLASS[file.status]}`}
+                                      >
+                                        {file.status}
+                                      </span>
+                                    </button>
+                                  </Tip>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="py-1 text-micro text-fg-faint">No file changes in this commit</div>
                           )}
                         </div>
-                        <Tip content={copiedHash === commit.hash ? "Copied SHA" : "Copy commit SHA"} side="left">
-                          <button
-                            type="button"
-                            aria-label="Copy commit SHA"
-                            onClick={() => copySha(commit.hash)}
-                            className="flex flex-none rounded p-1 text-fg-dim hover:bg-hover hover:text-fg-bright"
-                          >
-                            {copiedHash === commit.hash ? <Check size={12} className="text-ok" /> : <Copy size={12} />}
-                          </button>
-                        </Tip>
-                      </div>
-
-                      <div className="mt-2 border-t border-line/70 pt-1.5">
-                        {isLoadingFiles ? (
-                          <div className="flex items-center gap-1.5 py-1 text-micro text-fg-faint">
-                            <Loader2 size={11} className="animate-spin" />
-                            <span>Loading changed files…</span>
-                          </div>
-                        ) : files && files.length > 0 ? (
-                          <div className="flex flex-col">
-                            {files.map((file) => {
-                              const { name, dir } = splitRelPath(file.path);
-                              return (
-                                <Tip
-                                  key={file.path}
-                                  content={file.origPath ? `${file.origPath} → ${file.path}` : file.path}
-                                  side="right"
-                                  delay={450}
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => openFileDiff(commit, file)}
-                                    className="flex h-6 w-full items-center gap-1.5 rounded px-1 text-left hover:bg-hover"
-                                  >
-                                    <FileIcon set={icons.set} light={icons.light} name={name} path={file.path} kind="file" />
-                                    <span className="truncate text-meta text-fg-soft">{name}</span>
-                                    {dir && <span className="min-w-0 flex-1 truncate text-micro text-fg-faint">{dir}</span>}
-                                    {!dir && <span className="flex-1" />}
-                                    {!file.binary && (file.additions !== undefined || file.deletions !== undefined) && (
-                                      <span className="flex flex-none items-center gap-1 font-mono text-[10px]">
-                                        {(file.additions ?? 0) > 0 && <span className="text-ok">+{file.additions}</span>}
-                                        {(file.deletions ?? 0) > 0 && <span className="text-err">-{file.deletions}</span>}
-                                      </span>
-                                    )}
-                                    <span
-                                      aria-label={SCM_BADGE_LABEL[file.status]}
-                                      className={`w-3 flex-none text-center font-mono text-micro font-semibold ${SCM_BADGE_CLASS[file.status]}`}
-                                    >
-                                      {file.status}
-                                    </span>
-                                  </button>
-                                </Tip>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="py-1 text-micro text-fg-faint">No file changes in this commit</div>
-                        )}
                       </div>
                     </div>
                   )}

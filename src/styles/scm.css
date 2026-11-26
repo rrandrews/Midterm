@@ -40,8 +40,40 @@
 }
 
 .scm-commit-input {
+  height: 58px;
   min-height: 58px;
   max-height: 180px;
+}
+
+/* Draggable vertical accordion split handles between Changes, Graph, and Stashes. */
+.scm-sash {
+  position: relative;
+  height: 1px;
+  flex: none;
+  background: var(--color-line);
+  cursor: row-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.scm-sash::before {
+  content: "";
+  position: absolute;
+  inset: -3px 0;
+}
+.scm-sash::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 3px;
+  background: transparent;
+  transition: background 100ms ease;
+}
+.scm-sash:hover::after,
+.scm-sash[data-dragging="true"]::after,
+.scm-sash:focus-visible::after {
+  background: var(--color-accent);
 }
 
 /* Diff viewer surfaces derived strictly from theme design tokens (works in dark & light themes). */

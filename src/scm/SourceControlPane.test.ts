@@ -56,6 +56,26 @@ describe("SourceControlPane and ScmDiffPane", () => {
     expect(host.textContent).toContain("Header.tsx");
     expect(host.textContent).toContain("main");
 
+    // Verify resize separators exist between Changes, Graph, and Stashes.
+    const sashes = host.querySelectorAll('[role="separator"][aria-orientation="horizontal"]');
+    expect(sashes.length).toBe(2);
+
+    // Verify graph title rows omit "ago" and local branch badges (head/branch) while keeping tags/remotes.
+    const commitRows = Array.from(host.querySelectorAll<HTMLButtonElement>(".scm-commit-row"));
+    expect(commitRows.length).toBe(3);
+    expect(commitRows[0].textContent).not.toContain("ago");
+    expect(commitRows[0].textContent).not.toContain("main");
+    expect(commitRows[1].textContent).toContain("v0.9.0");
+    expect(commitRows[1].textContent).toContain("origin/main");
+
+    // Expanding a commit preserves the graph rail via `.scm-graph-continuation`.
+    await act(async () => {
+      commitRows[0].click();
+    });
+    await flush();
+    expect(host.querySelector(".scm-graph-continuation svg line")).not.toBeNull();
+    expect(host.querySelector(".scm-commit-details")?.textContent).toContain("main");
+
     // Verify Midterm's tooltip policy: zero native HTML `title` attributes.
     expect(host.querySelectorAll("[title]").length).toBe(0);
 
