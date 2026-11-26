@@ -29,7 +29,7 @@ pub const BATCH_FILES: usize = 100;
 pub const FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 /// As `TextSearchOptions` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextSearchOptions {
     /// Literal unless `regex`.
@@ -43,7 +43,7 @@ pub struct TextSearchOptions {
 }
 
 /// As `TextMatch` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextMatch {
     /// 1-based.
     pub line: u64,
@@ -56,7 +56,7 @@ pub struct TextMatch {
 }
 
 /// As `TextSearchFile` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextSearchFile {
     /// Relative to the root, `/`-separated.
     pub path: String,
@@ -64,7 +64,7 @@ pub struct TextSearchFile {
 }
 
 /// As `TextSearchEvent` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum TextSearchEvent {
     /// A batch; each file is in exactly one batch with all its matches.
@@ -330,6 +330,17 @@ struct Entry {
 impl SearchManager {
     fn registry(&self) -> MutexGuard<'_, Registry> {
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Reserves a unique search id without spawning a local thread (used for
+    /// remote SSH searches so local and remote search ids never collide).
+    pub fn reserve_id(&self) -> Result<u32, String> {
+        let mut registry = self.registry();
+        if registry.shut_down {
+            return Err("search manager is shut down".into());
+        }
+        registry.next_id += 1;
+        Ok(registry.next_id)
     }
 
     /// Runs `job` on its own thread with a cancel flag, and returns the

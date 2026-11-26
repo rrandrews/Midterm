@@ -53,7 +53,7 @@ impl FileVersion {
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Result of [`read_text`], as `TextFile` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TextFile {
     Text {
@@ -71,7 +71,7 @@ pub enum TextFile {
 }
 
 /// Result of [`write_text`], as `WriteResult` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WriteResult {
     Written {
@@ -167,7 +167,7 @@ fn open_nonblocking(path: &Path) -> io::Result<File> {
 }
 
 /// What a save expects to find on disk, as `WriteExpect` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WriteExpect {
     /// The file, still at this version.

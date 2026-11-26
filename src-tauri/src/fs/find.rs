@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use ignore::{Walk, WalkBuilder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A sorted, sequential walk under `root` that does not follow symlinks.
 ///
@@ -31,7 +31,7 @@ pub(crate) fn walk(root: &Path, show_hidden: bool) -> Walk {
 }
 
 /// The files found under a root, as `FoundFiles` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FoundFiles {
     /// `/`-separated paths relative to the root, in walk order.
@@ -76,7 +76,7 @@ pub fn find_files(root: &Path, limit: usize) -> Result<FoundFiles, String> {
 }
 
 /// One entry found by [`find_entries`], as `FoundEntry` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoundEntry {
     /// `/`-separated, relative to the root.
     pub path: String,
@@ -84,7 +84,7 @@ pub struct FoundEntry {
 }
 
 /// The entries found under a root, as `FoundEntries` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoundEntries {
     /// In walk order (sorted by name within each directory).
     pub entries: Vec<FoundEntry>,

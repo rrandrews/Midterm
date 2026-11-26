@@ -7,10 +7,10 @@ use std::io;
 use std::path::Path;
 
 use ignore::WalkBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One directory entry, as `FsEntry` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FsEntry {
     pub name: String,
@@ -24,7 +24,7 @@ pub struct FsEntry {
     pub ignored: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryKind {
     File,

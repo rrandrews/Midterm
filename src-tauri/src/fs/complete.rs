@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One entry of [`list_entries`], as `CompletionEntry` in `src/ipc/complete.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletionEntry {
     pub name: String,

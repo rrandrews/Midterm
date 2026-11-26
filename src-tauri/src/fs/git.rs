@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use git2::{Repository, Status, StatusOptions};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// As `GitStatus` in `src/ipc/fs.ts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatus {
     /// Work tree root, absolute, no trailing slash.
@@ -20,7 +20,7 @@ pub struct GitStatus {
 /// One letter per path. Declared from highest to lowest precedence: when
 /// several apply to a path (say, staged as new and then deleted from the
 /// work tree), the first one wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum GitCode {
     #[serde(rename = "C")]
     Conflicted,

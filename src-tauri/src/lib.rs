@@ -7,6 +7,7 @@ mod plugins;
 mod pty;
 mod quit_guard;
 mod secrets;
+mod ssh;
 mod traffic_lights;
 
 use tauri::webview::PageLoadEvent;
@@ -14,6 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 
 use fs::{SearchManager, WatchManager};
 use pty::PtyManager;
+use ssh::SshManager;
 
 /// Quits the app; called by the webview once quitting has been confirmed.
 #[tauri::command]
@@ -103,6 +105,7 @@ pub fn run() {
         .manage(PtyManager::default())
         .manage(WatchManager::default())
         .manage(SearchManager::default())
+        .manage(SshManager::default())
         .manage(ai::AiManager::default())
         .manage(antigravity::AntigravityManager::default())
         .manage(claude::ClaudeManager::default())
@@ -139,6 +142,7 @@ pub fn run() {
                 webview.state::<PtyManager>().kill_owned_by(&label);
                 webview.state::<WatchManager>().stop_owned_by(&label);
                 webview.state::<SearchManager>().cancel_owned_by(&label);
+                webview.state::<SshManager>().cleanup_owned_by(&label);
                 webview.state::<ai::AiManager>().acp.close_owned_by(&label);
                 webview.state::<antigravity::AntigravityManager>().close_owned_by(&label);
                 webview.state::<claude::ClaudeManager>().close_owned_by(&label);
@@ -178,6 +182,7 @@ pub fn run() {
             fs::commands::fs_create,
             fs::commands::fs_rename,
             fs::commands::fs_trash,
+            fs::commands::fs_delete_permanent,
             fs::commands::fs_find_files,
             fs::commands::fs_read_text,
             fs::commands::fs_read_bytes,
@@ -193,6 +198,11 @@ pub fn run() {
             fs::commands::fs_watch_start,
             fs::commands::fs_watch_set,
             fs::commands::fs_watch_stop,
+            ssh::commands::ssh_register_connection,
+            ssh::commands::ssh_connection_ended,
+            ssh::commands::ssh_reconnect,
+            ssh::commands::ssh_restore_connection,
+            ssh::commands::ssh_list_connections,
             plugins::commands::plugins_dir,
             plugins::commands::plugins_list,
             plugins::commands::plugins_import,
@@ -231,6 +241,7 @@ pub fn run() {
             app.state::<PtyManager>().kill_owned_by(&label);
             app.state::<WatchManager>().stop_owned_by(&label);
             app.state::<SearchManager>().cancel_owned_by(&label);
+            app.state::<SshManager>().cleanup_owned_by(&label);
             app.state::<ai::AiManager>().acp.close_owned_by(&label);
             app.state::<antigravity::AntigravityManager>().close_owned_by(&label);
             app.state::<claude::ClaudeManager>().close_owned_by(&label);
@@ -244,6 +255,7 @@ pub fn run() {
             app.state::<PtyManager>().kill_all();
             app.state::<WatchManager>().stop_all();
             app.state::<SearchManager>().cancel_all();
+            app.state::<SshManager>().shutdown_all();
             app.state::<ai::AiManager>().acp.close_all();
             app.state::<antigravity::AntigravityManager>().close_all();
             app.state::<claude::ClaudeManager>().close_all();
