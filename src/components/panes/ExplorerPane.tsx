@@ -303,6 +303,11 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
   const remoteId = remoteIdOf(snap.root);
   const remote = useSshConnection(remoteId);
   const disconnected = Boolean(remoteId && (!remote || remote.status === "disconnected"));
+  // When DisconnectedBanner is already shown above an unloaded remote root whose
+  // read failed solely due to transport disconnect, don't repeat the same status
+  // row underneath it (actionable setup/filesystem errors still display).
+  const hideDisconnectedStatus =
+    disconnected && !snap.rootLoaded && snap.rootDisconnectedError && rows.length === 1 && rows[0]?.type === "status";
 
   return (
     <div className="explorer relative flex h-full flex-col">
@@ -337,8 +342,9 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
               }
             }}
           >
-            <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
-              {virtualizer.getVirtualItems().map((item) => {
+            <div className="relative w-full" style={{ height: hideDisconnectedStatus ? 0 : virtualizer.getTotalSize() }}>
+              {!hideDisconnectedStatus &&
+                virtualizer.getVirtualItems().map((item) => {
                 const row = rows[item.index];
                 const id = rowId(row);
                 return (

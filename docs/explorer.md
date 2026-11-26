@@ -39,7 +39,8 @@ All paths are absolute strings. `src/ipc/fs.ts` is the only caller, except for t
 | `fs_stat` | `path` | `FsEntry` or `null` if nothing is there. `ignored` is always `false`. |
 | `fs_create` | `path`, `dir` | Empty file or directory. Errors if anything is there or the parent is missing. |
 | `fs_rename` | `from`, `to` | Rename or move. Errors if `to` exists, except a case-only rename of the same entry. |
-| `fs_trash` | `paths` | Moves to the system trash. A symlink is trashed, not its target. |
+| `fs_trash` | `paths` | Moves local entries to the system trash. A symlink is trashed, not its target. Rejects remote `ssh://` paths. |
+| `fs_delete_permanent` | `paths` | Permanently deletes remote `ssh://` entries (refuses remote `/`; rejects local paths). |
 | `fs_find_files` | `root`, `limit` | `{ paths, truncated }`: every file under `root` (relative, `/`-separated, sorted), hidden and ignored entries skipped, symlinks not followed. For the palette (`find.rs`). |
 | `fs_find_entries` | `root`, `limit`, `showHidden` | `{ entries: { path, dir }[], truncated }`: files and directories under `root` (not `root` itself; relative, `/`-separated, walk order = sorted by name per directory). Without `showHidden` the same skipping as `fs_find_files`; with it everything, except the contents of `.git` directories (the `.git` entry is listed). Symlinks not followed, reported with their target's kind. |
 | `fs_copy` | `from`, `toDir` | Copies a file or directory tree into `toDir`, never replacing: a taken name becomes `a copy.txt`, `a copy 2.txt`, … (`dir copy`, `.env copy`: the extension is what follows the last dot, unless the name starts with it). Returns the copy's path. Symlinks are copied as links, permissions kept, sockets/FIFOs inside a tree skipped. Errors if a directory is copied into itself or a descendant; a failed tree copy is removed again. |
@@ -99,31 +100,34 @@ name, symlinks not followed, the same hidden/ignored rules as
   destruction and exit (`lib.rs`). A cancelled search still sends `done`
   with `cancelled: true`.
 
-### Local only (read before adding remote/SSH browsing)
+### Remote SSH browsing
 
-Every command here works on the Mac's own file system, and the explorer
-never sees a remote path: directory reports (OSC 7) from a shell inside
-`ssh` are ignored (`isLocal` in `src/terminal/session.ts`). An explorer
-that follows an SSH terminal onto the remote host needs its own
-operations there (over SFTP or a helper on the host), and these
-assumptions do not carry over:
+Filesystem and `git_status` commands accept both local POSIX paths and remote
+`ssh://<remoteId>/<posixPath>` URIs, dispatching remote operations over the
+host's multiplexed `ControlMaster` helper (see [ssh.md](ssh.md)), with explicit
+host-scoped exceptions: `fs_open_default` and `fs_trash` reject remote paths,
+while `fs_delete_permanent` rejects local paths:
 
-- **Copy into itself.** `copy_into` refuses a folder copied into itself
-  by comparing canonical paths. On Linux a bind mount can give one
-  directory two canonical paths, so a copy into the alias passes the
-  check and recurses into its own output until an OS limit. A remote copy
-  must compare device and inode (`st_dev`/`st_ino`) of the target and each
-  of its ancestors against the source, not paths. (Not an issue on macOS,
-  which has no bind mounts; symlinks and firmlinks canonicalize.)
-- **Exclusive creates and rollback** rely on `O_EXCL` and on removing
-  only what was created; over SFTP, use `SSH_FXF_EXCL` and the same
-  created-path list.
-- **Case-insensitive targets**: the tree copy errors on a name clash
-  rather than overwriting; keep that when the target is remote.
-- **Moves** are `rename`, so they fail across file systems, as moves
-  between local volumes already do.
-- **Watching and git status** use FSEvents and libgit2 on local paths;
-  neither works remotely as is.
+- **Host indicator & reconnect**: When the root is remote, the top folder shows
+  a compact SSH host pill with a live status dot and shortens the remote host's
+  home directory to `~`. While disconnected, an inline banner offers
+  **Reconnect** and **Terminal** (direct-SSH when reconnect args are replayable,
+  else a local terminal); reconnecting automatically reloads the tree, git
+  badges, active watches, and any open search overlay.
+- **Permanent deletion**: Remote hosts have no local Trash, so ⌘⌫ and the
+  context menu show **Delete…** with an explicit confirmation naming the host
+  and call `fs_delete_permanent`.
+- **Cross-host transfers**: `fs_copy` supports copying across hosts
+  (`Local ↔ Remote`, `Remote A ↔ Remote B`) when `python3` is available on the
+  remote host(s) (with `(dev, ino)` cycle checks and staged rollback; the POSIX
+  `sh` fallback still supports `git_status` when `git` is installed, but omits
+  cross-host transfers, live watching, and search). `fs_rename` stays same-host
+  only. Dragging across hosts defaults to copy (green `+` badge) even without ⌥
+  held.
+- **Local-only actions hidden**: "Reveal in Finder" is omitted for remote
+  entries/roots; "Copy path" copies the clean POSIX path without `ssh://`;
+  dragging entries into a terminal only accepts drops onto a terminal on the
+  same host and pastes shell-quoted POSIX paths.
 
 ### Hidden and ignored
 
@@ -325,9 +329,11 @@ drops). A press on a row that moves 4px starts a drag of the selection
 (if the row is in it) or the row; a drag image follows the pointer.
 Targets are found under the pointer by markup: `data-drop-dir` on rows
 (a folder, or a file's folder), the top folder and the tree's empty area
-(the root), in any explorer; a terminal pane gets the paths typed in,
-shell-quoted (and is outlined). ⌥ copies instead of moving (a + on the
-drag image). Hovering a closed folder 700 ms opens it; near a tree's top
+(the root), in any explorer; a terminal pane on the same host gets the
+POSIX paths typed in, shell-quoted (and is outlined; cross-host terminal
+drops are refused). ⌥ copies instead of moving (a + on the drag image),
+and dragging across different hosts always defaults to copy. Hovering a
+closed folder 700 ms opens it; near a tree's top
 or bottom edge it scrolls. Escape cancels; the click that ends a drag is
 swallowed.
 
@@ -383,7 +389,7 @@ pinned to it.
 | ⌥⌘C | Copy the selected paths as text |
 | ⌘F, ⌃⌘F | Find by name, search in files |
 | Escape | Several selected: keep only the cursor |
-| ⌘⌫ | Move the selection to Trash (asks) |
+| ⌘⌫ | Move local selection to Trash, or permanently delete remote SSH selection (asks) |
 | letters | Type-ahead; repeating one letter cycles through names starting with it |
 
 Mouse: a click selects (and toggles a directory), ⌘-click and ⇧-click

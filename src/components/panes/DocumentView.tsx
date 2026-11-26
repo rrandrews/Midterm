@@ -2,6 +2,7 @@ import { type MouseEvent, useEffect, useRef, useState, useSyncExternalStore } fr
 import { openFile, updatePaneData } from "../../actions";
 import { baseName, parentPath } from "../../explorer/tree";
 import { isMarkdownPath } from "../../files/kinds";
+import { isRemotePath } from "../../files/location";
 import { openExternal } from "../../ipc/shell";
 import { registerPaneFocuser } from "../../layout/dock";
 import { headingSlug, resolveImage, resolveLink } from "../../viewer/links";
@@ -95,7 +96,7 @@ export function DocumentView({ paneId, model }: { paneId: string; model: ViewerM
           ) : snap.mode === "markdown" ? (
             <div
               ref={contentRef}
-              className="markdown-body px-[22px] py-[18px]"
+              className={`markdown-body px-[22px] ${isRemotePath(snap.path) ? "pt-8 pb-[18px]" : "py-[18px]"}`}
               onClick={onClick}
               // Sanitized by DOMPurify in src/viewer/markdown.ts.
               dangerouslySetInnerHTML={{ __html: snap.html ?? "" }}

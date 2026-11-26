@@ -3,7 +3,7 @@
 Midterm is a Tauri 2 app: a Rust backend (`src-tauri/`) that owns PTYs, and a
 React 19 frontend (`src/`) that owns everything on screen.
 
-Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) ·
+Other docs: [layout.md](layout.md) · [terminal.md](terminal.md) · [ssh.md](ssh.md) ·
 [explorer.md](explorer.md) · [editor.md](editor.md) · [commands.md](commands.md) · [palette.md](palette.md) ·
 [ai.md](ai.md) · [claude-code.md](claude-code.md) · [design-tokens.md](design-tokens.md) · [plugins.md](plugins.md) · [themes.md](themes.md) · [workspaces.md](workspaces.md) · [planning.md](planning.md)
 
@@ -48,12 +48,14 @@ workspace ─┬─ tab ─┬─ pane (terminal | explorer | editor | viewer | 
 | `src/explorer/` | File explorer models, their registry, pure tree helpers. |
 | `src/editor/` | Editor models (CodeMirror), the registry of editor and viewer models, language detection, highlighting, pure text helpers. |
 | `src/viewer/` | Viewer model (Markdown, images), Markdown rendering, link resolution. |
-| `src/files/` | Shared by editors and viewers: file watching, repository root lookup, file kinds. |
+| `src/files/` | Shared by editors, viewers, explorer and terminals: uniform local/`ssh://` location helpers (`location.ts`), file watching, repository root lookup, file kinds. |
+| `src/ssh/` | Reactive SSH connection registry (`connections.ts`), persisted to `ssh-connections.json`; see [ssh.md](ssh.md). |
 | `src/ipc/` | Typed wrappers over Tauri commands. The only place that calls `invoke`. |
 | `src/styles/` | Tailwind entry + design tokens, and CSS for the layout and terminal. |
 | `src/dev/` | Development aids (not in production builds). |
-| `src-tauri/src/pty/` | PTY sessions and the commands that drive them. |
-| `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer; whole-file reads and atomic writes for editors and viewers. |
+| `src-tauri/src/pty/` | PTY sessions (local shells and direct-SSH sessions) and the commands that drive them. |
+| `src-tauri/src/ssh/` | Multiplexed OpenSSH ControlMaster helper manager, in-memory Python 3 / POSIX `sh` helpers, cross-host transfers, and `ssh_*` commands; see [ssh.md](ssh.md). |
+| `src-tauri/src/fs/` | File listing, operations, watching and git status for the explorer; whole-file reads and atomic writes for editors and viewers (transparently dispatching local vs `ssh://` locations). |
 | `src-tauri/src/plugins/` | Installed plugins: manifest validation, import (folder or .zip), remove, the `plugin://` scheme. |
 | `src-tauri/src/ai/` | AI providers: HTTP adapters (OpenAI-compatible, Anthropic), CLI providers, ACP agent sessions (`acp/`: long-lived adapter processes serving Midterm's skills as MCP tools), keys in the OS keychain, the `ai_*` commands; see [ai.md](ai.md). The only code that makes outbound network requests (the CLIs it runs make their own). |
 | `src-tauri/src/claude/` | Starts the Claude Code bridge (one Node process per window) and pipes its JSON lines; see [claude-code.md](claude-code.md). |

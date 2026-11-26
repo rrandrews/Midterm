@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MOCK_HOME, MOCK_PROJECT } from "../ipc/fsMock";
 import * as fs from "../ipc/fs";
-import { _resetMockSshForTests } from "../ipc/ssh";
-import { _resetConnectionsForTests, registerConnection } from "../ssh/connections";
+import { _resetMockSshForTests, _setMockSshStatusForTests } from "../ipc/ssh";
+import { _resetConnectionsForTests, loadSshConnections, registerConnection } from "../ssh/connections";
 import { ExplorerModel, type ExplorerSettings } from "./model";
 
 /*
@@ -195,6 +195,207 @@ describe("remote ssh explorer", () => {
     await settle();
     expect(explorer.rootPath).toBe(`ssh://${rid}/`);
     expect(explorer.isExpanded(`ssh://${rid}/etc`)).toBe(true);
+
+    explorer.dispose();
+  });
+
+  it("preserves loaded entries on transport disconnects, keeps fs/setup errors visible, and filters hidden offline", async () => {
+    _resetConnectionsForTests();
+    _resetMockSshForTests();
+    await loadSshConnections();
+    const rid = "prod-0123456789ab";
+    await registerConnection({
+      id: rid,
+      label: "prod",
+      host: "10.0.0.5",
+      user: "demo",
+      port: 22,
+      controlPath: "/tmp/mt-501/s-0123456789ab",
+      ownedSocket: true,
+      sshArgs: ["--", "prod"],
+    });
+
+    const remoteRoot = `ssh://${rid}/home/demo/app`;
+    await fs.create(`${remoteRoot}/.env`, "file");
+    const explorer = new ExplorerModel("pane-ssh-dc", { root: remoteRoot, showHidden: true }, () => {});
+    explorer.attach();
+    await settle();
+    await settle();
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/README.md`);
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/.env`);
+
+    // In-flight transport disconnect race (including broken pipe on write): listDir rejects just before disconnect.
+    const spy = vi.spyOn(fs, "listDir").mockRejectedValueOnce(new Error("SSH write failed: broken pipe"));
+    explorer.refresh();
+    await settle();
+    _setMockSshStatusForTests(rid, "disconnected");
+    await settle();
+    spy.mockRestore();
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/README.md`);
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/.env`);
+
+    // Turning Show Hidden off while offline hides hidden/ignored entries from the cached tree.
+    explorer.setShowHidden(false);
+    await settle();
+    await settle();
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/README.md`);
+    expect(entryPaths(explorer)).not.toContain(`${remoteRoot}/.env`);
+
+    // Confirmed filesystem errors invalidate cached entries so neither disconnect nor offline retries resurrect them.
+    _setMockSshStatusForTests(rid, "connected");
+    await settle();
+    await settle();
+    const permSpy = vi.spyOn(fs, "listDir").mockRejectedValueOnce(new Error("Permission denied"));
+    explorer.refresh();
+    await settle();
+    permSpy.mockRestore();
+    expect(explorer.snapshot().rows).toEqual([
+      expect.objectContaining({ type: "status", text: "Permission denied" }),
+    ]);
+    _setMockSshStatusForTests(rid, "disconnected");
+    await settle();
+    expect(explorer.snapshot().rows).toEqual([
+      expect.objectContaining({ type: "status", text: "Permission denied" }),
+    ]);
+    expect(explorer.snapshot().rootDisconnectedError).toBe(false);
+    // An offline retry (e.g. toggling Show Hidden) must not resurrect the invalidated entries.
+    explorer.setShowHidden(true);
+    await settle();
+    await settle();
+    expect(entryPaths(explorer)).toEqual([]);
+    expect(explorer.snapshot().rootDisconnectedError).toBe(true);
+
+    // Navigating to an unloaded unregistered/disconnected remote root uses the host label.
+    const unregSpy = vi.spyOn(fs, "listDir").mockRejectedValueOnce(new Error(`SSH host '${rid}' is not connected`));
+    explorer.setRoot(`ssh://${rid}/etc`);
+    await settle();
+    await settle();
+    unregSpy.mockRestore();
+    expect(explorer.snapshot().rootDisconnectedError).toBe(true);
+    expect(explorer.snapshot().rows).toEqual([
+      expect.objectContaining({ type: "status", text: "Not connected to prod" }),
+    ]);
+
+    // An actionable SSH setup failure or helper crash with stderr (even when disconnected) is preserved and NOT masked.
+    const setupSpy = vi
+      .spyOn(fs, "listDir")
+      .mockRejectedValueOnce(new Error("SSH connection closed: Traceback (most recent call last): syntax error"));
+    explorer.refresh();
+    await settle();
+    await settle();
+    setupSpy.mockRestore();
+    expect(explorer.snapshot().rootDisconnectedError).toBe(false);
+    expect(explorer.snapshot().rows).toEqual([
+      expect.objectContaining({
+        type: "status",
+        text: "SSH connection closed: Traceback (most recent call last): syntax error",
+      }),
+    ]);
+
+    // Confirmed mutation (deletePermanent) invalidates cached parent listing so a disconnect before reload cannot resurrect deleted entries.
+    _setMockSshStatusForTests(rid, "connected");
+    explorer.setRoot(remoteRoot);
+    await settle();
+    await settle();
+    await fs.create(`${remoteRoot}/ephemeral.txt`, "file");
+    explorer.refresh();
+    await settle();
+    await settle();
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/ephemeral.txt`);
+    const delSpy = vi.spyOn(fs, "listDir").mockImplementationOnce(async () => {
+      _setMockSshStatusForTests(rid, "disconnected");
+      throw new Error(`SSH connection '${rid}' is not active`);
+    });
+    expect(await explorer.deletePermanent([`${remoteRoot}/ephemeral.txt`])).toBe(true);
+    delSpy.mockRestore();
+    expect(entryPaths(explorer)).not.toContain(`${remoteRoot}/ephemeral.txt`);
+
+    // Mid-session transport drop with stderr on a loaded tree preserves cached entries while surfacing the diagnostic.
+    _setMockSshStatusForTests(rid, "connected");
+    await settle();
+    await settle();
+    const diagSpy = vi
+      .spyOn(fs, "listDir")
+      .mockRejectedValueOnce(new Error("SSH connection closed: client_loop: send disconnect: Broken pipe"));
+    explorer.refresh();
+    await settle();
+    _setMockSshStatusForTests(rid, "disconnected");
+    await settle();
+    diagSpy.mockRestore();
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/README.md`);
+    expect(explorer.snapshot().error).toBe("SSH connection closed: client_loop: send disconnect: Broken pipe");
+
+    // Collapsed directory whose ancestor vanished is evicted from the offline cache even while collapsed.
+    _setMockSshStatusForTests(rid, "connected");
+    await settle();
+    await settle();
+    await fs.create(`${remoteRoot}/tempdir`, "dir");
+    await fs.create(`${remoteRoot}/tempdir/old.txt`, "file");
+    explorer.refresh();
+    await settle();
+    await settle();
+    explorer.expand(`${remoteRoot}/tempdir`);
+    await settle();
+    await settle();
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/tempdir/old.txt`);
+    explorer.collapse(`${remoteRoot}/tempdir`);
+    await fs.deletePermanent([`${remoteRoot}/tempdir`]);
+    explorer.refresh();
+    await settle();
+    await settle();
+    // Even if a replacement directory with the same name appears later, old cached children must never reappear.
+    await fs.create(`${remoteRoot}/tempdir`, "dir");
+    explorer.refresh();
+    await settle();
+    await settle();
+    _setMockSshStatusForTests(rid, "disconnected");
+    explorer.expand(`${remoteRoot}/tempdir`);
+    await settle();
+    await settle();
+    expect(entryPaths(explorer)).not.toContain(`${remoteRoot}/tempdir/old.txt`);
+
+    // Late in-flight read for a vanished child must be dropped so it cannot repopulate lastLoaded.
+    _setMockSshStatusForTests(rid, "connected");
+    await settle();
+    await settle();
+    await fs.create(`${remoteRoot}/racedir`, "dir");
+    await fs.create(`${remoteRoot}/racedir/stale.txt`, "file");
+    explorer.refresh();
+    await settle();
+    await settle();
+    const lateResolvers: Array<(entries: fs.FsEntry[]) => void> = [];
+    const realListDir = fs.listDir;
+    const raceSpy = vi.spyOn(fs, "listDir").mockImplementation((dir, opts) => {
+      if (dir === `${remoteRoot}/racedir`) {
+        return new Promise((resolve) => {
+          lateResolvers.push(resolve);
+        });
+      }
+      return realListDir(dir, opts);
+    });
+    explorer.expand(`${remoteRoot}/racedir`);
+    await fs.deletePermanent([`${remoteRoot}/racedir`]);
+    explorer.refresh();
+    await settle();
+    await settle();
+    raceSpy.mockRestore();
+    // Late response for the vanished child arrives AFTER parent confirmed disappearance.
+    expect(lateResolvers.length).toBeGreaterThan(0);
+    for (const resolve of lateResolvers) {
+      resolve([
+        { name: "stale.txt", path: `${remoteRoot}/racedir/stale.txt`, kind: "file", hidden: false, ignored: false, symlink: false },
+      ]);
+    }
+    await settle();
+    await fs.create(`${remoteRoot}/racedir`, "dir");
+    explorer.refresh();
+    await settle();
+    await settle();
+    _setMockSshStatusForTests(rid, "disconnected");
+    explorer.expand(`${remoteRoot}/racedir`);
+    await settle();
+    await settle();
+    expect(entryPaths(explorer)).not.toContain(`${remoteRoot}/racedir/stale.txt`);
 
     explorer.dispose();
   });

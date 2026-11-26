@@ -157,7 +157,14 @@ no "Save" button in that dialog; save first.
 
 28px row, 11.5px, `fg-dim` with the file name in `fg-soft`: the path
 relative to the file's repository (nearest ancestor with `.git`), else from
-`~`, else from `/`. The full path is the tooltip.
+`~` (matching host's home), else from `/`. Remote SSH files show a compact host
+badge with live connection dot ahead of the segments, never exposing `ssh://`,
+and show an inline reconnect bar (with **Reconnect** and **Terminal**) while
+disconnected. The full display path (`<host>:~/…` when remote) is the tooltip.
+"Reveal in Finder" is omitted on remote files and "Copy path" copies the clean
+POSIX path. On reconnect, open editors and viewers refresh once automatically
+(and viewers retry any embedded Markdown images whose reads failed while
+disconnected).
 
 ## Viewer
 
@@ -169,15 +176,17 @@ relative to the file's repository (nearest ancestor with `.git`), else from
   and the like are dropped, and every resource attribute (`src`,
   `srcset`, `poster`, non-link `href`…) is removed, except that an image's
   source is kept in `data-src`. The view resolves them against the document's
-  directory and reads local files through `fs_read_bytes` into blob URLs
-  (cached per document, revoked on reload and dispose). `data:image/…`
-  URLs are kept; remote images are not loaded (the CSP planned for M7
-  allows only `blob:` and `data:` images).
+  directory on the same host (local or remote SSH) and reads files through
+  `fs_read_bytes` into blob URLs (cached per document, revoked on reload and
+  dispose). `data:image/…` URLs are kept; remote HTTP images are not loaded,
+  and remote Markdown documents block `file:` URLs so they cannot read local
+  files.
 - Links: http(s) open in the browser (`openExternal`); `#heading` scrolls
   to the heading with that GitHub-style slug; other Markdown files open in
   the same viewer; any other file goes through `openFile` (⌘-click: new
-  pane), with `#L12` as a line. `file:` links (which DOMPurify would
-  strip) are kept in `data-file-href`.
+  pane), with `#L12` as a line, resolving on the document's host. `file:`
+  links (local documents only, which DOMPurify would strip) are kept in
+  `data-file-href`.
 - Embedded images are resolved again on every reload of the document.
 - **Images** are centred on a faint checkerboard; the file name (and
   pixel size) is shown top right in 10.5px mono, moving aside for the pane
@@ -206,8 +215,8 @@ splitting styled runs with `splitAtLinks`). Hovering one underlines it.
   keys, a tab would complete). Otherwise the click does nothing.
   ⌘-click (or Ctrl-click) opens either in a new pane: a file in a new
   editor or viewer, a folder in a new explorer pinned to it
-  (`openDirectory` in `src/actions.ts`; Finder without the explorer
-  plugin). Only a main-button click released where it was pressed counts
+  (`openDirectory` in `src/actions.ts`; without the explorer plugin, Finder
+  for local folders or a new terminal for remote SSH folders). Only a main-button click released where it was pressed counts
   (in the classic view xterm activates links on any button and reports a
   drag's selection only after activating, so the press position is
   tracked); a program reading the mouse (vim) gets plain clicks.
@@ -256,7 +265,10 @@ splitting styled runs with `splitAtLinks`). Hovering one underlines it.
   the directory the next command started in, and rows after the last
   block the current one. Only what exists becomes a link; stats are
   cached (10 s for hits, 3 s for misses, at most 2000 entries), and the
-  blocks view looks a line up again on each hover. Nothing links in a
-  nested shell's (ssh) output (`host` or `nested` set). Known limit: names
+  blocks view looks a line up again on each hover. Managed 1st-hop SSH shells
+  (nested via `ssh/run.sh` or direct-SSH panes) resolve links, folder `cd`,
+  and `/open` against the remote host (hiding Finder and default-app menu
+  items and copying clean POSIX paths); only untracked nested shells (e.g.
+  2nd-hop SSH or `docker exec`) disable linking. Known limit: names
   are split at whitespace, so `My Report.txt` in `ls` output can link only
   its `Report.txt` part (if that exists).

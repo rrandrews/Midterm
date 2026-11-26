@@ -1,4 +1,5 @@
 import {
+  fallbackHostLabel,
   formatRemoteLocation,
   isRootLocation,
   parseLocation,
@@ -8,7 +9,7 @@ import * as fs from "../ipc/fs";
 import type { FsEntry, GitStatus, Watcher } from "../ipc/fs";
 import type { SshStatus } from "../ipc/ssh";
 import { homeDirectory } from "../ipc/system";
-import { getConnection, subscribeConnections } from "../ssh/connections";
+import { getConnection, hostLabelForLocation, subscribeConnections } from "../ssh/connections";
 import {
   type GitBadges,
   type Listing,
@@ -60,6 +61,8 @@ export type ExplorerSnapshot = {
   branch: string | null;
   /** Whether the root's own listing has arrived. */
   rootLoaded: boolean;
+  /** Whether the root failed specifically due to an SSH transport disconnect (not a setup or fs error). */
+  rootDisconnectedError: boolean;
   /** The last failed operation, shown briefly. */
   error: string | null;
 };
@@ -74,6 +77,34 @@ const GIT_REFRESH_MS = 400;
 const ERROR_MS = 5000;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Whether an error string from the SSH backend is a plain transport disconnect
+ * with no extra stderr diagnostic (safe to collapse behind `DisconnectedBanner`
+ * on an unloaded root).
+ */
+function isTransportDisconnectError(text: string): boolean {
+  return (
+    /^SSH connection '[^']+' is not active$/.test(text) ||
+    /^SSH host '[^']+' is not connected$/.test(text) ||
+    /^unknown SSH connection '[^']+'$/.test(text) ||
+    text === "SSH connection is disconnected" ||
+    text === "SSH connection closed" ||
+    text === "SSH helper closed before replying" ||
+    /^SSH write failed(?::|$)/.test(text) ||
+    /^SSH operation '[^']+' timed out while sending request$/.test(text)
+  );
+}
+
+/**
+ * Whether an SSH error carries stderr from a closed multiplexed transport
+ * (e.g. `SSH connection closed: client_loop: send disconnect` or a helper
+ * traceback). Preserves an already-loaded tree on disconnect without hiding
+ * the diagnostic on an unloaded root.
+ */
+function isClosedWithDiagnosticError(text: string): boolean {
+  return text.startsWith("SSH connection closed: ");
+}
 
 /** Strips redundant trailing slashes without collapsing `..` (preserves symlink semantics). */
 function stripTrailingSlashes(raw: string): string {
@@ -91,6 +122,10 @@ export class ExplorerModel {
   private showHidden: boolean;
   private readonly expanded: Set<string>;
   private readonly listings = new Map<string, Listing>();
+  /** Last loaded entries per directory, preserved across remote disconnects (and filtered by `showHidden`). */
+  private readonly lastLoaded = new Map<string, FsEntry[]>();
+  /** Directories whose last read failed specifically due to an SSH transport disconnect. */
+  private readonly transportErrors = new Set<string>();
   /** Bumped per directory on each load, so a slow, stale response is dropped. */
   private readonly loadTokens = new Map<string, number>();
   private selected: string | null = null;
@@ -158,6 +193,8 @@ export class ExplorerModel {
       badges: gitBadges(this.git),
       branch: this.git?.branch ?? null,
       rootLoaded: this.listings.get(this.root)?.state === "loaded",
+      rootDisconnectedError:
+        this.listings.get(this.root)?.state === "error" && this.transportErrors.has(this.root),
       error: this.error,
     };
   }
@@ -207,6 +244,19 @@ export class ExplorerModel {
     return rid ? (getConnection(rid)?.status ?? "disconnected") : null;
   }
 
+  private isRemoteDisconnected(path: string): string | null {
+    const rid = remoteIdOf(path);
+    if (!rid) return null;
+    const conn = getConnection(rid);
+    return !conn || conn.status === "disconnected" ? rid : null;
+  }
+
+  private cachedEntriesFor(dir: string): FsEntry[] | undefined {
+    const entries = this.lastLoaded.get(dir);
+    if (!entries) return undefined;
+    return this.showHidden ? entries : entries.filter((entry) => !entry.hidden && !entry.ignored);
+  }
+
   private handleSshChange(): void {
     if (this.disposed) return;
     const status = this.currentRemoteStatus();
@@ -214,6 +264,28 @@ export class ExplorerModel {
     this.lastRemoteStatus = status;
     if (status === "connected" && prev !== "connected" && this.isAttached) {
       this.reloadAll();
+    } else if (status === "disconnected" && prev !== "disconnected") {
+      // Restore cached listings only for directories whose error was an in-flight transport disconnect.
+      let changed = false;
+      for (const [dir, listing] of this.listings) {
+        if (listing.state !== "error" || !this.transportErrors.has(dir)) continue;
+        const cached = this.cachedEntriesFor(dir);
+        if (cached) {
+          this.listings.set(dir, { state: "loaded", entries: cached });
+          this.transportErrors.delete(dir);
+          changed = true;
+        } else {
+          const rid = remoteIdOf(dir);
+          if (rid) {
+            const friendly = `Not connected to ${hostLabelForLocation(dir) ?? fallbackHostLabel(rid)}`;
+            if (listing.message !== friendly) {
+              this.listings.set(dir, { state: "error", message: friendly });
+              changed = true;
+            }
+          }
+        }
+      }
+      if (changed) this.emit();
     }
   }
 
@@ -239,6 +311,8 @@ export class ExplorerModel {
     this.lastRemoteStatus = this.currentRemoteStatus();
     this.editing = null;
     this.listings.clear();
+    this.lastLoaded.clear();
+    this.transportErrors.clear();
     this.git = null;
     this.save();
     if (this.isAttached) this.reloadAll();
@@ -447,10 +521,24 @@ export class ExplorerModel {
       this.fail(`Could not rename: ${message(error)}`);
       return null;
     }
+    this.invalidateCached([parentPath(from)]);
     this.remap(from, to);
     this.updateWatchedDirs();
     await this.load(parentPath(from));
     return { from, to };
+  }
+
+  /** Drops cached offline listings for directories whose contents just changed. */
+  private invalidateCached(dirs: Iterable<string>): void {
+    for (const dir of dirs) this.lastLoaded.delete(dir);
+  }
+
+  /** Cancels in-flight reads and drops cached entries for a path that moved or disappeared. */
+  private evictSubtree(path: string): void {
+    this.loadTokens.set(path, (this.loadTokens.get(path) ?? 0) + 1);
+    this.listings.delete(path);
+    this.lastLoaded.delete(path);
+    this.transportErrors.delete(path);
   }
 
   /** After `from` moved to `to`: open directories and the selection inside it follow. */
@@ -460,6 +548,10 @@ export class ExplorerModel {
       const rel = relativePath(path, from);
       return rel ? joinPath(to, rel) : to;
     };
+    const tracked = new Set([...this.lastLoaded.keys(), ...this.listings.keys(), ...this.loadTokens.keys()]);
+    for (const path of tracked) {
+      if (isWithin(path, from)) this.evictSubtree(path);
+    }
     for (const path of [...this.expanded]) {
       if (isWithin(path, from)) {
         this.expanded.delete(path);
@@ -520,6 +612,7 @@ export class ExplorerModel {
       this.expanded.add(dir);
       this.save();
     }
+    this.invalidateCached(touched);
     this.updateWatchedDirs();
     await Promise.all([...touched].filter((path) => path === this.root || this.expanded.has(path)).map((path) => this.load(path)));
     // Select what arrived, if it arrived in this tree (a drop into another explorer leaves this one's selection).
@@ -545,7 +638,9 @@ export class ExplorerModel {
       }
     }
     if (errors.length) this.fail(errors[0]);
-    await Promise.all([...new Set(arrived.map(parentPath))].map((dir) => this.load(dir)));
+    const parents = [...new Set(arrived.map(parentPath))];
+    this.invalidateCached(parents);
+    await Promise.all(parents.map((dir) => this.load(dir)));
     if (arrived.length) {
       this.selection = new Set(arrived);
       this.selected = arrived[arrived.length - 1];
@@ -575,6 +670,7 @@ export class ExplorerModel {
     this.selected = path;
     this.anchor = path;
     this.selection = new Set([path]);
+    this.invalidateCached([editing.dir]);
     await this.load(editing.dir);
     return { path, kind: editing.kind };
   }
@@ -607,7 +703,13 @@ export class ExplorerModel {
     // The selection moves to whatever takes the removed rows' place.
     const entriesBefore = this.current.rows.filter((row) => row.type === "entry");
     const firstGone = entriesBefore.findIndex((row) => row.type === "entry" && paths.some((path) => isWithin(row.entry.path, path)));
-    await Promise.all([...new Set(paths.map(parentPath))].map((dir) => this.load(dir)));
+    const parents = [...new Set(paths.map(parentPath))];
+    this.invalidateCached(parents);
+    const tracked = new Set([...this.lastLoaded.keys(), ...this.listings.keys(), ...this.loadTokens.keys()]);
+    for (const dir of tracked) {
+      if (paths.some((path) => isWithin(dir, path))) this.evictSubtree(dir);
+    }
+    await Promise.all(parents.map((dir) => this.load(dir)));
     const gone = (candidate: string) => paths.some((path) => isWithin(candidate, path));
     for (const selected of this.selection) if (gone(selected)) this.selection.delete(selected);
     if (this.selected && gone(this.selected)) {
@@ -660,11 +762,54 @@ export class ExplorerModel {
     }
     let listing: Listing;
     try {
-      listing = { state: "loaded", entries: await fs.listDir(dir, { showHidden: this.showHidden }) };
+      const entries = await fs.listDir(dir, { showHidden: this.showHidden });
+      if (this.disposed || this.loadTokens.get(dir) !== token) return;
+      this.transportErrors.delete(dir);
+      this.lastLoaded.set(dir, entries);
+      listing = { state: "loaded", entries };
     } catch (error) {
-      listing = { state: "error", message: message(error) };
+      if (this.disposed || this.loadTokens.get(dir) !== token) return;
+      const raw = message(error);
+      const remoteId = remoteIdOf(dir);
+      const plainDisconnect = remoteId !== null && isTransportDisconnectError(raw);
+      const closedWithDiag = remoteId !== null && isClosedWithDiagnosticError(raw);
+      if (plainDisconnect) {
+        this.transportErrors.add(dir);
+        if (this.isRemoteDisconnected(dir)) {
+          const cached = this.cachedEntriesFor(dir);
+          if (cached) {
+            this.transportErrors.delete(dir);
+            this.listings.set(dir, { state: "loaded", entries: cached });
+            this.emit();
+            return;
+          }
+          listing = {
+            state: "error",
+            message: `Not connected to ${hostLabelForLocation(dir) ?? fallbackHostLabel(remoteId)}`,
+          };
+        } else {
+          listing = { state: "error", message: raw };
+        }
+      } else if (closedWithDiag && this.lastLoaded.has(dir)) {
+        // Keep the cached listing across transport loss while surfacing the stderr diagnostic.
+        this.transportErrors.add(dir);
+        this.fail(raw);
+        if (this.isRemoteDisconnected(dir)) {
+          const cached = this.cachedEntriesFor(dir);
+          if (cached) {
+            this.transportErrors.delete(dir);
+            this.listings.set(dir, { state: "loaded", entries: cached });
+            this.emit();
+            return;
+          }
+        }
+        listing = { state: "error", message: raw };
+      } else {
+        this.transportErrors.delete(dir);
+        this.lastLoaded.delete(dir);
+        listing = { state: "error", message: raw };
+      }
     }
-    if (this.disposed || this.loadTokens.get(dir) !== token) return;
     this.listings.set(dir, listing);
     if (listing.state === "loaded") this.forgetVanished(dir, listing.entries);
     this.emit();
@@ -675,14 +820,22 @@ export class ExplorerModel {
     const present = new Set(entries.filter((entry) => entry.kind === "dir").map((entry) => entry.path));
     let changed = false;
     const prefix = isRootLocation(dir) ? dir : `${dir}/`;
+    const isVanished = (path: string) => {
+      if (path === dir || !path.startsWith(prefix)) return false;
+      const child = joinPath(dir, path.slice(prefix.length).split("/")[0]);
+      return !present.has(child);
+    };
     for (const path of [...this.expanded]) {
-      const child =
-        path !== dir && path.startsWith(prefix) ? joinPath(dir, path.slice(prefix.length).split("/")[0]) : null;
-      if (child && !present.has(child)) {
+      if (isVanished(path)) {
         this.expanded.delete(path);
-        this.listings.delete(path);
+        this.evictSubtree(path);
         changed = true;
       }
+    }
+    // Also evict collapsed cached subtrees and invalidate in-flight reads whose ancestor disappeared.
+    const tracked = new Set([...this.lastLoaded.keys(), ...this.listings.keys(), ...this.loadTokens.keys()]);
+    for (const path of tracked) {
+      if (isVanished(path)) this.evictSubtree(path);
     }
     if (changed) {
       this.save();

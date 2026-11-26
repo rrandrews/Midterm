@@ -303,18 +303,23 @@ never replaces the local `PATH`. Tests: `*_reports_path_changes` in
 
 ### SSH
 
-`ssh host` from an integrated shell loads the same integration on the
-remote, so the remote's commands become blocks (see "Nested shells" under
-Blocks mode). Nothing is installed on the remote and nothing of the user's
-ssh setup changes.
+`ssh host` from an integrated shell runs through `ssh/run.sh` (see
+[ssh.md](ssh.md)), setting up OpenSSH `ControlMaster` multiplexing, announcing
+the connection via token-authenticated `OSC 6974;ssh=start/end`, and loading
+the same shell integration on the remote (plus one-time `OSC 6974;meta=1` for
+remote `$HOME` and shell name). Nothing is permanently installed on the remote
+and existing `ControlMaster` settings are respected. Direct-SSH panes (splits,
+"Open in new terminal" from a remote explorer, restored remote panes) pass an
+`ssh://<remoteId>/<posixPath>` `cwd` to `pty_spawn`, which spawns `ssh -t`
+directly over the ControlMaster socket.
 
 - **Opt-out**: the terminal setting `sshIntegration` (on by default, new
-  terminals). When on, `pty_spawn` passes `MIDTERM_SSH_DIR=<dir>/ssh`; the
-  scripts move it into a shell variable (`_midterm_ssh_dir`, fish
-  `__midterm_ssh_dir`), unexport it and define an `ssh` function, unless
-  the user has one (bash and fish check; in zsh the user's `.zshrc` runs
-  later and replaces ours). `command ssh` skips it for one call. Scripts,
-  git, rsync, scp and sftp run the ssh binary, not the function.
+  terminals). When on, `pty_spawn` passes `MIDTERM_SSH_DIR`,
+  `MIDTERM_SSH_SOCK_DIR`, and `MIDTERM_PTY_TOKEN`; the scripts move them into
+  non-exported shell variables and define an `ssh` function, unless the user
+  has one (bash and fish check; in zsh the user's `.zshrc` runs later and
+  replaces ours). `command ssh` skips it for one call. Scripts, git, rsync,
+  scp and sftp run the ssh binary, not the function.
 - **What is wrapped**: `ssh/should-wrap.sh` (POSIX sh, one parser for
   all three shells) exits 0 only for a plain interactive login: stdin and
   stdout are terminals; exactly one non-option argument (the
@@ -644,15 +649,33 @@ terminal's OSC 133 script. The tracker tells them apart by `aid`:
 - The session also leaves the scope (`resetScope`, no closing block) when
   the root shell is in the foreground again (`isShell`), in case its marks
   were missed.
-- Remote blocks get no git lookup and the terminal no file links while
-  nested. "Run again" needs the prompt to be in the block's scope.
-  History: the tracker keeps each command with its scope (`""` for the
-  root, the host, or `"nested"`); at a nested prompt the editor's history
-  and suggestions use that scope's commands only, and nothing from a
-  nested shell is saved to `history.json`. AI context names the remote
-  host instead of the local OS, branch and shell.
-- The header and the input's footer show `host:path` for a directory on
-  another machine.
+- **Tracked vs untracked SSH**: A first-hop SSH session — either nested via a
+  wrapped `ssh host` (registered through `OSC 6974;ssh=start`) or spawned
+  directly with an `ssh://` `initialCwd` (initialized directly in
+  `TerminalSession`'s constructor with `registration: "direct"`, without
+  emitting `ssh=start`) — tags its blocks with `remoteId` and uses scope
+  `ssh:<remoteId>`. It
+  gets full parity: remote git branch lookups (block headers and footer),
+  clickable remote file/folder links, `/open`, remote ⇥ path and `PATH`
+  command completion, explorer auto-following, remote `~` shortening, and
+  `<host>:<dir>` / `<host>: <program>` tab titles. Close confirmation still
+  relies on the real OS foreground check so active SSH sessions (or unmarked
+  remote programs like bash `(cat)`) warn before closing.
+- **Untracked nested shells** (unwrapped `ssh` without a registered connection,
+  or a 2nd-hop `ssh` / `docker exec` that emits prompt marks with a distinct
+  `aid` inside a 1st-hop connection) have no `remoteId`: they get no git
+  lookups, file links, `/open`, or ⇥ completion, so Midterm never acts on the
+  wrong host. Entering a marked 2nd-hop shell clears hop 1's tracked block
+  location and scope (an unmarked nested shell behaves like a foreground
+  command and does not toggle `subNested`).
+- "Run again" needs the prompt to be in the block's scope. History: the
+  tracker keeps each command with its scope (`""` for the local root,
+  `ssh:<remoteId>`, a host, or `"nested"`); remote commands stay out of local
+  `history.json` and local `commandPairs`. AI context names the remote host
+  (plus discovered remote OS/shell/branch for tracked connections) instead of
+  the local machine's.
+- The header and the input's footer show `host:path` (shortening the remote
+  host's home to `~` once known) for a directory on another machine.
 
 ### What is shown
 
@@ -836,7 +859,9 @@ and list are `src/components/panes/useCompletion.tsx` and
   backslash goes before `"`, `$`, `\` and backquotes.
 - ⇥ precedence: an empty line, a slash command line (`/cmd …`; but
   `/open`'s argument completes as a path, `slashCompletesPath`), a
-  selection, a nested shell's prompt (ssh: the files are elsewhere) or a
+  selection, an untracked nested shell's prompt (2nd-hop SSH or unwrapped
+  remote; tracked 1st-hop SSH completes against the remote host's filesystem
+  and `PATH`) or a
   word that cannot be completed accept the ghost suggestion as before;
   otherwise completion runs, and falls back to the suggestion when nothing
   matches. → always accepts the suggestion.

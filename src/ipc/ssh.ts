@@ -140,6 +140,15 @@ export function isMockSshConnected(remoteId: string): boolean {
   return mockConnections.get(remoteId)?.status === "connected";
 }
 
+/** Test-only helper to transition a mock SSH connection's status and notify listeners. */
+export function _setMockSshStatusForTests(remoteId: string, status: SshStatus): void {
+  const existing = mockConnections.get(remoteId);
+  if (!existing) return;
+  const next: SshConnectionInfo = { ...existing, status };
+  mockConnections.set(remoteId, next);
+  emitMock(next);
+}
+
 /** Test-only helper to clear mock SSH state between unit tests. */
 export function _resetMockSshForTests(): void {
   mockConnections.clear();
