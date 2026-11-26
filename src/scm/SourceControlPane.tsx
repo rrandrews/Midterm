@@ -421,7 +421,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
                 }}
                 placeholder={`Message (⌘↩ to commit${status.branch ? ` on "${status.branch}"` : ""})`}
                 aria-label="Commit message"
-                className="scm-commit-input block w-full resize-y rounded-[6px] border border-line-input bg-field px-2 py-1.5 font-sans text-menu leading-snug text-fg-bright placeholder:text-fg-faint outline-none focus:border-accent"
+                className="scm-commit-input block w-full resize-y rounded-[6px] border border-line-input bg-field px-2 py-1.5 font-sans text-menu leading-snug text-fg-bright placeholder:text-fg-faint outline-none select-text focus:border-accent"
               />
               {firstLineLen > 50 && (
                 <Tip content="Subject line length (50–72 chars recommended)" side="left">

@@ -305,6 +305,9 @@ async fn end_to_end_scm_workflow_on_real_repo() {
     let stashes = scm_stashes_inner(&ssh, &root).await.unwrap();
     assert_eq!(stashes.len(), 1);
     assert_eq!(stashes[0].message, "wip v3");
+    // Stash commits must not pollute the `--all` commit graph.
+    let all_log = scm_log_inner(&ssh, &root, 20, 0, true).await.unwrap();
+    assert!(all_log.iter().all(|c| !c.subject.contains("wip v3")));
     let stash_diff = scm_diff_inner(&ssh, &root, "app.ts", ScmDiffMode::Stash, Some("stash@{0}"), None)
         .await
         .unwrap();

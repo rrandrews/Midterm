@@ -1577,6 +1577,9 @@ pub(crate) async fn scm_log_inner(
         "--format=%H%x00%h%x00%P%x00%an%x00%ae%x00%at%x00%s%x00%b%x00%D%x00",
     ];
     if all {
+        // Exclude internal stash commits (`refs/stash`) from the commit graph;
+        // stashes have their own dedicated section.
+        args.push("--exclude=refs/stash");
         args.push("--all");
     }
     let out = run_git(ssh, &repo.root_loc, &args, None, true, LOCAL_TIMEOUT).await?;
