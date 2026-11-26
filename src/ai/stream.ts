@@ -1,4 +1,4 @@
-import { type AiError, type StreamReply, aiCancel, aiStream } from "../ipc/ai";
+import { type AiError, type AiTarget, type StreamReply, aiCancel, aiStream } from "../ipc/ai";
 import type { AiFeature } from "../settings/schema";
 import { featureProblem, targetFor } from "./profiles";
 
@@ -10,7 +10,7 @@ import { featureProblem, targetFor } from "./profiles";
  * No calls after an error or `cancel()`.
  */
 
-export type StreamRequest = { system: string; prompt: string; maxTokens?: number };
+export type StreamRequest = { system: string; prompt: string; maxTokens?: number; target?: AiTarget };
 
 export type TextStream = { result: Promise<StreamReply>; cancel: () => void };
 
@@ -28,7 +28,8 @@ const nextFrame: (run: () => void) => () => void =
       };
 
 export function streamText(feature: AiFeature, request: StreamRequest, onText: (soFar: string) => void): TextStream {
-  const target = targetFor(feature);
+  const { target: explicitTarget, ...rest } = request;
+  const target = explicitTarget ?? targetFor(feature);
   if (!target) {
     const error: AiError = { kind: "other", message: featureProblem(feature) ?? "No model is set up for this feature." };
     return { result: Promise.reject(error), cancel: () => {} };
@@ -48,7 +49,7 @@ export function streamText(feature: AiFeature, request: StreamRequest, onText: (
     pending?.();
     pending = null;
   };
-  const result = aiStream({ requestId, target, ...request }, (delta) => {
+  const result = aiStream({ requestId, target, ...rest }, (delta) => {
     if (!live) return;
     soFar += delta;
     pending ??= nextFrame(() => {

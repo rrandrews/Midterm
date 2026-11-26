@@ -173,8 +173,37 @@ describe("migrateSettings", () => {
   });
 
   it("leaves current settings alone", () => {
-    const current = { version: 6, accent: "#8B9CFF", plugins: { terminal: { settings: { bell: "off" } } }, ai: { profiles: [], defaultProfile: "", features: {} } };
+    const current = { version: 7, accent: "#8B9CFF", plugins: { terminal: { settings: { bell: "off" } } }, ai: { profiles: [], defaultProfile: "", features: {} } };
     expect(migrateSettings(current)).toEqual(current);
+  });
+
+  it("migrates v6 workspace ai.features replacement maps so omitted base features keep workspace default", () => {
+    const migrated = migrateSettings({
+      version: 6,
+      ai: {
+        profiles: [
+          { id: "local", name: "Local", provider: "custom", model: "llama", baseUrl: "http://localhost:11434/v1", cliPath: "" },
+          { id: "hosted", name: "Hosted", provider: "openai", model: "gpt-4o", baseUrl: "", cliPath: "" },
+        ],
+        defaultProfile: "hosted",
+        features: { cmd: "hosted" },
+      },
+      workspaces: {
+        w1: {
+          overrides: {
+            ai: { defaultProfile: "local", features: { agent: "local" } },
+          },
+          env: [],
+          secrets: [],
+        },
+      },
+    });
+    const validated = validateSettings(migrated);
+    expect(validated.workspaces.w1.overrides.ai?.features).toEqual({ agent: "local", cmd: "" });
+    const eff = effectiveSettings(validated, "w1");
+    expect(eff.ai.defaultProfile).toBe("local");
+    expect(eff.ai.features.cmd).toBeUndefined();
+    expect(eff.ai.features.agent).toBe("local");
   });
 });
 

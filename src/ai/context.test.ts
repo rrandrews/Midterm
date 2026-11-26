@@ -12,8 +12,34 @@ describe("redact", () => {
     ["key sk-ant-api03-abcdefghijklmnopqrstuv", "key [redacted]"],
     ["id AKIAABCDEFGHIJKLMNOP", "id [redacted]"],
     ["jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4f", "jwt [redacted]"],
+    ['{"password": "ordinary-pass", "host": "db.local"}', '{"password": [redacted], "host": "db.local"}'],
+    ["'api_key': 'plain-value'", "'api_key': [redacted]"],
+    ["export DB_PASSWORD=abc,def", "export DB_PASSWORD=[redacted]"],
+    ["export DB_PASSWORD=,leading", "export DB_PASSWORD=[redacted]"],
+    ['"password": first,second', '"password": [redacted]'],
+    ['"password": ,leading', '"password": [redacted]'],
+    ["PASSWORD=ghp_abcdefghijklmnopqrstuvwxyz:second-factor", "PASSWORD=[redacted]"],
+    ['PASSWORD="unclosed-secret-at-hunk-end', "PASSWORD=[redacted]"],
+    ['PASSWORD="dangling-escape\\', "PASSWORD=[redacted]"],
+    ['PASSWORD="line1\\\nline2"', "PASSWORD=[redacted]"],
+    ["password: 'it''s-sensitive'", "password: [redacted]"],
+    ['--password abc"def"', "--password [redacted]"],
   ])("%s", (input, expected) => {
     expect(redact(input)).toBe(expected);
+  });
+
+  it("masks YAML block-scalar secret lines (both indicator orders and sequence items) while keeping sibling keys", () => {
+    const yaml = "db:\n  password: |2-\n    first-secret-line\n    second-secret-line\n  host: db.internal";
+    const redacted = redact(yaml, { preserveLineCount: true });
+    expect(redacted).not.toContain("first-secret-line");
+    expect(redacted).not.toContain("second-secret-line");
+    expect(redacted).toContain("  host: db.internal");
+    expect(redacted.split("\n")).toHaveLength(yaml.split("\n").length);
+
+    const seqYaml = "- password: |\n    seq-secret-line\n  host: db.internal";
+    const seqRedacted = redact(seqYaml, { preserveLineCount: true });
+    expect(seqRedacted).not.toContain("seq-secret-line");
+    expect(seqRedacted).toContain("  host: db.internal");
   });
 
   it("removes a whole private key", () => {

@@ -1,6 +1,9 @@
+import { featureProblem, targetFor } from "../ai/profiles";
+import { streamText, type TextStream } from "../ai/stream";
 import { confirm } from "../components/ui/ConfirmDialog";
 import { joinPath, parentPath } from "../explorer/tree";
 import { formatRemoteLocation, isRemotePath, parseLocation, remoteIdOf } from "../files/location";
+import { toAiError } from "../ipc/ai";
 import * as fs from "../ipc/fs";
 import type { Watcher } from "../ipc/fs";
 import * as scm from "../ipc/scm";
@@ -9,6 +12,7 @@ import type {
   ScmBranch,
   ScmCommit,
   ScmCommitFile,
+  ScmFileChange,
   ScmStash,
   ScmStatus,
 } from "../ipc/scm";
@@ -17,6 +21,13 @@ import { homeDirectory } from "../ipc/system";
 import { pluginSettings } from "../plugins/settings";
 import { refreshTabTitles } from "../plugins/tabTitles";
 import { getConnection, hostLabelForLocation, subscribeConnections } from "../ssh/connections";
+import {
+  buildCommitMessageContext,
+  cleanGeneratedCommitMessage,
+  MAX_PROMPT_CHARS,
+  MAX_SYSTEM_PROMPT_CHARS,
+  resolveCommitPrompt,
+} from "./commitMessage";
 import { DEFAULT_SCM_WEIGHTS, type ScmPaneKey, type ScmPaneWeights } from "./layout";
 
 /*
@@ -27,6 +38,8 @@ import { DEFAULT_SCM_WEIGHTS, type ScmPaneKey, type ScmPaneWeights } from "./lay
  */
 
 export type ScmViewMode = "list" | "tree";
+
+export type ScmErrorAction = "open-scm-settings" | "open-ai-settings" | null;
 
 export type ScmSettingsPersist = {
   root: string;
@@ -42,9 +55,12 @@ export type ScmSnapshot = {
   viewMode: ScmViewMode;
   status: ScmStatus | null;
   notARepo: boolean;
+  rootPending: boolean;
   loading: boolean;
   busyAction: string | null;
+  generatingCommitMessage: boolean;
   error: string | null;
+  errorAction: ScmErrorAction;
   notice: string | null;
   disconnectedError: boolean;
   commitMessage: string;
@@ -121,6 +137,25 @@ function scmPluginOption<T>(key: string, fallback: T): T {
   return (val === undefined ? fallback : val) as T;
 }
 
+/** Fingerprint of the Git context currently feeding AI commit message generation. */
+function commitContextKey(status: ScmStatus | null, amend: boolean): string {
+  if (!status) return "";
+  const parts = [normalizeScmRoot(status.root), status.branch ?? "", status.headOid ?? "", amend ? "amend" : "new"];
+  const addList = (tag: string, list: readonly ScmFileChange[]) => {
+    if (list.length === 0) return;
+    parts.push(`${tag}:${list.map((f) => `${f.status}:${f.origPath ?? ""}:${f.path}`).join(",")}`);
+  };
+  if (amend) {
+    addList("S", status.staged);
+  } else if (status.staged.length > 0) {
+    addList("S", status.staged);
+  } else {
+    addList("U", status.unstaged);
+    addList("N", status.untracked);
+  }
+  return parts.join("|");
+}
+
 type RepoDraft = { message: string; amend: boolean };
 
 export class ScmModel {
@@ -132,9 +167,12 @@ export class ScmModel {
 
   private status: ScmStatus | null = null;
   private notARepo = false;
+  private rootResolved = false;
   private loading = false;
   private busyAction: string | null = null;
+  private generatingCommitMessage = false;
   private error: string | null = null;
+  private errorAction: ScmErrorAction = null;
   private notice: string | null = null;
   private disconnectedError = false;
 
@@ -142,6 +180,11 @@ export class ScmModel {
   private amend = false;
   private activeDraftRepo: string | null = null;
   private draftsByRepo = new Map<string, RepoDraft>();
+  private commitGenStream: TextStream | null = null;
+  private commitGenId = 0;
+  private commitGenContextKey = "";
+  private commitGenPrevDraft = "";
+  private commitGenDirty = false;
 
   private branches: ScmBranch[] = [];
   private commits: ScmCommit[] = [];
@@ -220,9 +263,12 @@ export class ScmModel {
       viewMode: this.viewMode,
       status: this.status,
       notARepo: this.notARepo,
+      rootPending: !this.rootResolved,
       loading: this.loading,
       busyAction: this.busyAction,
+      generatingCommitMessage: this.generatingCommitMessage,
       error: this.error,
+      errorAction: this.errorAction,
       notice: this.notice,
       disconnectedError: this.disconnectedError,
       commitMessage: this.commitMessage,
@@ -254,9 +300,31 @@ export class ScmModel {
     });
   }
 
+  private setErrorState(message: string | null, action: ScmErrorAction = null): void {
+    this.error = message;
+    this.errorAction = message ? action : null;
+  }
+
+  private cancelCommitGeneration(opts: { emit: boolean; restoreDraft?: boolean }): void {
+    const wasGenerating = this.generatingCommitMessage || this.commitGenStream !== null;
+    this.commitGenId += 1;
+    const stream = this.commitGenStream;
+    this.commitGenStream = null;
+    this.generatingCommitMessage = false;
+    this.commitGenContextKey = "";
+    this.commitGenDirty = false;
+    if (wasGenerating && opts.restoreDraft) {
+      this.commitMessage = this.commitGenPrevDraft;
+    }
+    this.commitGenPrevDraft = "";
+    stream?.cancel();
+    if (opts.emit && wasGenerating && !this.disposed) this.emit();
+  }
+
   private switchDraftRepo(nextRepo: string | null): void {
     const normalizedNext = nextRepo ? normalizeScmRoot(nextRepo) : null;
     if (this.activeDraftRepo === normalizedNext) return;
+    this.cancelCommitGeneration({ emit: false, restoreDraft: true });
     if (this.activeDraftRepo) {
       this.draftsByRepo.set(this.activeDraftRepo, {
         message: this.commitMessage,
@@ -270,13 +338,13 @@ export class ScmModel {
   }
 
   showError(message: string): void {
-    this.error = message;
+    this.setErrorState(message);
     this.emit();
   }
 
   clearError(): void {
     if (!this.error) return;
-    this.error = null;
+    this.setErrorState(null);
     this.emit();
   }
 
@@ -323,6 +391,7 @@ export class ScmModel {
 
   dispose(): void {
     this.disposed = true;
+    this.cancelCommitGeneration({ emit: false });
     this.detach();
     clearTimeout(this.noticeTimer);
     this.listeners.clear();
@@ -341,9 +410,18 @@ export class ScmModel {
     // Lightweight visibility-gated fallback catches working-tree edits inside nested
     // subdirectories without needing a recursive filesystem watch over large repos.
     this.pollTimer = setInterval(() => {
-      if (!this.attached || this.disposed || this.busyAction || this.disconnectedError || !this.status) return;
+      if (
+        !this.attached ||
+        this.disposed ||
+        this.busyAction ||
+        this.generatingCommitMessage ||
+        this.disconnectedError ||
+        !this.status
+      ) {
+        return;
+      }
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      void this.refresh({ includeMeta: false, silent: true, keepError: true });
+      void this.refresh({ includeMeta: false, silent: true, keepError: true, poll: true });
     }, VISIBILITY_POLL_MS);
   }
 
@@ -372,7 +450,7 @@ export class ScmModel {
       this.lastSshStatus = next;
       if (prev !== "connected" && next === "connected") {
         this.disconnectedError = false;
-        this.error = null;
+        this.setErrorState(null);
         void this.refresh({ includeMeta: true });
       }
     });
@@ -382,6 +460,7 @@ export class ScmModel {
     this.unsubRepo?.();
     if (!this.attached) return;
     this.unsubRepo = subscribeRepoChange(this.repoRoot, () => {
+      if (this.generatingCommitMessage) this.commitGenDirty = true;
       this.scheduleRefresh(80);
     });
   }
@@ -392,6 +471,7 @@ export class ScmModel {
     void fs
       .watch(() => {
         if (!this.attached || this.disposed) return;
+        if (this.generatingCommitMessage) this.commitGenDirty = true;
         this.scheduleRefresh(WATCH_DEBOUNCE_MS);
       })
       .then((watcher) => {
@@ -458,14 +538,16 @@ export class ScmModel {
   setRoot(nextRaw: string): void {
     const next = normalizeScmRoot(nextRaw);
     if (!next || next === this.root) return;
+    this.cancelCommitGeneration({ emit: false, restoreDraft: true });
     this.root = next;
+    this.rootResolved = false;
     this.loadingMoreCommits = false;
     this.historyGen += 1;
     // Note: keep `status` & draft until `refresh` resolves whether `next` is a subdirectory
     // of the SAME repository or a genuinely different repository.
     this.notARepo = false;
     this.disconnectedError = false;
-    this.error = null;
+    this.setErrorState(null);
     this.persist();
     this.emit();
     if (this.attached) {
@@ -500,14 +582,226 @@ export class ScmModel {
   }
 
   setCommitMessage(message: string): void {
+    if (this.generatingCommitMessage || this.commitGenStream) {
+      this.cancelCommitGeneration({ emit: false, restoreDraft: false });
+    }
     if (this.commitMessage === message) return;
     this.commitMessage = message;
     this.emit();
   }
 
+  cancelGenerateCommitMessage(): void {
+    this.cancelCommitGeneration({ emit: true, restoreDraft: false });
+  }
+
+  async generateCommitMessage(): Promise<void> {
+    if (this.disposed) return;
+    if (this.generatingCommitMessage) {
+      this.cancelGenerateCommitMessage();
+      return;
+    }
+    const statusSnap = this.status;
+    if (!statusSnap || !this.rootResolved) return;
+
+    // Pin target model and prompt at invocation so workspace switches during
+    // diff collection never route this repo's source to a different provider.
+    const pinnedTarget = targetFor("commit");
+    if (!pinnedTarget) {
+      this.setErrorState(
+        featureProblem("commit") ?? "No AI model configured for commit messages.",
+        "open-scm-settings",
+      );
+      this.emit();
+      return;
+    }
+    const pinnedPrompt = resolveCommitPrompt();
+    if (pinnedPrompt.length > MAX_SYSTEM_PROMPT_CHARS) {
+      this.setErrorState(
+        `Commit message prompt is too long (max ${MAX_SYSTEM_PROMPT_CHARS.toLocaleString()} characters). Shorten it in Settings → Source Control.`,
+        "open-scm-settings",
+      );
+      this.emit();
+      return;
+    }
+    const contextBudget = MAX_PROMPT_CHARS - pinnedPrompt.length;
+
+    const commitsSnap = this.commits;
+    const amendSnap = this.amend;
+    const prevDraft = this.commitMessage;
+    const startContextKey = commitContextKey(statusSnap, amendSnap);
+    const genId = ++this.commitGenId;
+
+    const isStale = () =>
+      this.disposed ||
+      !this.rootResolved ||
+      genId !== this.commitGenId ||
+      commitContextKey(this.status, this.amend) !== startContextKey;
+
+    this.generatingCommitMessage = true;
+    this.commitGenContextKey = startContextKey;
+    this.commitGenPrevDraft = prevDraft;
+    this.commitGenDirty = false;
+    this.setErrorState(null);
+    this.emit();
+
+    let context: string | null;
+    try {
+      context = await buildCommitMessageContext({
+        status: statusSnap,
+        commits: commitsSnap,
+        amend: amendSnap,
+        maxChars: contextBudget,
+        shouldAbort: isStale,
+      });
+    } catch (error) {
+      if (this.disposed || genId !== this.commitGenId) return;
+      this.generatingCommitMessage = false;
+      this.commitGenContextKey = "";
+      this.commitGenPrevDraft = "";
+      this.commitGenDirty = false;
+      this.setErrorState(`Failed to collect diff context: ${errMsg(error)}`);
+      this.emit();
+      return;
+    }
+
+    if (isStale()) {
+      if (!this.disposed && genId === this.commitGenId) {
+        this.generatingCommitMessage = false;
+        this.commitGenContextKey = "";
+        this.commitGenPrevDraft = "";
+        this.commitGenDirty = false;
+        this.emit();
+      }
+      return;
+    }
+
+    if (!context) {
+      this.generatingCommitMessage = false;
+      this.commitGenContextKey = "";
+      this.commitGenPrevDraft = "";
+      this.commitGenDirty = false;
+      this.setErrorState("No changes to generate a commit message from.");
+      this.emit();
+      return;
+    }
+
+    let streamedAny = false;
+    const stream = streamText(
+      "commit",
+      {
+        target: pinnedTarget,
+        system: pinnedPrompt,
+        prompt: context,
+        maxTokens: 512,
+      },
+      (soFar) => {
+        if (isStale()) return;
+        const cleaned = cleanGeneratedCommitMessage(soFar);
+        if (!cleaned) return;
+        streamedAny = true;
+        this.commitMessage = cleaned;
+        this.emit();
+      },
+    );
+    this.commitGenStream = stream;
+
+    try {
+      const reply = await stream.result;
+      if (this.disposed || genId !== this.commitGenId) return;
+      this.commitGenStream = null;
+      const wasDirty = this.commitGenDirty;
+
+      if (isStale()) {
+        this.generatingCommitMessage = false;
+        this.commitGenContextKey = "";
+        this.commitGenPrevDraft = "";
+        this.commitGenDirty = false;
+        this.commitMessage = prevDraft;
+        this.emit();
+        return;
+      }
+
+      // If a watcher event, repo change, or refresh fired during generation,
+      // re-fetch live Git status AND re-verify the diff contents (catching
+      // debounced staging/branch updates as well as in-place edits).
+      if (wasDirty) {
+        this.commitGenDirty = false;
+        const freshStatus = await scm.scmStatus(statusSnap.root).catch(() => null);
+        if (this.disposed || genId !== this.commitGenId) return;
+        const statusUnchanged =
+          freshStatus !== null && commitContextKey(freshStatus, amendSnap) === startContextKey;
+        const latestContext =
+          statusUnchanged && !isStale()
+            ? await buildCommitMessageContext({
+                status: freshStatus,
+                commits: commitsSnap,
+                amend: amendSnap,
+                maxChars: contextBudget,
+                shouldAbort: () => isStale() || this.commitGenDirty,
+              }).catch(() => null)
+            : null;
+        if (this.disposed || genId !== this.commitGenId) return;
+        if (isStale() || this.commitGenDirty || !statusUnchanged || latestContext !== context) {
+          this.generatingCommitMessage = false;
+          this.commitGenContextKey = "";
+          this.commitGenPrevDraft = "";
+          this.commitGenDirty = false;
+          this.commitMessage = prevDraft;
+          this.setErrorState("Repository changes updated while generating — please generate again.");
+          this.emit();
+          return;
+        }
+      }
+
+      this.generatingCommitMessage = false;
+      this.commitGenContextKey = "";
+      this.commitGenPrevDraft = "";
+      this.commitGenDirty = false;
+
+      const finalMsg = cleanGeneratedCommitMessage(reply.text);
+      if (finalMsg) {
+        this.commitMessage = finalMsg;
+        if (reply.stop === "length") {
+          this.setErrorState(
+            "Generated commit message reached the token limit and may be incomplete — review before committing.",
+          );
+        }
+      } else if (!streamedAny) {
+        this.commitMessage = prevDraft;
+        this.setErrorState("The model returned an empty commit message.");
+      }
+      this.emit();
+    } catch (error) {
+      if (this.disposed || genId !== this.commitGenId) return;
+      this.commitGenStream = null;
+      this.generatingCommitMessage = false;
+      this.commitGenContextKey = "";
+      this.commitGenPrevDraft = "";
+      this.commitGenDirty = false;
+      const aiErr = toAiError(error);
+      if (aiErr.kind === "cancelled") {
+        if (!streamedAny) this.commitMessage = prevDraft;
+        this.emit();
+        return;
+      }
+      if (!streamedAny) this.commitMessage = prevDraft;
+      const action: ScmErrorAction =
+        aiErr.kind === "noKey" || aiErr.kind === "auth"
+          ? "open-ai-settings"
+          : !targetFor("commit")
+            ? "open-scm-settings"
+            : null;
+      this.setErrorState(aiErr.message, action);
+      this.emit();
+    }
+  }
+
   setAmend(amend: boolean): void {
     if (this.amend === amend) return;
     this.amend = amend;
+    if (this.generatingCommitMessage && commitContextKey(this.status, this.amend) !== this.commitGenContextKey) {
+      this.cancelCommitGeneration({ emit: false, restoreDraft: true });
+    }
     this.emit();
 
     // Prefill from actual HEAD commit (not `commits[0]`, which comes from `--all`).
@@ -556,8 +850,14 @@ export class ScmModel {
     this.emit();
   }
 
-  async refresh(opts?: { includeMeta?: boolean; silent?: boolean; keepError?: boolean }): Promise<void> {
+  async refresh(opts?: {
+    includeMeta?: boolean;
+    silent?: boolean;
+    keepError?: boolean;
+    poll?: boolean;
+  }): Promise<void> {
     if (this.disposed) return;
+    if (this.generatingCommitMessage && !opts?.poll) this.commitGenDirty = true;
     const gen = ++this.refreshGen;
     const targetRoot = this.root;
     if (!opts?.silent) {
@@ -571,6 +871,7 @@ export class ScmModel {
 
       this.loading = false;
       this.disconnectedError = false;
+      this.rootResolved = true;
       if (!status) {
         const hadBranch = this.status?.branch ?? null;
         this.status = null;
@@ -585,7 +886,7 @@ export class ScmModel {
         this.commitFiles = {};
         this.stashFiles = {};
         this.collapsedDirs.clear();
-        if (!opts?.keepError) this.error = null;
+        if (!opts?.keepError) this.setErrorState(null);
         this.syncWatchedDirs();
         if (hadBranch !== null) refreshTabTitles();
         this.emit();
@@ -614,7 +915,10 @@ export class ScmModel {
 
       this.status = status;
       this.notARepo = false;
-      if (!opts?.keepError) this.error = null;
+      if (this.generatingCommitMessage && commitContextKey(this.status, this.amend) !== this.commitGenContextKey) {
+        this.cancelCommitGeneration({ emit: false, restoreDraft: true });
+      }
+      if (!opts?.keepError) this.setErrorState(null);
       this.syncWatchedDirs();
       if (repoChanged) this.bindRepoSubscription();
       if (prevBranch !== status.branch) refreshTabTitles();
@@ -656,10 +960,10 @@ export class ScmModel {
       this.loading = false;
       if (isRemotePath(targetRoot) && isTransportDisconnectError(text)) {
         this.disconnectedError = true;
-        this.error = null;
+        this.setErrorState(null);
       } else {
         this.disconnectedError = false;
-        this.error = text;
+        this.setErrorState(text);
       }
       this.emit();
     }
@@ -675,8 +979,11 @@ export class ScmModel {
       this.showError("Repository changed before action ran — please retry.");
       return undefined;
     }
+    if (this.generatingCommitMessage || this.commitGenStream) {
+      this.cancelCommitGeneration({ emit: false, restoreDraft: true });
+    }
     this.busyAction = label;
-    this.error = null;
+    this.setErrorState(null);
     this.emit();
     try {
       const result = await fn(targetRoot);
@@ -689,7 +996,7 @@ export class ScmModel {
     } catch (error) {
       if (!this.disposed) {
         this.busyAction = null;
-        this.error = errMsg(error);
+        this.setErrorState(errMsg(error));
         this.emit();
         // Refresh partial Git state (e.g. merge conflicts) WITHOUT clearing the error banner.
         await this.refresh({ includeMeta: true, silent: true, keepError: true });
@@ -751,6 +1058,10 @@ export class ScmModel {
   }
 
   async commit(options?: { push?: boolean; sync?: boolean; amend?: boolean }): Promise<void> {
+    if (this.generatingCommitMessage) {
+      this.showError("Wait for commit message generation to finish or stop it before committing.");
+      return;
+    }
     const submittedRaw = this.commitMessage;
     const msg = submittedRaw.trim();
     if (!msg) {
@@ -875,7 +1186,7 @@ export class ScmModel {
       return false;
     }
     this.busyAction = `Deleting ${name}…`;
-    this.error = null;
+    this.setErrorState(null);
     this.emit();
     try {
       await scm.scmDeleteBranch(targetRoot, name, force);
@@ -1077,7 +1388,7 @@ export class ScmModel {
     } catch (error) {
       if (!this.disposed && gen === this.historyGen) {
         this.loadingMoreCommits = false;
-        this.error = errMsg(error);
+        this.setErrorState(errMsg(error));
         this.emit();
       }
     }

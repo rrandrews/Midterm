@@ -15,14 +15,16 @@ Midterm ships a built-in **Source Control** plugin (`id: "source-control"`, icon
 | `src/scm/tree.ts` | Path splitting, compacted folder tree builder (for List vs Tree view), single-hunk unified patch builder (`buildHunkPatch`), status badge tokens, and relative timestamps. |
 | `src/scm/graph.ts` | Pure SVG commit-graph lane layout calculator (`computeGraphLayout`). |
 | `src/scm/layout.ts` | Vertical accordion sizing & sash-drag calculations (`Changes`, `Graph`, `Stashes`) with `< 1.5 lines` auto-collapse and outward-drag re-expansion. |
-| `src/scm/model.ts` | Per-pane `ScmModel` (outside React), fs watching (`root`, `gitDir`, `refs/heads`), SSH reconnect recovery, cross-pane `notifyRepoChange` / `subscribeRepoChange` sync, accordion section weights, and all Git actions. |
+| `src/scm/commitMessage.ts` | Default commit-message prompt (`DEFAULT_COMMIT_PROMPT`), custom prompt resolution, response fence/quote cleanup, and bounded (`24 KB`), abortable, secret-redacted diff context assembly (amend: HEAD + staged; normal: staged > unstaged+untracked; lockfile diffs skipped). |
+| `src/scm/ScmSettingsSection.tsx` | Custom Settings → Source Control section for choosing the AI model profile (`settings.ai.features.commit`) from saved models and editing/resetting the commit message prompt. |
+| `src/scm/model.ts` | Per-pane `ScmModel` (outside React), fs watching (`root`, `gitDir`, `refs/heads`), SSH reconnect recovery, cross-pane `notifyRepoChange` / `subscribeRepoChange` sync, accordion section weights, AI commit message streaming/cancellation, and all Git actions. |
 | `src/scm/registry.ts` | `createPaneState` registry, terminal-following / linking logic (matching `src/explorer/explorers.ts`), and `openScmDiff` sibling diff pane manager. |
-| `src/scm/SourceControlPane.tsx` | Sidebar view (commit composer defaulting to min height, right-aligned Amend/Undo, split Commit/Sync/Publish button, 3-pane resizable Changes/Graph/Stashes accordion with nested Merge Conflicts/Staged/Unstaged groups, bottom branch & sync bar) and diff-mode router. |
+| `src/scm/SourceControlPane.tsx` | Sidebar view (commit composer defaulting to min height, right-aligned Generate/Amend/Undo, split Commit/Sync/Publish button, 3-pane resizable Changes/Graph/Stashes accordion with nested Merge Conflicts/Staged/Unstaged groups, bottom branch & sync bar) and diff-mode router. |
 | `src/scm/DiffView.tsx` | Interactive Diff Viewer pane (`ScmDiffPane`): Unified and Side-by-Side (Split) layouts, word-level inline highlights (`diffWordsWithSpace`), prev/next hunk navigation, Stage Hunk / Unstage Hunk / Revert Hunk actions, and Open File in Editor. |
 | `src/scm/BranchPicker.tsx` | Searchable branch switcher popover with inline branch creation, rename, merge, and delete (with unmerged force-delete fallback). |
 | `src/scm/CommitGraph.tsx` | Resizable Graph accordion pane with compact relative timestamps (no `"ago"`), non-local ref pills on title rows, continuous vertical SVG rails alongside expanded commit details, SHA copy, and changed-file commit diff links. |
 | `src/scm/StashList.tsx` | Collapsible Stashes section with inline stash creation (optional message + include untracked), Pop / Apply / Drop actions, and expandable stash file diffs. |
-| `src/scm/menus.ts`, `src/scm/skills.ts`, `src/scm/plugin.tsx` | Pane options/context menus, AI `source-control.git` read skill (`status`, `diff`, `log`, `branches`), commands (`Ctrl+Shift+G`), and declarative settings. |
+| `src/scm/menus.ts`, `src/scm/skills.ts`, `src/scm/plugin.tsx` | Pane options/context menus, AI `source-control.git` read skill (`status`, `diff`, `log`, `branches`), commands (`Ctrl+Shift+G`, generate commit message), declarative settings, and custom `ScmSettingsSection`. |
 | `src/styles/scm.css` | Theme-token styles for sidebar headers, buttons, and diff highlights (dark & light compatible). |
 
 ## Dual-mode pane architecture

@@ -8,9 +8,11 @@ import {
   type AiSettings,
   type Settings,
   clip,
+  isOverridden,
   uniqueName,
+  workspaceEntry,
 } from "../settings/schema";
-import { type SettingsScope, getSettings, settingsFor, useSettings } from "../settings/settings";
+import { DEFAULT_SCOPE, type SettingsScope, getSettings, useSettings } from "../settings/settings";
 
 /*
  * Model profiles (see docs/ai.md): which profile a feature uses, whether it
@@ -24,6 +26,7 @@ export const FEATURES: readonly { id: AiFeature; label: string; hint: string }[]
   { id: "cmd", label: "/cmd", hint: "Writes a command for a task described in the blocks editor." },
   { id: "explain", label: "Explain and fix", hint: "Explains a block's output, and fixes a failed command into the blocks editor." },
   { id: "agent", label: "Agent", hint: "Works with your panes through plugin skills (/agent, AI: Ask the agent…, the Agent pane)." },
+  { id: "commit", label: "Commit messages", hint: "Generates Git commit messages in Source Control." },
 ];
 
 /**
@@ -210,10 +213,23 @@ export function setDefaultProfile(id: string, scope?: SettingsScope): void {
 
 /** Points `feature` at a profile; null makes it use the default. */
 export function setFeatureProfile(feature: AiFeature, id: string | null, scope?: SettingsScope): void {
-  const features = { ...(scope ? settingsFor(scope) : getSettings()).ai.features };
+  const store = useSettings.getState();
+  const targetScope: SettingsScope =
+    scope ??
+    (store.activeWorkspace &&
+    isOverridden(workspaceEntry(store.base, store.activeWorkspace)?.overrides, `ai.features.${feature}`)
+      ? store.activeWorkspace
+      : DEFAULT_SCOPE);
+  if (targetScope !== DEFAULT_SCOPE) {
+    const features = { ...(workspaceEntry(store.base, targetScope)?.overrides.ai?.features ?? {}) };
+    features[feature] = id ?? "";
+    update({ features }, targetScope);
+    return;
+  }
+  const features = { ...store.base.ai.features };
   if (id) features[feature] = id;
   else delete features[feature];
-  update({ features }, scope);
+  update({ features }, DEFAULT_SCOPE);
 }
 
 /** What deleting a profile does to the features, for the confirmation (empty when nothing uses it). */

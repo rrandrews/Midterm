@@ -7,7 +7,7 @@
 export const ACCENT_PRESETS = ["#8B9CFF", "#5EEAD4", "#F5A524", "#F472B6"] as const;
 
 /** Bump when the saved shape changes, and migrate in `migrateSettings`. */
-export const SETTINGS_VERSION = 6;
+export const SETTINGS_VERSION = 7;
 
 /**
  * A plugin's entry in the settings: whether it is enabled, its own settings
@@ -50,7 +50,7 @@ export type AiProfile = {
 };
 
 /** Features that send requests to a model; each can use its own profile. */
-export const AI_FEATURES = ["suggestions", "cmd", "explain", "agent"] as const;
+export const AI_FEATURES = ["suggestions", "cmd", "explain", "agent", "commit"] as const;
 export type AiFeature = (typeof AI_FEATURES)[number];
 
 /** AI features (see docs/ai.md). Nothing is sent until a feature resolves to a ready profile. */
@@ -328,6 +328,35 @@ export function migrateSettings(raw: unknown): Record<string, unknown> {
     data.ai = ai;
   }
   // Version 6 added env, secrets, python and workspaces; their defaults need no migration.
+  if (version < 7 && isRecord(data.workspaces)) {
+    // Version 7 merges workspace `ai.features` overrides per feature instead of
+    // replacing the whole map; preserve legacy workspaces that explicitly chose
+    // "Default" by omitting a feature present in base `ai.features`.
+    const baseAi = isRecord(data.ai) ? data.ai : null;
+    const baseFeatures = baseAi && isRecord(baseAi.features) ? baseAi.features : null;
+    if (baseFeatures) {
+      const workspaces: Record<string, unknown> = { ...data.workspaces };
+      for (const [id, rawWs] of Object.entries(workspaces)) {
+        if (!isRecord(rawWs) || !isRecord(rawWs.overrides) || !isRecord(rawWs.overrides.ai)) continue;
+        const wsFeatures = rawWs.overrides.ai.features;
+        if (!isRecord(wsFeatures)) continue;
+        const migratedFeatures: Record<string, unknown> = { ...wsFeatures };
+        for (const feature of AI_FEATURES) {
+          if (feature in baseFeatures && !(feature in migratedFeatures)) {
+            migratedFeatures[feature] = "";
+          }
+        }
+        workspaces[id] = {
+          ...rawWs,
+          overrides: {
+            ...rawWs.overrides,
+            ai: { ...rawWs.overrides.ai, features: migratedFeatures },
+          },
+        };
+      }
+      data.workspaces = workspaces;
+    }
+  }
   data.version = SETTINGS_VERSION;
   return data;
 }
@@ -527,7 +556,18 @@ export function applyOverrides(base: Settings, overrides: SettingsOverrides): Se
   for (const key of OVERRIDABLE) {
     if (key in overrides) (merged as Record<string, unknown>)[key] = overrides[key];
   }
-  if (overrides.ai) merged.ai = { ...base.ai, ...overrides.ai };
+  if (overrides.ai) {
+    const ai: AiSettings = { ...base.ai, ...overrides.ai };
+    if (overrides.ai.features) {
+      const features: Partial<Record<AiFeature, string>> = { ...base.ai.features };
+      for (const [feature, id] of Object.entries(overrides.ai.features)) {
+        if (id) features[feature as AiFeature] = id;
+        else delete features[feature as AiFeature];
+      }
+      ai.features = features;
+    }
+    merged.ai = ai;
+  }
   if (overrides.plugins) {
     const plugins = { ...base.plugins };
     for (const [id, entry] of Object.entries(overrides.plugins)) {
@@ -566,6 +606,20 @@ export function validateOverrides(raw: unknown, base: Settings): SettingsOverrid
       if (!(key in candidate.ai)) continue;
       // A profile that does not exist is no override at all.
       if (key === "defaultProfile" && !base.ai.profiles.some((p) => p.id === candidate.ai?.defaultProfile)) continue;
+      if (key === "features") {
+        const rawFeatures = isRecord(rawAi.features) ? rawAi.features : {};
+        const features: Partial<Record<AiFeature, string>> = {};
+        for (const feature of AI_FEATURES) {
+          if (!(feature in rawFeatures)) continue;
+          const id = rawFeatures[feature];
+          // Empty string explicitly overrides to "follow defaultProfile"; absent inherits from base.
+          if (id === "" || (typeof id === "string" && base.ai.profiles.some((p) => p.id === id))) {
+            features[feature] = id;
+          }
+        }
+        if (Object.keys(features).length) kept.features = features;
+        continue;
+      }
       kept[key] = merged.ai[key];
     }
     if (Object.keys(kept).length) overrides.ai = kept as SettingsOverrides["ai"];
@@ -618,36 +672,43 @@ export function hasOverrides(overrides: SettingsOverrides): boolean {
 }
 
 /**
- * A setting path's parts: the top-level key, then the AI field or plugin
- * id, then the plugin setting's key (which may itself contain dots).
- */
-function splitPath(path: string): [head: string, id: string, key: string] {
-  const parts = path.split(".");
-  return [parts[0], parts[1] ?? "", parts.slice(3).join(".")];
-}
-
-/**
  * Setting paths, as Rows name them: a top-level key (`fontSize`), an AI
- * field (`ai.suggestions`) or a plugin setting (`plugins.terminal.settings.shell`).
+ * field (`ai.suggestions`, `ai.features.commit`) or a plugin setting (`plugins.terminal.settings.shell`).
  */
 export function isOverridden(overrides: SettingsOverrides | undefined, path: string): boolean {
   if (!overrides) return false;
-  const [head, id, key] = splitPath(path);
-  if (head === "ai") return !!overrides.ai && id in overrides.ai;
-  if (head === "plugins") return !!overrides.plugins?.[id] && key in overrides.plugins[id].settings;
+  const parts = path.split(".");
+  const [head, id] = parts;
+  if (head === "ai") {
+    if (id === "features" && parts[2]) return !!overrides.ai?.features && parts[2] in overrides.ai.features;
+    return !!overrides.ai && id in overrides.ai;
+  }
+  if (head === "plugins") {
+    const key = parts.slice(3).join(".");
+    return !!overrides.plugins?.[id] && key in overrides.plugins[id].settings;
+  }
   return head in overrides;
 }
 
 /** `overrides` without the setting at `path`. */
 export function withoutOverride(overrides: SettingsOverrides, path: string): SettingsOverrides {
-  const [head, id, key] = splitPath(path);
+  const parts = path.split(".");
+  const [head, id] = parts;
   const next: SettingsOverrides = { ...overrides };
   if (head === "ai" && next.ai) {
     const ai = { ...next.ai };
-    delete ai[id as AiOverridableKey];
+    if (id === "features" && parts[2] && ai.features) {
+      const features = { ...ai.features };
+      delete features[parts[2] as AiFeature];
+      if (Object.keys(features).length) ai.features = features;
+      else delete ai.features;
+    } else {
+      delete ai[id as AiOverridableKey];
+    }
     if (Object.keys(ai).length) next.ai = ai;
     else delete next.ai;
   } else if (head === "plugins" && next.plugins?.[id]) {
+    const key = parts.slice(3).join(".");
     const settings = { ...next.plugins[id].settings };
     delete settings[key];
     const plugins = { ...next.plugins };

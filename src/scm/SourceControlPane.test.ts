@@ -79,6 +79,17 @@ describe("SourceControlPane and ScmDiffPane", () => {
     // Verify Midterm's tooltip policy: zero native HTML `title` attributes.
     expect(host.querySelectorAll("[title]").length).toBe(0);
 
+    // Verify Generate commit message button exists and shows actionable Settings link when unconfigured.
+    const genBtn = host.querySelector<HTMLButtonElement>('button[aria-label="Generate commit message"]');
+    expect(genBtn).not.toBeNull();
+    expect(genBtn!.disabled).toBe(false);
+    await act(async () => {
+      genBtn!.click();
+    });
+    await flush();
+    expect(host.textContent).toContain("Settings…");
+    expect(host.querySelectorAll("[title]").length).toBe(0);
+
     // Toggle to tree view.
     const viewBtn = host.querySelector<HTMLButtonElement>('button[aria-label="Switch to tree view"]');
     expect(viewBtn).not.toBeNull();

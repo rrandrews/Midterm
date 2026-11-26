@@ -75,13 +75,34 @@ const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
 ];
 
-/** `NAME_SECRET=value`, `export API_KEY="…"`, `password: …`, `--token value`, `Bearer …`, URL credentials: keep the name, drop the value. */
+/** `NAME_SECRET=value`, `export API_KEY="…"`, `password: …`, `"password": "…"`, `--token value`, `Bearer …`, URL credentials: keep the name, drop the value. */
+const SECRET_KEY_CORE =
+  "[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)[A-Za-z0-9_]*";
+
+const DQ_SEGMENT = `"(?:\\\\[\\s\\S]|[^"\\\\])*(?:\\\\?$|")`;
+const SQ_SEGMENT = `'(?:''|\\\\[\\s\\S]|[^'\\\\])*(?:\\\\?$|')`;
+// Matches a quoted secret (allowing adjacent quoted/unquoted segments while stopping before JSON `,`/`}`/`]`
+// delimiters) or an unquoted secret (including adjacent quoted shell segments like `--password abc"def"`).
+const SECRET_VALUE_CORE = `(?:${DQ_SEGMENT}|${SQ_SEGMENT})(?:[^\\s"',}\\]]|${DQ_SEGMENT}|${SQ_SEGMENT})*|[^\\s"']+(?:${DQ_SEGMENT}|${SQ_SEGMENT}|[^\\s"'])*`;
+
 const ASSIGNMENT_PATTERNS: RegExp[] = [
-  /(\b[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?)[A-Za-z0-9_]*\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s"']+)/gi,
-  /(--?(?:password|passwd|token|secret|api-key|apikey|auth-token|access-token)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi,
+  new RegExp(
+    `((?:(?:"|')${SECRET_KEY_CORE}(?:"|')|\\b${SECRET_KEY_CORE})\\s*[=:]\\s*)(${SECRET_VALUE_CORE})`,
+    "gi",
+  ),
+  new RegExp(
+    `(--?(?:password|passwd|token|secret|api-key|apikey|auth-token|access-token)(?:=|\\s+))(${SECRET_VALUE_CORE})`,
+    "gi",
+  ),
   /(\b(?:Bearer|Basic|Token)\s+)([A-Za-z0-9._~+/=-]{8,})/g,
   /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s@/]+)(?=@)/gi,
 ];
+
+const YAML_BLOCK_IND = `[|>](?:[+-]\\d*|\\d+[+-]?)?`;
+const YAML_BLOCK_HEADER_RE = new RegExp(
+  `^([ \\t]*(?:-[ \\t]+)?)(?:(?:"|')${SECRET_KEY_CORE}(?:"|')|${SECRET_KEY_CORE})\\s*:\\s*${YAML_BLOCK_IND}[ \\t]*(?:#.*)?$`,
+  "i",
+);
 
 /**
  * The names of the user's secret environment variables (Settings →
@@ -90,20 +111,73 @@ const ASSIGNMENT_PATTERNS: RegExp[] = [
  * `installWorkspaceSettings` (src/workspaces/settings.ts).
  */
 let secretNamePattern: RegExp | null = null;
+let secretNameYamlHeaderRe: RegExp | null = null;
 
 export function setSecretNames(names: Iterable<string>): void {
   // Names are `[A-Za-z_][A-Za-z0-9_]*` (validated), so they need no escaping.
   const list = [...new Set(names)].filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
-  secretNamePattern = list.length ? new RegExp(`(\\b(?:${list.join("|")})\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s"']+)`, "g") : null;
+  if (!list.length) {
+    secretNamePattern = null;
+    secretNameYamlHeaderRe = null;
+    return;
+  }
+  const alt = list.join("|");
+  secretNamePattern = new RegExp(
+    `((?:(?:"|')(?:${alt})(?:"|')|\\b(?:${alt}))\\s*[=:]\\s*)(${SECRET_VALUE_CORE})`,
+    "g",
+  );
+  secretNameYamlHeaderRe = new RegExp(
+    `^([ \\t]*(?:-[ \\t]+)?)(?:(?:"|')(?:${alt})(?:"|')|(?:${alt}))\\s*:\\s*${YAML_BLOCK_IND}[ \\t]*(?:#.*)?$`,
+  );
+}
+
+/** Masks indented body lines under YAML literal/folded block scalars (`password: |` / `>`). */
+function redactYamlBlockScalars(text: string): string {
+  if (!text.includes("|") && !text.includes(">")) return text;
+  const lines = text.split("\n");
+  let changed = false;
+  for (let i = 0; i < lines.length; i++) {
+    const match = YAML_BLOCK_HEADER_RE.exec(lines[i]) ?? secretNameYamlHeaderRe?.exec(lines[i]);
+    if (!match) continue;
+    const baseIndent = match[1].length;
+    let j = i + 1;
+    while (j < lines.length) {
+      const next = lines[j];
+      if (!next.trim()) {
+        j++;
+        continue;
+      }
+      const nextIndent = next.length - next.trimStart().length;
+      if (nextIndent <= baseIndent) break;
+      lines[j] = `${next.slice(0, nextIndent)}${REDACTED}`;
+      changed = true;
+      j++;
+    }
+    i = j - 1;
+  }
+  return changed ? lines.join("\n") : text;
+}
+
+function maskValue(value: string, preserveLineCount: boolean): string {
+  if (!preserveLineCount || !value.includes("\n")) return REDACTED;
+  return value
+    .split("\n")
+    .map(() => REDACTED)
+    .join("\n");
 }
 
 /** `text` with likely secrets replaced by `[redacted]`. */
-export function redact(text: string): string {
-  let out = text;
-  for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, REDACTED);
+export function redact(text: string, opts?: { preserveLineCount?: boolean }): string {
+  const preserveLineCount = opts?.preserveLineCount === true;
+  let out = redactYamlBlockScalars(text);
+  for (const pattern of SECRET_PATTERNS) {
+    out = out.replace(pattern, (match) => maskValue(match, preserveLineCount));
+  }
   const patterns = secretNamePattern ? [...ASSIGNMENT_PATTERNS, secretNamePattern] : ASSIGNMENT_PATTERNS;
   for (const pattern of patterns) {
-    out = out.replace(pattern, (match, name: string, value: string) => (value === REDACTED ? match : `${name}${REDACTED}`));
+    out = out.replace(pattern, (match, name: string, value: string) =>
+      value === REDACTED ? match : `${name}${maskValue(value, preserveLineCount)}`,
+    );
   }
   return out;
 }

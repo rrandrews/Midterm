@@ -35,7 +35,7 @@ function Features() {
             key={feature.id}
             label={feature.label}
             help={feature.hint}
-            setting="ai.features"
+            setting={`ai.features.${feature.id}`}
             hint={
               problem ? (
                 <span className="text-warn">

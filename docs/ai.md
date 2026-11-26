@@ -1,7 +1,7 @@
 # AI providers
 
-Next-command suggestions in blocks mode, `/cmd`, Explain and fix, and the
-agent ([Agent](#agent)) come from a model the user picks: an HTTP API (with a key) or a coding CLI they already have
+Next-command suggestions in blocks mode, `/cmd`, Explain and fix, Source Control
+commit messages (`commit`), and the agent ([Agent](#agent)) come from a model the user picks: an HTTP API (with a key) or a coding CLI they already have
 installed. Models are saved as **model profiles** (provider, model, effort,
 extra request JSON, under a name), and each feature uses the default profile
 or one of its own (see [Settings](#settings)). The

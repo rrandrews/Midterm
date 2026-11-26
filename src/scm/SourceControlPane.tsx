@@ -20,6 +20,8 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Sparkles,
+  Square,
   Undo2,
   X,
 } from "lucide-react";
@@ -47,6 +49,7 @@ import { revealInFileManager } from "../ipc/shell";
 import { homeDirectory } from "../ipc/system";
 import { registerPaneFocuser } from "../layout/dock";
 import type { PaneProps } from "../plugins/types";
+import { openSettings } from "../settings/dialogState";
 import { displayLocation, reconnectConnection, useSshConnection } from "../ssh/connections";
 import { BranchPicker } from "./BranchPicker";
 import { CommitGraph } from "./CommitGraph";
@@ -198,6 +201,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
       registerPaneActions(paneId, {
         refresh: () => void model.refresh({ includeMeta: true }),
         commit: () => void model.commit(),
+        generateCommitMessage: () => void model.generateCommitMessage(),
         stageAll: () => void model.stageAll(),
         unstageAll: () => void model.unstageAll(),
       }),
@@ -215,6 +219,14 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
     (status?.unstaged.length ?? 0) +
     (status?.untracked.length ?? 0) +
     (status?.conflicted.length ?? 0);
+
+  const canGenerateCommitMessage = Boolean(
+    status &&
+      !snap.rootPending &&
+      (snap.amend
+        ? Boolean(status.headOid)
+        : status.staged.length > 0 || status.unstaged.length > 0 || status.untracked.length > 0),
+  );
 
   const firstLineLen = useMemo(() => {
     const nl = snap.commitMessage.indexOf("\n");
@@ -403,6 +415,15 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
         <div className="flex items-start gap-1.5 border-b border-err/30 bg-err/10 px-2.5 py-1.5 text-micro text-err">
           <AlertTriangle size={12} className="mt-0.5 flex-none" />
           <span className="min-w-0 flex-1 break-words select-text">{snap.error}</span>
+          {snap.errorAction && (
+            <button
+              type="button"
+              onClick={() => openSettings(snap.errorAction === "open-ai-settings" ? "ai" : "plugin:source-control")}
+              className="flex-none rounded bg-err/15 px-1.5 py-0.5 text-micro font-medium text-err hover:bg-err/25"
+            >
+              Settings…
+            </button>
+          )}
           <Tip content="Dismiss error" side="left">
             <button
               type="button"
@@ -499,7 +520,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
                 onKeyDown={(e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                     e.preventDefault();
-                    void model.commit();
+                    if (!snap.generatingCommitMessage) void model.commit();
                   }
                 }}
                 placeholder={`Message (⌘↩ to commit${status.branch ? ` on "${status.branch}"` : ""})`}
@@ -520,21 +541,43 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
             </div>
 
             <div className="flex items-center justify-between gap-1.5">
-              {snap.busyAction ? (
+              {snap.busyAction || snap.generatingCommitMessage ? (
                 <span className="flex min-w-0 items-center gap-1 truncate text-micro text-fg-dim">
                   <Loader2 size={10} className="flex-none animate-spin" />
-                  <span className="truncate">{snap.busyAction}</span>
+                  <span className="truncate">{snap.busyAction ?? "Generating message…"}</span>
                 </span>
               ) : (
                 <span className="flex-1" />
               )}
 
               <div className="ml-auto flex flex-none items-center gap-1">
+                <Tip
+                  content={snap.generatingCommitMessage ? "Stop generating commit message" : "Generate commit message"}
+                  side="bottom"
+                >
+                  <button
+                    type="button"
+                    aria-label={
+                      snap.generatingCommitMessage ? "Stop generating commit message" : "Generate commit message"
+                    }
+                    aria-busy={snap.generatingCommitMessage || undefined}
+                    disabled={!snap.generatingCommitMessage && (Boolean(snap.busyAction) || !canGenerateCommitMessage)}
+                    onClick={() => void model.generateCommitMessage()}
+                    className={`scm-icon-btn h-6 w-6 justify-center border transition-colors disabled:opacity-35 ${
+                      snap.generatingCommitMessage
+                        ? "border-accent/50 bg-accent/18 text-accent-fg hover:bg-accent/28"
+                        : "border-line-strong bg-field"
+                    }`}
+                  >
+                    {snap.generatingCommitMessage ? <Square size={9} /> : <Sparkles size={11} />}
+                  </button>
+                </Tip>
+
                 <Tip content="Amend the previous commit instead of creating a new one" side="bottom">
                   <button
                     type="button"
                     aria-pressed={snap.amend}
-                    disabled={snap.commits.length === 0}
+                    disabled={snap.commits.length === 0 || snap.generatingCommitMessage}
                     onClick={() => model.setAmend(!snap.amend)}
                     className={`flex h-6 items-center gap-1 rounded-[5px] border px-1.5 text-micro transition-colors disabled:opacity-35 ${
                       snap.amend
@@ -551,7 +594,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
                   <button
                     type="button"
                     aria-label="Undo last commit"
-                    disabled={snap.commits.length === 0 || Boolean(snap.busyAction)}
+                    disabled={snap.commits.length === 0 || Boolean(snap.busyAction) || snap.generatingCommitMessage}
                     onClick={() => void model.undoLastCommit()}
                     className="scm-icon-btn h-6 w-6 justify-center border border-line-strong bg-field disabled:opacity-35"
                   >
@@ -566,7 +609,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
               {showPublishPrimary ? (
                 <button
                   type="button"
-                  disabled={Boolean(snap.busyAction)}
+                  disabled={Boolean(snap.busyAction) || snap.generatingCommitMessage}
                   onClick={() => void model.push({ setUpstream: true })}
                   className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2 hover:bg-accent/15 disabled:opacity-45"
                 >
@@ -576,7 +619,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
               ) : showSyncPrimary ? (
                 <button
                   type="button"
-                  disabled={Boolean(snap.busyAction)}
+                  disabled={Boolean(snap.busyAction) || snap.generatingCommitMessage}
                   onClick={() => void model.sync()}
                   className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2 hover:bg-accent/15 disabled:opacity-45"
                 >
@@ -589,7 +632,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
               ) : (
                 <button
                   type="button"
-                  disabled={Boolean(snap.busyAction) || !snap.commitMessage.trim()}
+                  disabled={Boolean(snap.busyAction) || snap.generatingCommitMessage || !snap.commitMessage.trim()}
                   onClick={() => void model.commit()}
                   className="flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2 hover:bg-accent/15 disabled:opacity-45"
                 >
@@ -612,23 +655,42 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
                   </MenuTrigger>
                 </Tip>
                 <MenuContent aria-label="Commit actions">
-                  <MenuItem disabled={!snap.commitMessage.trim()} onSelect={() => void model.commit()}>
+                  <MenuItem
+                    disabled={!snap.generatingCommitMessage && !canGenerateCommitMessage}
+                    onSelect={() => void model.generateCommitMessage()}
+                  >
+                    {snap.generatingCommitMessage ? "Stop Generating Message" : "Generate Commit Message"}
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuItem
+                    disabled={snap.generatingCommitMessage || !snap.commitMessage.trim()}
+                    onSelect={() => void model.commit()}
+                  >
                     Commit
                   </MenuItem>
-                  <MenuItem disabled={!snap.commitMessage.trim()} onSelect={() => void model.commit({ push: true })}>
+                  <MenuItem
+                    disabled={snap.generatingCommitMessage || !snap.commitMessage.trim()}
+                    onSelect={() => void model.commit({ push: true })}
+                  >
                     Commit & Push
                   </MenuItem>
-                  <MenuItem disabled={!snap.commitMessage.trim()} onSelect={() => void model.commit({ sync: true })}>
+                  <MenuItem
+                    disabled={snap.generatingCommitMessage || !snap.commitMessage.trim()}
+                    onSelect={() => void model.commit({ sync: true })}
+                  >
                     Commit & Sync
                   </MenuItem>
                   <MenuSeparator />
                   <MenuItem
-                    disabled={!snap.commitMessage.trim() || snap.commits.length === 0}
+                    disabled={snap.generatingCommitMessage || !snap.commitMessage.trim() || snap.commits.length === 0}
                     onSelect={() => void model.commit({ amend: true })}
                   >
                     Commit (Amend)
                   </MenuItem>
-                  <MenuItem disabled={snap.commits.length === 0} onSelect={() => void model.undoLastCommit()}>
+                  <MenuItem
+                    disabled={snap.generatingCommitMessage || snap.commits.length === 0}
+                    onSelect={() => void model.undoLastCommit()}
+                  >
                     Undo Last Commit
                   </MenuItem>
                 </MenuContent>

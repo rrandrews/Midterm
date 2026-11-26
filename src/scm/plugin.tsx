@@ -5,6 +5,7 @@ import type { SettingField } from "../plugins/fields";
 import type { PanePlugin } from "../plugins/types";
 import { scmOptionsMenu, scmPaneMenu } from "./menus";
 import { peekScm, type SourceControlData } from "./registry";
+import { ScmSettingsSection } from "./ScmSettingsSection";
 import { scmSkills } from "./skills";
 import { SourceControlPane } from "./SourceControlPane";
 import { splitRelPath } from "./tree";
@@ -68,7 +69,7 @@ function diffModeShortLabel(data: SourceControlData): string | undefined {
 export const sourceControlPlugin: PanePlugin = {
   id: "source-control",
   name: "Source Control",
-  description: "Git staging, hunk diffs, commit history graph, branches, stashes, and remote sync.",
+  description: "Git staging, hunk diffs, commit message generation, history graph, branches, stashes, and remote sync.",
   icon: "git-branch",
   pane: {
     component: SourceControlPane,
@@ -124,6 +125,11 @@ export const sourceControlPlugin: PanePlugin = {
       activePaneId,
     ),
     paneActionCommand(
+      { id: "source-control.generateCommitMessage", title: "Generate commit message", category: "Source Control" },
+      "generateCommitMessage",
+      activePaneId,
+    ),
+    paneActionCommand(
       { id: "source-control.stageAll", title: "Stage all changes", category: "Source Control" },
       "stageAll",
       activePaneId,
@@ -134,6 +140,6 @@ export const sourceControlPlugin: PanePlugin = {
       activePaneId,
     ),
   ],
-  settings: { fields: SCM_FIELDS },
+  settings: { fields: SCM_FIELDS, section: ScmSettingsSection },
   skills: scmSkills,
 };
