@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MOCK_HOME, MOCK_PROJECT } from "../ipc/fsMock";
 import * as fs from "../ipc/fs";
+import { _resetMockSshForTests } from "../ipc/ssh";
+import { _resetConnectionsForTests, registerConnection } from "../ssh/connections";
 import { ExplorerModel, type ExplorerSettings } from "./model";
 
 /*
@@ -133,5 +135,67 @@ describe("transfer", () => {
     expect(explorer.snapshot().selected).toBe(`${P}/dup copy.txt`);
     await explorer.transfer([`${P}/dup.txt`], P, "copy");
     expect(await fs.stat(`${P}/dup copy 2.txt`)).not.toBeNull();
+  });
+});
+
+describe("remote ssh explorer", () => {
+  it("lists, reveals, copies across hosts, and permanently deletes remote SSH entries", async () => {
+    _resetConnectionsForTests();
+    _resetMockSshForTests();
+    const rid = "prod-0123456789ab";
+    await registerConnection({
+      id: rid,
+      label: "prod",
+      host: "10.0.0.5",
+      user: "demo",
+      port: 22,
+      controlPath: "/tmp/mt-501/s-0123456789ab",
+      ownedSocket: true,
+      sshArgs: ["--", "prod"],
+    });
+
+    const remoteRoot = `ssh://${rid}/home/demo/app`;
+    const saved: ExplorerSettings[] = [];
+    // Non-canonical trailing slashes on root must canonicalize and never hang reveal().
+    const explorer = new ExplorerModel("pane-ssh", { root: `${remoteRoot}///` }, (s) => saved.push(s));
+    explorer.attach();
+    await settle();
+    await settle();
+
+    expect(explorer.rootPath).toBe(remoteRoot);
+    expect(entryPaths(explorer)).toContain(`${remoteRoot}/README.md`);
+    expect(explorer.snapshot().branch).toBe("main");
+    expect(explorer.snapshot().badges.get(`${remoteRoot}/src/server.ts`)).toBe("M");
+
+    // Reveal expands remote ancestors cleanly.
+    explorer.reveal(`${remoteRoot}/src/server.ts`);
+    await settle();
+    await settle();
+    expect(explorer.isExpanded(`${remoteRoot}/src`)).toBe(true);
+    expect(explorer.snapshot().selected).toBe(`${remoteRoot}/src/server.ts`);
+
+    // Cross-host copy (local -> remote) succeeds; cross-host move fails cleanly.
+    await fs.create(`${P}/upload-me.txt`, "file");
+    const copyRes = await explorer.transfer([`${P}/upload-me.txt`], remoteRoot, "copy");
+    expect(copyRes.failed).toEqual([]);
+    expect(await fs.stat(`${remoteRoot}/upload-me.txt`)).not.toBeNull();
+
+    const moveRes = await explorer.transfer([`${P}/upload-me.txt`], remoteRoot, "move");
+    expect(moveRes.failed).toEqual([`${P}/upload-me.txt`]);
+    expect(explorer.snapshot().error).toMatch(/different hosts|Copy/);
+
+    // Permanent delete removes remote entry and refreshes.
+    expect(await explorer.deletePermanent([`${remoteRoot}/upload-me.txt`])).toBe(true);
+    expect(await fs.stat(`${remoteRoot}/upload-me.txt`)).toBeNull();
+
+    // Reveal at remote root ssh://<id>/// terminates safely without looping.
+    explorer.setRoot(`ssh://${rid}///`);
+    await settle();
+    explorer.reveal(`ssh://${rid}/etc/hosts`);
+    await settle();
+    expect(explorer.rootPath).toBe(`ssh://${rid}/`);
+    expect(explorer.isExpanded(`ssh://${rid}/etc`)).toBe(true);
+
+    explorer.dispose();
   });
 });

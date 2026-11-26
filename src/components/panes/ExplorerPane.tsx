@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, FilePlus, FolderPlus, Link2, Pin } from "lucide-react";
+import { ChevronDown, ChevronRight, FilePlus, FolderPlus, Link2, Pin, RefreshCw, Terminal } from "lucide-react";
 import {
   type KeyboardEvent,
   type MouseEvent,
@@ -10,16 +10,31 @@ import {
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import { openFile, renameOpenFiles } from "../../actions";
+import { openFile, openTerminalAt, renameOpenFiles } from "../../actions";
 import { registerPaneActions } from "../../commands/registry";
+import { fallbackHostLabel, isRootLocation, remoteIdOf } from "../../files/location";
 import { focusPane, registerPaneFocuser } from "../../layout/dock";
 import type { GitCode } from "../../ipc/fs";
 import { homeDirectory } from "../../ipc/system";
+import {
+  displayLocation,
+  homeForLocation,
+  reconnectConnection,
+  useSshConnection,
+} from "../../ssh/connections";
 import { fileClipboard, subscribeFileClipboard } from "../../explorer/clipboard";
 import { dropDir, explorerDrag, subscribeExplorerDrag } from "../../explorer/drag";
 import { acquireExplorer, releaseExplorer } from "../../explorer/explorers";
 import type { ExplorerModel, ExplorerSnapshot } from "../../explorer/model";
-import { type Row, baseName, displayPath, findByPrefix, parentPath, rowId } from "../../explorer/tree";
+import {
+  type Row,
+  baseName,
+  findByPrefix,
+  isWithin,
+  parentPath,
+  relativePath,
+  rowId,
+} from "../../explorer/tree";
 import { InlineEdit } from "../ui/InlineEdit";
 import { PaneMenuItems } from "../layout/PaneMenuItems";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "../ui/Menu";
@@ -285,10 +300,21 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
 
   const menuRow = menuPath ? rows.find((row) => rowId(row) === menuPath) : undefined;
   const createIn = (kind: "file" | "dir") => model.startCreate(model.targetDir(), kind);
+  const remoteId = remoteIdOf(snap.root);
+  const remote = useSshConnection(remoteId);
+  const disconnected = Boolean(remoteId && (!remote || remote.status === "disconnected"));
 
   return (
     <div className="explorer relative flex h-full flex-col">
       <RootHeader snap={snap} dropping={dropInto === snap.root} onCreate={createIn} onClick={() => model.select(null)} />
+      {remoteId && disconnected && (
+        <DisconnectedBanner
+          paneId={paneId}
+          root={snap.root}
+          remoteId={remoteId}
+          hostLabel={remote?.label ?? fallbackHostLabel(remoteId)}
+        />
+      )}
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
@@ -392,9 +418,9 @@ function rowDomId(paneId: string, path: string | null): string {
 }
 
 /** The root's name as the top folder shows it: `~` for home, `/` for the file system root. */
-function rootName(root: string): string {
-  if (root === "/") return "/";
-  if (root === homeDirectory()) return "~";
+function rootName(root: string, home: string | undefined): string {
+  if (isRootLocation(root)) return "/";
+  if (home && isWithin(root, home) && relativePath(root, home) === "") return "~";
   return baseName(root);
 }
 
@@ -413,9 +439,15 @@ type RootHeaderProps = {
  */
 function RootHeader({ snap, dropping, onCreate, onClick }: RootHeaderProps) {
   const icons = useActiveIconSet();
-  const name = rootName(snap.root);
-  const full = displayPath(snap.root, homeDirectory());
+  const remoteId = remoteIdOf(snap.root);
+  const remote = useSshConnection(remoteId);
+  const home = homeForLocation(snap.root, homeDirectory());
+  const name = rootName(snap.root, home);
+  const full = displayLocation(snap.root, homeDirectory(), { includeHost: true });
   const keepFocus = (event: PointerEvent) => event.preventDefault();
+  const statusDot =
+    remote?.status === "connected" ? "bg-ok" : remote?.status === "connecting" ? "bg-warn" : "bg-err";
+  const hostLabel = remote?.label ?? (remoteId ? fallbackHostLabel(remoteId) : null);
   return (
     // Right padding leaves room for the pane's hover controls.
     <div
@@ -426,6 +458,15 @@ function RootHeader({ snap, dropping, onCreate, onClick }: RootHeaderProps) {
     >
       <FileIcon set={icons.set} light={icons.light} name={name} path={snap.root} kind="dir" expanded />
       <span className="min-w-0 truncate text-input font-semibold text-fg-bright">{name}</span>
+      {hostLabel && (
+        <span
+          className="inline-flex max-w-[45%] flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-dim"
+          title={`SSH: ${hostLabel} (${remote?.status ?? "disconnected"})`}
+        >
+          <span className={`size-1.5 flex-none rounded-full ${statusDot}`} aria-hidden="true" />
+          <span className="truncate">{hostLabel}</span>
+        </span>
+      )}
       {snap.pinned && <Pin size={10} strokeWidth={2} className="flex-none text-fg-dim" aria-label="Pinned" />}
       {snap.link && <Link2 size={11} strokeWidth={2} className="flex-none text-fg-dim" aria-label="Linked to a terminal" />}
       <span className="explorer-root-actions ml-auto flex flex-none items-center gap-0.5">
@@ -456,6 +497,66 @@ function RootHeader({ snap, dropping, onCreate, onClick }: RootHeaderProps) {
           <FolderPlus size={13} strokeWidth={1.75} />
         </button>
       </span>
+    </div>
+  );
+}
+
+/** Inline bar shown when a remote SSH explorer's connection is disconnected. */
+function DisconnectedBanner({
+  paneId,
+  root,
+  remoteId,
+  hostLabel,
+}: {
+  paneId: string;
+  root: string;
+  remoteId: string;
+  hostLabel: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setError(null);
+    setBusy(false);
+  }, [remoteId]);
+
+  const reconnect = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await reconnectConnection(remoteId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-none flex-col gap-1 border-b border-line bg-hover/40 px-3 py-1.5 text-meta">
+      <div className="flex items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-fg-dim">Disconnected from {hostLabel}</span>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void reconnect()}
+          className="inline-flex flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-bright hover:bg-accent-soft disabled:opacity-50"
+        >
+          <RefreshCw size={10} className={busy ? "animate-spin" : undefined} />
+          {busy ? "Reconnecting…" : "Reconnect"}
+        </button>
+        <button
+          type="button"
+          title="Open SSH terminal"
+          onClick={() => openTerminalAt(root, paneId)}
+          className="inline-flex flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-dim hover:text-fg-bright"
+        >
+          <Terminal size={10} />
+          Terminal
+        </button>
+      </div>
+      {error && <div className="truncate text-micro text-err" title={error}>{error}</div>}
     </div>
   );
 }

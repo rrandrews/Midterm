@@ -3,9 +3,11 @@ import { type DropTarget, explorerDrag, setExplorerDrag } from "../../explorer/d
 import { peekExplorer } from "../../explorer/explorers";
 import type { ExplorerModel } from "../../explorer/model";
 import { isWithin, parentPath } from "../../explorer/tree";
+import { posixPathOf, remoteIdOf, sameHost } from "../../files/location";
 import { highlightPane, unhighlightPane } from "../../layout/paneHighlight";
 import { activePlugin } from "../../plugins/registry";
 import { pasteIntoTerminal } from "../../terminal/menu";
+import { peekSession } from "../../terminal/sessions";
 import { shellQuoteArg } from "../../terminal/shellQuote";
 import { transferEntries } from "./ExplorerMenus";
 
@@ -26,6 +28,14 @@ const EXPAND_DELAY_MS = 700;
 const SCROLL_EDGE = 28;
 const SCROLL_SPEED = 12;
 
+/** Whether every dragged path belongs to the same host as the destination terminal. */
+function terminalAcceptsPaths(paneId: string, paths: string[]): boolean {
+  const session = peekSession(paneId);
+  if (!session || session.isUntrackedNested) return false;
+  const termRemoteId = session.remoteId;
+  return paths.every((path) => remoteIdOf(path) === termRemoteId);
+}
+
 /** The drop target under a point, for dragging `paths`; `null` if none or it would change nothing. */
 function targetAt(x: number, y: number, paths: string[], copy: boolean): DropTarget | null {
   const el = document.elementFromPoint(x, y);
@@ -33,12 +43,14 @@ function targetAt(x: number, y: number, paths: string[], copy: boolean): DropTar
   const folder = el.closest<HTMLElement>("[data-drop-dir]");
   if (folder?.dataset.dropDir) {
     const dir = folder.dataset.dropDir;
+    const effectiveCopy = copy || paths.some((path) => !sameHost(path, dir));
     if (paths.some((path) => isWithin(dir, path))) return null;
-    if (!copy && paths.every((path) => parentPath(path) === dir)) return null;
+    if (!effectiveCopy && paths.every((path) => parentPath(path) === dir)) return null;
     return { type: "dir", dir, paneId: folder.closest<HTMLElement>("[data-pane-id]")?.dataset.paneId ?? null };
   }
   const pane = el.closest<HTMLElement>(".pane[data-pane-id]");
   if (pane?.dataset.paneId && pane.dataset.paneKind && activePlugin(pane.dataset.paneKind)?.terminal) {
+    if (!terminalAcceptsPaths(pane.dataset.paneId, paths)) return null;
     return { type: "terminal", paneId: pane.dataset.paneId };
   }
   return null;
@@ -84,14 +96,16 @@ export function useExplorerDrag({ model, pathsFor }: Options) {
     const update = () => {
       if (!paths) return;
       const target = targetAt(x, y, paths, copy);
+      const effectiveCopy =
+        copy || (target?.type === "dir" && paths.some((p) => !sameHost(p, target.dir)));
       const terminal = target?.type === "terminal" ? target.paneId : null;
       if (terminal !== highlighted) {
         if (highlighted) unhighlightPane(highlighted);
         if (terminal) highlightPane(terminal);
         highlighted = terminal;
       }
-      document.body.style.cursor = !target ? "no-drop" : copy && target.type === "dir" ? "copy" : "grabbing";
-      setExplorerDrag({ source: model.paneId, paths, x, y, target, copy });
+      document.body.style.cursor = !target ? "no-drop" : effectiveCopy && target.type === "dir" ? "copy" : "grabbing";
+      setExplorerDrag({ source: model.paneId, paths, x, y, target, copy: effectiveCopy });
     };
 
     // While dragging: scroll a tree near its edge, open a folder hovered long enough.
@@ -142,8 +156,15 @@ export function useExplorerDrag({ model, pathsFor }: Options) {
       suppressClick.current = true;
       setTimeout(() => (suppressClick.current = false), 0);
       const target = drop ? drag?.target : null;
-      if (target?.type === "dir") void transferEntries(model, paths, target.dir, drag?.copy ? "copy" : "move");
-      else if (target?.type === "terminal") pasteIntoTerminal(target.paneId, `${paths.map(shellQuoteArg).join(" ")} `);
+      if (target?.type === "dir") {
+        const destModel = (target.paneId && peekExplorer(target.paneId)) || model;
+        const mode = drag?.copy ? "copy" : "move";
+        void transferEntries(destModel, paths, target.dir, mode).then(() => {
+          if (destModel !== model && mode === "move") model.refresh();
+        });
+      } else if (target?.type === "terminal" && terminalAcceptsPaths(target.paneId, paths)) {
+        pasteIntoTerminal(target.paneId, `${paths.map((p) => shellQuoteArg(posixPathOf(p))).join(" ")} `);
+      }
     };
 
     const onUp = (up: PointerEvent) => {

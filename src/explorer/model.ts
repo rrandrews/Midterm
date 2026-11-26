@@ -1,6 +1,14 @@
+import {
+  formatRemoteLocation,
+  isRootLocation,
+  parseLocation,
+  remoteIdOf,
+} from "../files/location";
 import * as fs from "../ipc/fs";
 import type { FsEntry, GitStatus, Watcher } from "../ipc/fs";
+import type { SshStatus } from "../ipc/ssh";
 import { homeDirectory } from "../ipc/system";
+import { getConnection, subscribeConnections } from "../ssh/connections";
 import {
   type GitBadges,
   type Listing,
@@ -11,6 +19,7 @@ import {
   isWithin,
   joinPath,
   parentPath,
+  relativePath,
   rowId,
   validName,
 } from "./tree";
@@ -66,6 +75,15 @@ const ERROR_MS = 5000;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** Strips redundant trailing slashes without collapsing `..` (preserves symlink semantics). */
+function stripTrailingSlashes(raw: string): string {
+  const parsed = parseLocation(raw);
+  if (!parsed) return raw;
+  if (parsed.kind === "remote") return formatRemoteLocation(parsed.remoteId, parsed.path);
+  const trimmed = raw.replace(/\/+$/, "");
+  return trimmed.length === 0 ? "/" : trimmed;
+}
+
 export class ExplorerModel {
   private root: string;
   private pinned: boolean;
@@ -90,6 +108,8 @@ export class ExplorerModel {
   private watcherPending = false;
   private attachCount = 0;
   private disposed = false;
+  private lastRemoteStatus: SshStatus | null = null;
+  private readonly unsubSsh: () => void;
 
   private readonly listeners = new Set<() => void>();
   private current: ExplorerSnapshot;
@@ -100,12 +120,14 @@ export class ExplorerModel {
     /** Called when a remembered setting changes. */
     private readonly persist: (settings: ExplorerSettings) => void,
   ) {
-    this.root = initial.root ?? homeDirectory() ?? "/";
+    this.root = stripTrailingSlashes(initial.root ?? homeDirectory() ?? "/");
     this.pinned = initial.pinned ?? false;
     this.link = initial.link ?? null;
     this.showHidden = initial.showHidden ?? false;
-    this.expanded = new Set(initial.expanded ?? []);
+    this.expanded = new Set((initial.expanded ?? []).map(stripTrailingSlashes));
+    this.lastRemoteStatus = this.currentRemoteStatus();
     this.current = this.buildSnapshot();
+    this.unsubSsh = subscribeConnections(() => this.handleSshChange());
   }
 
   // --- Subscription (for useSyncExternalStore) ---
@@ -173,10 +195,26 @@ export class ExplorerModel {
 
   dispose(): void {
     this.disposed = true;
+    this.unsubSsh();
     this.stopWatching();
     clearTimeout(this.gitTimer);
     clearTimeout(this.errorTimer);
     this.listeners.clear();
+  }
+
+  private currentRemoteStatus(): SshStatus | null {
+    const rid = remoteIdOf(this.root);
+    return rid ? (getConnection(rid)?.status ?? "disconnected") : null;
+  }
+
+  private handleSshChange(): void {
+    if (this.disposed) return;
+    const status = this.currentRemoteStatus();
+    const prev = this.lastRemoteStatus;
+    this.lastRemoteStatus = status;
+    if (status === "connected" && prev !== "connected" && this.isAttached) {
+      this.reloadAll();
+    }
   }
 
   // --- Root and options ---
@@ -195,8 +233,10 @@ export class ExplorerModel {
   }
 
   setRoot(path: string): void {
-    if (path === this.root) return;
-    this.root = path;
+    const normalized = stripTrailingSlashes(path);
+    if (normalized === this.root) return;
+    this.root = normalized;
+    this.lastRemoteStatus = this.currentRemoteStatus();
     this.editing = null;
     this.listings.clear();
     this.git = null;
@@ -280,18 +320,22 @@ export class ExplorerModel {
    * and a path outside the root pins the explorer to the path's folder.
    */
   reveal(path: string): void {
-    if (path !== this.root && !isWithin(path, this.root)) {
+    const target = stripTrailingSlashes(path);
+    if (target !== this.root && !isWithin(target, this.root)) {
       this.setPinned(true);
-      this.setRoot(parentPath(path));
+      this.setRoot(parentPath(target));
     }
-    for (let dir = parentPath(path); dir !== this.root && isWithin(dir, this.root); dir = parentPath(dir)) {
+    for (let dir = parentPath(target); dir !== this.root && isWithin(dir, this.root); ) {
       if (!this.expanded.has(dir)) {
         this.expanded.add(dir);
         void this.load(dir);
       }
+      const next = parentPath(dir);
+      if (next === dir) break;
+      dir = next;
     }
     this.afterExpansionChange();
-    this.select(path);
+    this.select(target);
   }
 
   // --- Selection and editing ---
@@ -411,7 +455,11 @@ export class ExplorerModel {
 
   /** After `from` moved to `to`: open directories and the selection inside it follow. */
   private remap(from: string, to: string): void {
-    const moved = (path: string) => (isWithin(path, from) ? to + path.slice(from.length) : path);
+    const moved = (path: string) => {
+      if (!isWithin(path, from)) return path;
+      const rel = relativePath(path, from);
+      return rel ? joinPath(to, rel) : to;
+    };
     for (const path of [...this.expanded]) {
       if (isWithin(path, from)) {
         this.expanded.delete(path);
@@ -531,7 +579,7 @@ export class ExplorerModel {
     return { path, kind: editing.kind };
   }
 
-  /** Moves entries to the Trash (the caller asks first). */
+  /** Moves local entries to the Trash (the caller asks first). */
   async trash(paths: string[]): Promise<boolean> {
     try {
       await fs.trash(paths);
@@ -539,7 +587,24 @@ export class ExplorerModel {
       this.fail(`Could not move to the Trash: ${message(error)}`);
       return false;
     }
-    // The selection moves to whatever takes the trashed rows' place.
+    await this.afterRemoval(paths);
+    return true;
+  }
+
+  /** Permanently deletes remote SSH entries (the caller confirms explicitly first). */
+  async deletePermanent(paths: string[]): Promise<boolean> {
+    try {
+      await fs.deletePermanent(paths);
+    } catch (error) {
+      this.fail(`Could not delete: ${message(error)}`);
+      return false;
+    }
+    await this.afterRemoval(paths);
+    return true;
+  }
+
+  private async afterRemoval(paths: string[]): Promise<void> {
+    // The selection moves to whatever takes the removed rows' place.
     const entriesBefore = this.current.rows.filter((row) => row.type === "entry");
     const firstGone = entriesBefore.findIndex((row) => row.type === "entry" && paths.some((path) => isWithin(row.entry.path, path)));
     await Promise.all([...new Set(paths.map(parentPath))].map((dir) => this.load(dir)));
@@ -550,12 +615,16 @@ export class ExplorerModel {
       const next = entries[Math.max(0, Math.min(firstGone, entries.length - 1))];
       this.select(next?.type === "entry" ? next.entry.path : null);
     } else this.emit();
-    return true;
   }
 
   /** Reloads every directory on screen and the git status. */
   refresh(): void {
     this.reloadAll();
+  }
+
+  /** Shows a transient error message in the explorer footer. */
+  showError(text: string): void {
+    this.fail(text);
   }
 
   private fail(text: string): void {
@@ -605,8 +674,8 @@ export class ExplorerModel {
   private forgetVanished(dir: string, entries: FsEntry[]): void {
     const present = new Set(entries.filter((entry) => entry.kind === "dir").map((entry) => entry.path));
     let changed = false;
+    const prefix = isRootLocation(dir) ? dir : `${dir}/`;
     for (const path of [...this.expanded]) {
-      const prefix = dir === "/" ? "/" : `${dir}/`;
       const child =
         path !== dir && path.startsWith(prefix) ? joinPath(dir, path.slice(prefix.length).split("/")[0]) : null;
       if (child && !present.has(child)) {

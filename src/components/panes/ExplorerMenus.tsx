@@ -2,20 +2,37 @@ import { openTerminalAt, renameOpenFiles } from "../../actions";
 import { fileClipboard, setFileClipboard } from "../../explorer/clipboard";
 import type { ExplorerModel } from "../../explorer/model";
 import { linkablePanes, refollow } from "../../explorer/explorers";
-import { baseName, displayPath, parentPath, relativePath } from "../../explorer/tree";
+import { baseName, parentPath, relativePath } from "../../explorer/tree";
+import { isRemotePath, isRootLocation, posixPathOf, remoteIdOf } from "../../files/location";
 import { copyText } from "../../ipc/clipboard";
 import type { FsEntry } from "../../ipc/fs";
 import { revealInFileManager } from "../../ipc/shell";
 import { homeDirectory } from "../../ipc/system";
 import { highlightPane, unhighlightPane } from "../../layout/paneHighlight";
+import {
+  displayLocation,
+  getConnection,
+  hostLabelForLocation,
+  reconnectConnection,
+} from "../../ssh/connections";
 import { confirm } from "../ui/ConfirmDialog";
 import type { MenuItemSpec } from "../../plugins/types";
 import { MenuItem, MenuSeparator } from "../ui/Menu";
 
-/** Asks, then moves entries to the Trash. */
+/** Asks, then moves local entries to Trash or permanently deletes remote SSH entries. */
 export async function confirmTrash(model: ExplorerModel, paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   const what = paths.length === 1 ? `“${baseName(paths[0])}”` : `${paths.length} items`;
+  if (paths.some(isRemotePath)) {
+    const host = hostLabelForLocation(paths[0]) ?? "the remote host";
+    const ok = await confirm({
+      title: `Permanently delete ${what} on ${host}?`,
+      message: "Remote SSH files cannot be moved to Trash. This cannot be undone.",
+      action: "Delete",
+    });
+    if (ok) await model.deletePermanent(paths);
+    return;
+  }
   const ok = await confirm({
     title: `Move ${what} to the Trash?`,
     message: paths.length === 1 ? "You can put it back from the Trash in Finder." : "You can put them back from the Trash in Finder.",
@@ -50,9 +67,16 @@ export async function transferEntries(model: ExplorerModel, paths: string[], dir
   return failed;
 }
 
-/** ⌥⌘C: the paths as text, one per line (relative to `root` if asked and inside it). */
+/** ⌥⌘C: the POSIX paths as text, one per line (relative to `root` if asked and inside it). */
 export function copyPaths(paths: string[], root?: string): void {
-  void copyText(paths.map((path) => (root && relativePath(path, root) ? relativePath(path, root) : path)).join("\n"));
+  void copyText(
+    paths
+      .map((path) => {
+        const rel = root ? relativePath(path, root) : "";
+        return rel || posixPathOf(path);
+      })
+      .join("\n"),
+  );
 }
 
 type EntryMenuProps = {
@@ -68,6 +92,7 @@ type EntryMenuProps = {
 /** Right-click menu of a file or directory in the tree (or of several selected ones). */
 export function EntryMenuItems({ paneId, model, entry, paths, root, onOpen }: EntryMenuProps) {
   const dir = entry.kind === "dir";
+  const remote = isRemotePath(entry.path);
   const several = paths.length > 1;
   const relative = relativePath(entry.path, root);
   const pasteTarget = dir ? entry.path : parentPath(entry.path);
@@ -99,7 +124,7 @@ export function EntryMenuItems({ paneId, model, entry, paths, root, onOpen }: En
           </MenuItem>
         </>
       )}
-      <MenuItem onSelect={() => revealInFileManager(entry.path)}>Reveal in Finder</MenuItem>
+      {!remote && <MenuItem onSelect={() => revealInFileManager(entry.path)}>Reveal in Finder</MenuItem>}
       <MenuSeparator />
       <MenuItem shortcut="⌘X" onSelect={() => copyEntries(paths, true)}>
         Cut
@@ -115,7 +140,7 @@ export function EntryMenuItems({ paneId, model, entry, paths, root, onOpen }: En
       <MenuItem shortcut="⌥⌘C" onSelect={() => copyPaths(paths)}>
         {several ? "Copy paths" : "Copy path"}
       </MenuItem>
-      {(several || (relative && relative !== entry.path)) && (
+      {(several || (relative && relative !== posixPathOf(entry.path))) && (
         <MenuItem onSelect={() => copyPaths(paths, root)}>{several ? "Copy relative paths" : "Copy relative path"}</MenuItem>
       )}
       <MenuSeparator />
@@ -125,7 +150,13 @@ export function EntryMenuItems({ paneId, model, entry, paths, root, onOpen }: En
         </MenuItem>
       )}
       <MenuItem shortcut="⌘⌫" onSelect={() => void confirmTrash(model, paths)}>
-        {several ? `Move ${paths.length} items to Trash` : "Move to Trash"}
+        {remote
+          ? several
+            ? `Delete ${paths.length} items…`
+            : "Delete…"
+          : several
+            ? `Move ${paths.length} items to Trash`
+            : "Move to Trash"}
       </MenuItem>
     </>
   );
@@ -140,7 +171,9 @@ function linkMenu(model: ExplorerModel): MenuItemSpec {
   const snap = model.snapshot();
   const home = homeDirectory();
   const terminals = linkablePanes(model.paneId);
-  const labels = terminals.map(({ directory }) => (directory ? displayPath(directory, home) : "Terminal"));
+  const labels = terminals.map(({ directory }) =>
+    directory ? displayLocation(directory, home, { includeHost: true }) : "Terminal",
+  );
   const follow = (link: string | null) => {
     model.setLink(link);
     refollow(model.paneId);
@@ -189,7 +222,10 @@ export function explorerOptionsMenu(model: ExplorerModel): MenuItemSpec[] {
  */
 export function explorerMenu(model: ExplorerModel): MenuItemSpec[] {
   const root = model.snapshot().root;
-  return [
+  const rid = remoteIdOf(root);
+  const remote = rid !== null;
+  const conn = rid ? getConnection(rid) : undefined;
+  const items: MenuItemSpec[] = [
     { label: "New file…", run: () => model.startCreate(root, "file") },
     { label: "New folder…", run: () => model.startCreate(root, "dir") },
     { label: "Paste", shortcut: "⌘V", disabled: !fileClipboard(), run: () => pasteInto(model, root) },
@@ -197,7 +233,7 @@ export function explorerMenu(model: ExplorerModel): MenuItemSpec[] {
     linkMenu(model),
     {
       label: "Go to parent folder",
-      disabled: root === "/",
+      disabled: isRootLocation(root),
       run: () => {
         model.setPinned(true);
         model.setRoot(parentPath(root));
@@ -206,9 +242,21 @@ export function explorerMenu(model: ExplorerModel): MenuItemSpec[] {
     showHiddenItem(model),
     { label: "Collapse all", run: () => model.collapseAll() },
     { label: "Refresh", run: () => model.refresh() },
-    { type: "separator" },
-    { label: "Reveal in Finder", run: () => revealInFileManager(root) },
-    { label: "Open in new terminal", run: () => openTerminalAt(root, model.paneId) },
-    { label: "Copy path", run: () => copyText(root) },
   ];
+  if (rid && (!conn || conn.status === "disconnected")) {
+    items.push({
+      label: "Reconnect SSH",
+      run: () =>
+        void reconnectConnection(rid).catch((error) =>
+          model.showError(`Could not reconnect: ${error instanceof Error ? error.message : String(error)}`),
+        ),
+    });
+  }
+  items.push({ type: "separator" });
+  if (!remote) items.push({ label: "Reveal in Finder", run: () => revealInFileManager(root) });
+  items.push(
+    { label: "Open in new terminal", run: () => openTerminalAt(root, model.paneId) },
+    { label: "Copy path", run: () => copyText(posixPathOf(root)) },
+  );
+  return items;
 }

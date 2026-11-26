@@ -4,10 +4,12 @@ import { type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject, us
 import { openFile } from "../../actions";
 import { type NameIndex, type NameResult, type Range, type TextRow, baseNameOf, countMatches, firstMatchIndex, flattenResults, indexEntries, parentOf, resultsSummary, searchNames, segments, trimPreview } from "../../explorer/search";
 import { joinPath } from "../../explorer/tree";
+import { remoteIdOf } from "../../files/location";
 import { FileIcon } from "../../icons/FileIcon";
 import { useActiveIconSet } from "../../icons/state";
 import type { LoadedIconSet } from "../../icons/types";
 import { type TextSearch, type TextSearchFile, findEntries, searchText } from "../../ipc/fs";
+import { listConnections, subscribeConnections, useSshConnection } from "../../ssh/connections";
 import { Tip } from "../ui/Tooltip";
 
 /*
@@ -42,6 +44,19 @@ const recall = (paneId: string, mode: ExplorerSearchMode): Query =>
 
 type Loaded = { index: NameIndex; truncated: boolean };
 const indexCache = new Map<string, { at: number; loaded: Promise<Loaded> }>();
+
+const lastRemoteStatus = new Map<string, string>();
+subscribeConnections(() => {
+  for (const conn of listConnections()) {
+    const prev = lastRemoteStatus.get(conn.id);
+    if (prev !== "connected" && conn.status === "connected") {
+      for (const key of indexCache.keys()) {
+        if (remoteIdOf(key.split("\0")[0]) === conn.id) indexCache.delete(key);
+      }
+    }
+    lastRemoteStatus.set(conn.id, conn.status);
+  }
+});
 
 function loadIndex(root: string, showHidden: boolean): Promise<Loaded> {
   const key = `${root}\0${showHidden}`;
@@ -111,8 +126,19 @@ export function ExplorerSearch({ paneId, mode, root, showHidden, onClose, onReve
   const [active, setActive] = useState(0);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
+  /* Re-run active search when this remote host reconnects. */
+  const remoteStatus = useSshConnection(remoteIdOf(root))?.status ?? null;
+  const prevRemoteStatus = useRef(remoteStatus);
+  const [reconnectGen, setReconnectGen] = useState(0);
+  useEffect(() => {
+    if (prevRemoteStatus.current !== "connected" && remoteStatus === "connected") {
+      setReconnectGen((n) => n + 1);
+    }
+    prevRemoteStatus.current = remoteStatus;
+  }, [remoteStatus]);
+
   /* Name mode */
-  const indexKey = `${root}\0${showHidden}`;
+  const indexKey = `${root}\0${showHidden}\0${reconnectGen}`;
   const [indexState, setIndexState] = useState<IndexState>();
   useEffect(() => {
     if (mode !== "name") return;
@@ -124,7 +150,7 @@ export function ExplorerSearch({ paneId, mode, root, showHidden, onClose, onReve
     return () => {
       live = false;
     };
-  }, [mode, root, showHidden, indexKey]);
+  }, [mode, root, showHidden, indexKey, reconnectGen]);
   const index = indexState?.key === indexKey ? indexState : undefined;
   const names = useMemo(
     () => (mode === "name" && index?.loaded ? searchNames(query, index.loaded.index) : []),
@@ -168,7 +194,7 @@ export function ExplorerSearch({ paneId, mode, root, showHidden, onClose, onReve
       clearTimeout(timer);
       handle?.cancel();
     };
-  }, [mode, root, showHidden, query, regex, caseSensitive, wholeWord]);
+  }, [mode, root, showHidden, query, regex, caseSensitive, wholeWord, reconnectGen]);
 
   // Results from another root (a linked terminal changed directory) are gone until the new search starts.
   const textFiles = text.root === root ? text.files : NO_FILES;
