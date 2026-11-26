@@ -1,9 +1,8 @@
 ## Project 
-Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with each workspace containing any number of tabs. Tabs can contain many different elements that are maximally repositionable/resizable with nested splitting. Terminal panes, file explorer, file viewer, code editor, etc. Compact UI with no wasted space.
+Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with each workspace containing any number of tabs. Tabs can contain many different elements that are maximally repositionable/resizable with nested splitting. Terminal panes, file explorer, file viewer, code editor, etc. Everything is a plugin.
 
 ## Documentation
 - Maintain up-to-date documentation for agent use in @docs/ directory, logically split into smallish files that pertain to a specific subsystem.
-- Planned work (roadmap, backlog, bugs) is tracked in Linear (team `MID`), not in repo files. See @docs/planning.md for how it is organized and what is on hold. Short-lived implementation plans for work in progress may still go in docs/ with checklist boxes; remove them once completed.
 
 ## General coding guidelines
 - When given tasks directly (rather than pointed to an issue) that require modification of the codebase, first create a proper issue and/or project on Linear for the task.
@@ -18,3 +17,4 @@ Midterm is a Tauri 2/React based terminal emulator. Multiple workspaces with eac
 
 ## Repo
 - For long prompts involving multiple tasks, split the tasks logically into smaller commits.
+- Before each commit submit your code to Codex for review.
