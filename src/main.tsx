@@ -33,6 +33,7 @@ async function start(): Promise<void> {
   const { loadRecent } = await import("./palette/sources");
   const { loadCustomThemes } = await import("./theme/state");
   const { loadIconSets } = await import("./icons/state");
+  const { loadSshConnections } = await import("./ssh/connections");
   // All before any pane exists: restored terminals start in their saved
   // directories, directory reports are checked against the host name, and
   // explorers start in (and abbreviate) the home directory.
@@ -41,6 +42,7 @@ async function start(): Promise<void> {
   await loadSettings({ persist });
   await Promise.all([
     persist ? restoreSavedState() : undefined,
+    loadSshConnections({ persist }),
     loadRecent({ persist }),
     loadCustomThemes({ persist }),
     loadIconSets({ persist }),

@@ -23,6 +23,23 @@ describe("resolveLink", () => {
     expect(resolveLink("#pane-types", dir)).toEqual({ type: "anchor", id: "pane-types" });
     expect(resolveLink("?q#top", dir)).toEqual({ type: "anchor", id: "top" });
   });
+
+  it("resolves remote Markdown links on the same SSH host and blocks file: URLs", () => {
+    const rDir = "ssh://prod-0123456789ab/srv/app/docs";
+    expect(resolveLink("../src/a.ts#L10", rDir)).toEqual({
+      type: "file",
+      path: "ssh://prod-0123456789ab/srv/app/src/a.ts",
+      line: 10,
+    });
+    expect(resolveLink("/etc/hosts", rDir)).toEqual({
+      type: "file",
+      path: "ssh://prod-0123456789ab/etc/hosts",
+    });
+    // Remote Markdown must never link to local files via file:// or malformed ssh:// baseDir
+    expect(resolveLink("file:///etc/passwd", rDir)).toBeNull();
+    expect(resolveLink("file:///etc/passwd", "ssh://bad id/docs")).toBeNull();
+    expect(resolveLink("./a.md", "ssh://bad id/docs")).toBeNull();
+  });
 });
 
 describe("resolveImage", () => {
@@ -32,6 +49,17 @@ describe("resolveImage", () => {
     expect(resolveImage("data:image/png;base64,AAA", dir)).toEqual({ type: "inline" });
     expect(resolveImage("https://example.com/a.png", dir)).toBeNull();
     expect(resolveImage("data:text/html,x", dir)).toBeNull();
+  });
+
+  it("loads same-host images for remote Markdown and blocks file: URLs", () => {
+    const rDir = "ssh://prod-0123456789ab/srv/app/docs";
+    expect(resolveImage("logo.svg", rDir)).toEqual({
+      type: "file",
+      path: "ssh://prod-0123456789ab/srv/app/docs/logo.svg",
+    });
+    expect(resolveImage("file:///Users/me/.ssh/id_ed25519", rDir)).toBeNull();
+    expect(resolveImage("file:///Users/me/.ssh/id_ed25519", "ssh://bad id/docs")).toBeNull();
+    expect(resolveImage("logo.svg", "ssh://bad id/docs")).toBeNull();
   });
 });
 

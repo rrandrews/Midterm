@@ -3,10 +3,12 @@ import type { FsEntry } from "../ipc/fs";
 import {
   type Listing,
   type Row,
+  baseName,
   displayPath,
   findByPrefix,
   flattenTree,
   gitBadges,
+  isWithin,
   joinPath,
   parentPath,
   relativePath,
@@ -47,6 +49,42 @@ describe("paths", () => {
     expect(validName("a/b")).toBeNull();
     expect(validName("..")).toBeNull();
     expect(validName(" ")).toBeNull();
+  });
+
+  it("handles remote ssh:// locations cleanly without host collisions or prefix leaks", () => {
+    expect(joinPath("ssh://box/", "etc")).toBe("ssh://box/etc");
+    expect(joinPath("ssh://box/srv", "app")).toBe("ssh://box/srv/app");
+    expect(parentPath("ssh://box/srv/app")).toBe("ssh://box/srv");
+    expect(parentPath("ssh://box/srv")).toBe("ssh://box/");
+    expect(parentPath("ssh://box/")).toBe("ssh://box/");
+    expect(baseName("ssh://box/srv/app")).toBe("app");
+    expect(baseName("ssh://box/")).toBe("/");
+
+    expect(isWithin("ssh://box/srv/app", "ssh://box/srv")).toBe(true);
+    expect(isWithin("ssh://box/srv/app", "ssh://box/")).toBe(true);
+    expect(isWithin("ssh://box/srv/app", "/")).toBe(false);
+    expect(isWithin("ssh://box/srv/app", "ssh://other/srv")).toBe(false);
+
+    expect(relativePath("ssh://box/srv/app", "ssh://box/")).toBe("srv/app");
+    expect(relativePath("ssh://box/srv/app", "ssh://box/srv")).toBe("app");
+
+    expect(displayPath("ssh://box/home/u/app", "ssh://box/home/u")).toBe("~/app");
+    expect(displayPath("ssh://box/home/u", "ssh://box/home/u")).toBe("~");
+    expect(displayPath("ssh://box/etc", "ssh://box/")).toBe("~/etc");
+    // A plain local home path must NOT falsely shorten a remote path.
+    expect(displayPath("ssh://box/home/u/app", "/home/u")).toBe("/home/u/app");
+    expect(displayPath("ssh://box/etc/hosts", "/home/u")).toBe("/etc/hosts");
+    expect(isWithin("ssh://box/srv/app", "ssh://box///")).toBe(true);
+    expect(relativePath("ssh://box/srv/app", "ssh://box///")).toBe("srv/app");
+
+    const remoteBadges = gitBadges({
+      root: "ssh://box/",
+      branch: "main",
+      entries: { "etc/hosts": "M" },
+    });
+    expect(remoteBadges.get("ssh://box/etc/hosts")).toBe("M");
+    expect(remoteBadges.get("ssh://box/etc")).toBe("M");
+    expect(remoteBadges.get("ssh://box/")).toBe("M");
   });
 });
 

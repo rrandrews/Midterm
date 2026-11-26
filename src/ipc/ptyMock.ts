@@ -1,3 +1,4 @@
+import { fallbackHostLabel, parseLocation } from "../files/location";
 import { MOCK_HOME } from "./fsMock";
 import type { Pty, PtyOptions } from "./pty";
 
@@ -20,6 +21,20 @@ const SGR = (code: string, text: string) => `${ESC}[${code}m${text}${ESC}[0m`;
 /** The pretend remote shell's home directory. */
 const REMOTE_HOME = "/home/demo";
 
+/** Deterministic `<slug>-<12-hex>` remote id matching native `run.sh`, avoiding slug collisions. */
+function mockRemoteId(dest: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < dest.length; i++) {
+    const c = dest.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (c + i), 0x85ebca6b) >>> 0;
+  }
+  const hash = `${h1.toString(16).padStart(8, "0")}${h2.toString(16).padStart(8, "0").slice(0, 4)}`;
+  const slug = (dest.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32) || "ssh").replace(/^\.+$/, "ssh");
+  return `${slug}-${hash}`;
+}
+
 type Job = {
   /** Input while the job runs. */
   input: (char: string) => void;
@@ -31,7 +46,9 @@ export function spawnMockPty(options: PtyOptions): Pty {
   const encoder = new TextEncoder();
   const send = (text: string) => queueMicrotask(() => options.onData(encoder.encode(text)));
   const started = performance.now();
-  let cwd = options.cwd ?? MOCK_HOME;
+  const initialParsed = options.cwd ? parseLocation(options.cwd) : null;
+  const directRemote = initialParsed?.kind === "remote" ? initialParsed : null;
+  let cwd = directRemote ? directRemote.path : (options.cwd ?? MOCK_HOME);
   let line = "";
   let job: Job | null = null;
   let exited = false;
@@ -41,8 +58,18 @@ export function spawnMockPty(options: PtyOptions): Pty {
   /** The mock shell's `aid=`, like the real scripts'. */
   const localAid = `${Math.floor(Math.random() * 1e6)}.mock`;
   /** The pretend shell over `ssh host`, while one runs. */
-  let remote: { host: string; aid: string; localCwd: string } | null = null;
+  let remote: { id: string; host: string; aid: string; localCwd: string; direct: boolean } | null = directRemote
+    ? {
+        id: directRemote.remoteId,
+        host: fallbackHostLabel(directRemote.remoteId),
+        aid: `${Math.floor(Math.random() * 1e6)}.remote`,
+        localCwd: MOCK_HOME,
+        direct: true,
+      }
+    : null;
   const mark = (payload: string) => `${ESC}]133;${payload};aid=${remote?.aid ?? localAid}${BEL}`;
+  const metaReport = (aid: string, homeDir: string) =>
+    `${ESC}]6974;meta=1;home=${encodeURIComponent(homeDir)};shell=zsh;aid=${aid}${BEL}`;
 
   const home = () => (remote ? REMOTE_HOME : MOCK_HOME);
   const display = (path: string) => {
@@ -177,17 +204,27 @@ export function spawnMockPty(options: PtyOptions): Pty {
           send(`mock: only \`ssh <host>\` from the local shell\r\n`);
           return 255;
         }
+        const id = mockRemoteId(host);
+        const remoteAid = `${Math.floor(Math.random() * 1e6)}.remote`;
+        if (options.sshToken) {
+          send(
+            `${ESC}]6974;ssh=start;id=${id};label=${encodeURIComponent(host)};host=${encodeURIComponent(host)};user=demo;port=22;sock=%2Ftmp%2Fmock-ssh;owned=1;args=${encodeURIComponent(host)};token=${options.sshToken}${BEL}`,
+          );
+        }
         send(`Welcome to ${host} (mock)\r\n`);
-        remote = { host, aid: `${Math.floor(Math.random() * 1e6)}.remote`, localCwd: cwd };
+        remote = { id, host, aid: remoteAid, localCwd: cwd, direct: false };
         cwd = REMOTE_HOME;
         // The local `ssh` command runs on; the remote shell prompts.
-        send(prompt());
+        send(`${metaReport(remoteAid, REMOTE_HOME)}${prompt()}`);
         return null;
       }
       case "exit":
-        if (remote) {
-          const { host, localCwd } = remote;
+        if (remote && !remote.direct) {
+          const { id, host, localCwd } = remote;
           send(`logout\r\nConnection to ${host} closed.\r\n`);
+          if (options.sshToken) {
+            send(`${ESC}]6974;ssh=end;id=${id};token=${options.sshToken}${BEL}`);
+          }
           remote = null;
           cwd = localCwd;
           finish(Number(args[0]) || 0);

@@ -1,3 +1,12 @@
+import {
+  SSH_SCHEME,
+  formatRemoteLocation,
+  isRemotePath,
+  parseLocation,
+  posixPathOf,
+  remoteIdOf,
+} from "../files/location";
+import { isMockSshConnected } from "./ssh";
 import type {
   FileVersion,
   FoundEntries,
@@ -77,13 +86,77 @@ const GIT: Record<string, GitCode> = {
   "src/store/layout.ts": "M",
 };
 
-const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/";
-const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+const REMOTE_MOCK_HOME = "/home/demo";
+const REMOTE_MOCK_ROOT = `${REMOTE_MOCK_HOME}/app`;
+const remoteRoots = new Map<string, Node>();
+
+function createRemoteTree(): Node {
+  const root = tree({
+    home: {
+      demo: {
+        ".bashrc": null,
+        app: {
+          ".git": { HEAD: null, index: null },
+          src: { "server.ts": null, "routes.ts": null },
+          "README.md": null,
+          "config.json": null,
+        },
+      },
+    },
+    etc: { hosts: null },
+  });
+  const set = (p: string, content: string) => {
+    const n = lookupIn(root, p);
+    if (n) n.content = content;
+  };
+  set(`${REMOTE_MOCK_ROOT}/README.md`, "# Remote App\n\nRunning on the mock SSH host.\n\nSee [server](src/server.ts).\n");
+  set(`${REMOTE_MOCK_ROOT}/src/server.ts`, 'export const port = 8080;\nconsole.log("remote server", port);\n');
+  set(`${REMOTE_MOCK_ROOT}/config.json`, '{\n  "env": "production"\n}\n');
+  set("/etc/hosts", "127.0.0.1 localhost\n");
+  return root;
+}
+
+function rootFor(path: string): { tree: Node; remoteId: string | null; posix: string } {
+  const parsed = parseLocation(path);
+  if (!parsed) throw new Error(`Invalid path: ${path}`);
+  if (parsed.kind === "remote") {
+    if (!isMockSshConnected(parsed.remoteId)) {
+      throw new Error(`SSH connection '${parsed.remoteId}' is not active`);
+    }
+    let r = remoteRoots.get(parsed.remoteId);
+    if (!r) {
+      r = createRemoteTree();
+      remoteRoots.set(parsed.remoteId, r);
+    }
+    return { tree: r, remoteId: parsed.remoteId, posix: parsed.path };
+  }
+  if (path.startsWith(SSH_SCHEME)) throw new Error(`Invalid SSH location: ${path}`);
+  return { tree: fsRoot, remoteId: null, posix: posixPathOf(path) };
+}
+
+function prefixPath(remoteId: string | null, posix: string): string {
+  return remoteId ? formatRemoteLocation(remoteId, posix) : posix;
+}
+
+const parentOf = (path: string) => {
+  const { remoteId, posix } = rootFor(path);
+  const idx = posix.lastIndexOf("/");
+  return prefixPath(remoteId, idx <= 0 ? "/" : posix.slice(0, idx));
+};
+const nameOf = (path: string) => {
+  const posix = posixPathOf(path);
+  return posix.slice(posix.lastIndexOf("/") + 1);
+};
+
+function lookupIn(root: Node, posix: string): Node | undefined {
+  let node: Node | undefined = root;
+  for (const part of posix.split("/").filter(Boolean)) node = node?.children?.get(part);
+  return node;
+}
 
 function lookup(path: string): Node | undefined {
-  let node: Node | undefined = fsRoot;
-  for (const part of path.split("/").filter(Boolean)) node = node?.children?.get(part);
-  return node;
+  const { tree: root, posix } = rootFor(path);
+  return lookupIn(root, posix);
 }
 
 const CONTENT: Record<string, string> = {
@@ -156,10 +229,11 @@ function changed(...dirs: string[]): void {
 }
 
 export async function listDir(path: string, { showHidden }: ListOptions): Promise<FsEntry[]> {
+  const { remoteId, posix } = rootFor(path);
   const node = lookup(path);
   if (!node?.dir || !node.children) throw new Error(`Not a directory: ${path}`);
   return [...node.children]
-    .map(([name, child]) => entry(`${path === "/" ? "" : path}/${name}`, child))
+    .map(([name, child]) => entry(prefixPath(remoteId, `${posix === "/" ? "" : posix}/${name}`), child))
     .filter((item) => showHidden || !(item.hidden || item.ignored))
     .sort((a, b) =>
       a.kind !== b.kind ? (a.kind === "dir" ? -1 : 1) : a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
@@ -180,6 +254,9 @@ export async function create(path: string, kind: "file" | "dir"): Promise<void> 
 }
 
 export async function rename(from: string, to: string): Promise<void> {
+  if (remoteIdOf(from) !== remoteIdOf(to)) {
+    throw new Error("cannot move entries across different hosts; use Copy instead");
+  }
   const node = lookup(from);
   const target = lookup(parentOf(to));
   if (!node || !target?.children) throw new Error("No such file");
@@ -190,11 +267,34 @@ export async function rename(from: string, to: string): Promise<void> {
 }
 
 export async function trash(paths: string[]): Promise<void> {
+  for (const path of paths) {
+    if (isRemotePath(path)) {
+      throw new Error("remote SSH paths cannot be moved to Trash; use permanent delete instead");
+    }
+  }
+  for (const path of paths) lookup(parentOf(path))?.children?.delete(nameOf(path));
+  changed(...paths.map(parentOf));
+}
+
+export async function deletePermanent(paths: string[]): Promise<void> {
+  for (const path of paths) {
+    if (!isRemotePath(path)) throw new Error("fs_delete_permanent only supports remote SSH paths");
+    if (posixPathOf(path) === "/") throw new Error("refusing to delete remote filesystem root");
+  }
   for (const path of paths) lookup(parentOf(path))?.children?.delete(nameOf(path));
   changed(...paths.map(parentOf));
 }
 
 export async function gitStatus(path: string): Promise<GitStatus | null> {
+  const { remoteId, posix } = rootFor(path);
+  if (remoteId) {
+    if (posix !== REMOTE_MOCK_ROOT && !posix.startsWith(`${REMOTE_MOCK_ROOT}/`)) return null;
+    return {
+      root: formatRemoteLocation(remoteId, REMOTE_MOCK_ROOT),
+      branch: "main",
+      entries: { "src/server.ts": "M" },
+    };
+  }
   if (path !== ROOT && !path.startsWith(`${ROOT}/`)) return null;
   return { root: ROOT, branch: "main", entries: { ...GIT } };
 }
@@ -266,18 +366,21 @@ export async function fileVersion(path: string): Promise<FileVersion | null> {
 export const MOCK_PROJECT = ROOT;
 
 export async function findFiles(root: string, limit: number): Promise<FoundFiles> {
+  const { remoteId, posix } = rootFor(root);
   const paths: string[] = [];
-  const walk = (dir: string, prefix: string) => {
-    const node = lookup(dir);
+  const walk = (dirPosix: string, prefix: string) => {
+    const fullDir = prefixPath(remoteId, dirPosix || "/");
+    const node = lookup(fullDir);
     for (const [name, child] of [...(node?.children ?? [])].sort(([a], [b]) => a.localeCompare(b))) {
-      const path = `${dir}/${name}`;
-      if (name.startsWith(".") || IGNORED.has(path)) continue;
-      if (child.dir) walk(path, `${prefix}${name}/`);
+      const childPosix = `${dirPosix}/${name}`;
+      const fullPath = prefixPath(remoteId, childPosix);
+      if (name.startsWith(".") || IGNORED.has(fullPath)) continue;
+      if (child.dir) walk(childPosix, `${prefix}${name}/`);
       else paths.push(`${prefix}${name}`);
     }
   };
   if (!lookup(root)?.dir) throw new Error(`Not a directory: ${root}`);
-  walk(root === "/" ? "" : root, "");
+  walk(posix === "/" ? "" : posix, "");
   return { paths: paths.slice(0, limit), truncated: paths.length > limit };
 }
 
@@ -285,19 +388,22 @@ export async function findEntries(
   root: string,
   { limit, showHidden }: { limit: number; showHidden: boolean },
 ): Promise<FoundEntries> {
+  const { remoteId, posix } = rootFor(root);
   const entries: FoundEntries["entries"] = [];
-  const walk = (dir: string, prefix: string) => {
-    const node = lookup(dir);
+  const walk = (dirPosix: string, prefix: string) => {
+    const fullDir = prefixPath(remoteId, dirPosix || "/");
+    const node = lookup(fullDir);
     for (const [name, child] of [...(node?.children ?? [])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-      const path = `${dir}/${name}`;
-      if (!showHidden && (name.startsWith(".") || IGNORED.has(path))) continue;
+      const childPosix = `${dirPosix}/${name}`;
+      const fullPath = prefixPath(remoteId, childPosix);
+      if (!showHidden && (name.startsWith(".") || IGNORED.has(fullPath))) continue;
       entries.push({ path: `${prefix}${name}`, dir: child.dir });
       // `.git` is listed, its contents never.
-      if (child.dir && name !== ".git") walk(path, `${prefix}${name}/`);
+      if (child.dir && name !== ".git") walk(childPosix, `${prefix}${name}/`);
     }
   };
   if (!lookup(root)?.dir) throw new Error(`Not a directory: ${root}`);
-  walk(root === "/" ? "" : root, "");
+  walk(posix === "/" ? "" : posix, "");
   return { entries: entries.slice(0, limit), truncated: entries.length > limit };
 }
 
@@ -320,7 +426,8 @@ export async function copyInto(from: string, toDir: string): Promise<string> {
   });
   target.children.set(copyName, clone(node));
   changed(toDir);
-  return `${toDir === "/" ? "" : toDir}/${copyName}`;
+  const { remoteId, posix } = rootFor(toDir);
+  return prefixPath(remoteId, `${posix === "/" ? "" : posix}/${copyName}`);
 }
 
 const WINDOW = 300;
@@ -365,14 +472,17 @@ export async function searchText(
     let total = 0;
     let truncated = false;
     let searched = 0;
-    const walk = (dir: string, prefix: string): boolean => {
-      const node = lookup(dir);
+    const { remoteId, posix } = rootFor(root);
+    const walk = (dirPosix: string, prefix: string): boolean => {
+      const fullDir = prefixPath(remoteId, dirPosix || "/");
+      const node = lookup(fullDir);
       for (const [name, child] of [...(node?.children ?? [])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-        const path = `${dir}/${name}`;
+        const childPosix = `${dirPosix}/${name}`;
+        const path = prefixPath(remoteId, childPosix);
         if (!options.showHidden && (name.startsWith(".") || IGNORED.has(path))) continue;
         if (name === ".git") continue;
         if (child.dir) {
-          if (!walk(path, `${prefix}${name}/`)) return false;
+          if (!walk(childPosix, `${prefix}${name}/`)) return false;
           continue;
         }
         const content = contentOf(path, child);
@@ -395,7 +505,7 @@ export async function searchText(
       return true;
     };
     if (!lookup(root)?.dir) return finish({ type: "error", message: `Not a directory: ${root}` });
-    walk(root === "/" ? "" : root, "");
+    walk(posix === "/" ? "" : posix, "");
     if (files.length > 0) finish({ type: "files", files });
     finish({ type: "done", truncated, cancelled: false, filesSearched: searched });
   }, 0);

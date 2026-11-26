@@ -1,4 +1,5 @@
 import { isWithin, relativePath } from "../explorer/tree";
+import { posixPathOf } from "../files/location";
 
 /*
  * Pure helpers for the editor: file text in and out of CodeMirror, the
@@ -92,9 +93,15 @@ export function breadcrumbSegments(
   { repoRoot, home }: { repoRoot?: string | null; home?: string },
 ): string[] {
   const split = (relative: string) => relative.split("/").filter(Boolean);
-  if (repoRoot && repoRoot !== path && isWithin(path, repoRoot)) return split(relativePath(path, repoRoot));
-  if (home && home !== path && isWithin(path, home)) return ["~", ...split(relativePath(path, home))];
-  return split(path);
+  if (repoRoot && isWithin(path, repoRoot)) {
+    const rel = relativePath(path, repoRoot);
+    if (rel) return split(rel);
+  }
+  if (home && isWithin(path, home)) {
+    const rel = relativePath(path, home);
+    if (rel) return ["~", ...split(rel)];
+  }
+  return split(posixPathOf(path));
 }
 
 /** A position in a document for 1-based `line` and `column`, clamped to the document. */

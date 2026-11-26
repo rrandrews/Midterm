@@ -37,6 +37,8 @@ export type PtyOptions = {
   shellArgs?: string[];
   /** Wrap `ssh` to load the shell integration on the remote (default true). */
   sshIntegration?: boolean;
+  /** Per-PTY random secret token authenticating local OSC 6974 SSH handshakes. */
+  sshToken?: string;
   /** Variables for the shell, on top of the terminal's own (applied in order). */
   env?: PtyEnvVar[];
   /**
@@ -105,6 +107,7 @@ async function spawnTauriPty(options: PtyOptions): Promise<Pty> {
     shell: options.shell || null,
     shellArgs: options.shell ? (options.shellArgs ?? []) : null,
     sshIntegration: options.sshIntegration ?? true,
+    sshToken: options.sshToken ?? null,
     env: options.env?.length ? options.env : null,
     secrets: options.secrets?.length ? options.secrets : null,
     python: options.python ?? null,

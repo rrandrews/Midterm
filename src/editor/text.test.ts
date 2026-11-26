@@ -66,6 +66,28 @@ describe("breadcrumbSegments", () => {
     expect(breadcrumbSegments("/Users/dev/notes.md", { repoRoot: null, home })).toEqual(["~", "notes.md"]);
     expect(breadcrumbSegments("/etc/hosts", { home })).toEqual(["etc", "hosts"]);
   });
+
+  it("handles remote ssh:// files without showing the ssh:// authority", () => {
+    const rHome = "ssh://prod-0123456789ab/home/deploy";
+    const rRepo = "ssh://prod-0123456789ab/home/deploy/api";
+    expect(breadcrumbSegments("ssh://prod-0123456789ab/home/deploy/api/src/main.rs", { repoRoot: rRepo, home: rHome })).toEqual([
+      "src",
+      "main.rs",
+    ]);
+    expect(breadcrumbSegments("ssh://prod-0123456789ab/home/deploy/notes.md", { repoRoot: null, home: rHome })).toEqual([
+      "~",
+      "notes.md",
+    ]);
+    expect(breadcrumbSegments("ssh://prod-0123456789ab/etc/nginx/nginx.conf", { repoRoot: null, home: rHome })).toEqual([
+      "etc",
+      "nginx",
+      "nginx.conf",
+    ]);
+    // Local home must never abbreviate a remote file path.
+    expect(
+      breadcrumbSegments("ssh://prod-0123456789ab/Users/dev/notes.md", { repoRoot: null, home: "/Users/dev" }),
+    ).toEqual(["Users", "dev", "notes.md"]);
+  });
 });
 
 describe("clampPosition", () => {

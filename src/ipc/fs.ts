@@ -82,10 +82,19 @@ export function rename(from: string, to: string): Promise<void> {
   return invoke("fs_rename", { from, to });
 }
 
-/** Moves paths to the system trash. */
+/** Moves local paths to the system trash. Rejects remote SSH paths. */
 export function trash(paths: string[]): Promise<void> {
   if (!isTauri()) return mock.trash(paths);
   return invoke("fs_trash", { paths });
+}
+
+/**
+ * Permanently deletes remote SSH paths. Only call after obtaining explicit
+ * permanent-delete confirmation from the user naming the remote host.
+ */
+export function deletePermanent(paths: string[]): Promise<void> {
+  if (!isTauri()) return mock.deletePermanent(paths);
+  return invoke("fs_delete_permanent", { paths });
 }
 
 export type FoundFiles = {

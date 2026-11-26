@@ -14,11 +14,12 @@ const MOCK_COMMANDS = ["bun", "cargo", "cat", "cd", "git", "grep", "ls", "make",
 
 /**
  * The executable names on `path` (a `PATH` value, `:`-separated), sorted and
- * deduplicated. Without `path`, the app's own `PATH` is used.
+ * deduplicated. Without `path`, the app's/remote's own `PATH` is used. Pass
+ * `remote` (an SSH `remoteId`) to query executables on that remote host.
  */
-export function pathCommands(path: string | undefined): Promise<string[]> {
+export function pathCommands(path: string | undefined, remote?: string): Promise<string[]> {
   if (!isTauri()) return Promise.resolve(MOCK_COMMANDS);
-  return invoke<string[]>("fs_path_commands", { path: path ?? null });
+  return invoke<string[]>("fs_path_commands", { path: path ?? null, remote: remote ?? null });
 }
 
 /** Every entry of `dir`, dotfiles included. Rejects if it is not a readable directory. */
