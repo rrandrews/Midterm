@@ -99,6 +99,32 @@ name, symlinks not followed, the same hidden/ignored rules as
   destruction and exit (`lib.rs`). A cancelled search still sends `done`
   with `cancelled: true`.
 
+### Local only (read before adding remote/SSH browsing)
+
+Every command here works on the Mac's own file system, and the explorer
+never sees a remote path: directory reports (OSC 7) from a shell inside
+`ssh` are ignored (`isLocal` in `src/terminal/session.ts`). An explorer
+that follows an SSH terminal onto the remote host needs its own
+operations there (over SFTP or a helper on the host), and these
+assumptions do not carry over:
+
+- **Copy into itself.** `copy_into` refuses a folder copied into itself
+  by comparing canonical paths. On Linux a bind mount can give one
+  directory two canonical paths, so a copy into the alias passes the
+  check and recurses into its own output until an OS limit. A remote copy
+  must compare device and inode (`st_dev`/`st_ino`) of the target and each
+  of its ancestors against the source, not paths. (Not an issue on macOS,
+  which has no bind mounts; symlinks and firmlinks canonicalize.)
+- **Exclusive creates and rollback** rely on `O_EXCL` and on removing
+  only what was created; over SFTP, use `SSH_FXF_EXCL` and the same
+  created-path list.
+- **Case-insensitive targets**: the tree copy errors on a name clash
+  rather than overwriting; keep that when the target is remote.
+- **Moves** are `rename`, so they fail across file systems, as moves
+  between local volumes already do.
+- **Watching and git status** use FSEvents and libgit2 on local paths;
+  neither works remotely as is.
+
 ### Hidden and ignored
 
 - `hidden`: the name starts with a dot.
