@@ -104,6 +104,95 @@ export function findFiles(root: string, limit: number): Promise<FoundFiles> {
   return invoke<FoundFiles>("fs_find_files", { root, limit });
 }
 
+export type FoundEntry = {
+  /** `/`-separated, relative to the root. */
+  path: string;
+  dir: boolean;
+};
+
+export type FoundEntries = { entries: FoundEntry[]; truncated: boolean };
+
+/**
+ * Files AND directories under `root` (not `root` itself). Without
+ * `showHidden`, hidden and ignored entries are skipped (same rules as
+ * `findFiles` / `listDir`); with it, everything is included except the
+ * contents of `.git` directories. Symlinks are not followed (a symlink is
+ * reported with its target's kind). Stops after `limit` entries.
+ */
+export function findEntries(root: string, options: { limit: number; showHidden: boolean }): Promise<FoundEntries> {
+  if (!isTauri()) return mock.findEntries(root, options);
+  return invoke<FoundEntries>("fs_find_entries", { root, limit: options.limit, showHidden: options.showHidden });
+}
+
+/**
+ * Copies a file or directory (recursively) into the directory `toDir`, never replacing anything:
+ * on a name clash the copy is named as Finder does ("a copy.txt", then "a copy 2.txt", …; "dir copy").
+ * Resolves to the new absolute path. Rejects if `from` is a directory and `toDir` is it or inside it.
+ */
+export function copyInto(from: string, toDir: string): Promise<string> {
+  if (!isTauri()) return mock.copyInto(from, toDir);
+  return invoke<string>("fs_copy", { from, toDir });
+}
+
+export type TextSearchOptions = {
+  /** Literal unless `regex`. */
+  query: string;
+  regex: boolean;
+  caseSensitive: boolean;
+  wholeWord: boolean;
+  /** Same meaning as for `findEntries`. */
+  showHidden: boolean;
+  /** Total matching lines across files; the search stops after (`truncated: true`). */
+  maxResults: number;
+};
+
+export type TextMatch = {
+  /** 1-based line number. */
+  line: number;
+  /** 1-based column (UTF-16 code units) of the first match in the full line, for opening the file there. */
+  column: number;
+  /** The line (no trailing newline), or for lines over ~300 chars a window around the first match with "…" where cut. */
+  text: string;
+  /** Matches within `text`, as [start, end) UTF-16 offsets (JS string indices). */
+  ranges: [number, number][];
+};
+
+export type TextSearchFile = {
+  /** Relative to the root, `/`-separated. */
+  path: string;
+  matches: TextMatch[];
+};
+
+export type TextSearchEvent =
+  /** A batch; each file appears in exactly one batch with all its matches. */
+  | { type: "files"; files: TextSearchFile[] }
+  | { type: "done"; truncated: boolean; cancelled: boolean; filesSearched: number }
+  /** E.g. an invalid regex. No "done" follows. */
+  | { type: "error"; message: string };
+
+export type TextSearch = { cancel: () => void };
+
+/**
+ * Searches text files under `root`, streaming results to `onEvent`. Binary files are skipped
+ * (stop at first NUL), as are files over 8 MiB. Resolves once the search has started.
+ */
+export async function searchText(
+  root: string,
+  options: TextSearchOptions,
+  onEvent: (event: TextSearchEvent) => void,
+): Promise<TextSearch> {
+  if (!isTauri()) return mock.searchText(root, options, onEvent);
+  const channel = new Channel<TextSearchEvent>();
+  channel.onmessage = onEvent;
+  const id = await invoke<number>("fs_search_text", { root, options, onEvent: channel });
+  return {
+    cancel: () =>
+      void invoke("fs_search_cancel", { id }).catch((error: unknown) =>
+        console.error("fs_search_cancel failed:", error),
+      ),
+  };
+}
+
 /**
  * What change detection compares: modification time (nanoseconds since the
  * epoch, as a decimal string so it survives JSON exactly) and size.

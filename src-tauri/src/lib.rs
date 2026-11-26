@@ -12,7 +12,7 @@ mod traffic_lights;
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 
-use fs::WatchManager;
+use fs::{SearchManager, WatchManager};
 use pty::PtyManager;
 
 /// Quits the app; called by the webview once quitting has been confirmed.
@@ -102,6 +102,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PtyManager::default())
         .manage(WatchManager::default())
+        .manage(SearchManager::default())
         .manage(ai::AiManager::default())
         .manage(antigravity::AntigravityManager::default())
         .manage(claude::ClaudeManager::default())
@@ -137,6 +138,7 @@ pub fn run() {
                 let label = webview.window().label().to_string();
                 webview.state::<PtyManager>().kill_owned_by(&label);
                 webview.state::<WatchManager>().stop_owned_by(&label);
+                webview.state::<SearchManager>().cancel_owned_by(&label);
                 webview.state::<ai::AiManager>().acp.close_owned_by(&label);
                 webview.state::<antigravity::AntigravityManager>().close_owned_by(&label);
                 webview.state::<claude::ClaudeManager>().close_owned_by(&label);
@@ -184,6 +186,10 @@ pub fn run() {
             fs::commands::git_status,
             fs::commands::fs_path_commands,
             fs::commands::fs_complete_list,
+            fs::commands::fs_find_entries,
+            fs::commands::fs_copy,
+            fs::commands::fs_search_text,
+            fs::commands::fs_search_cancel,
             fs::commands::fs_watch_start,
             fs::commands::fs_watch_set,
             fs::commands::fs_watch_stop,
@@ -224,6 +230,7 @@ pub fn run() {
         } => {
             app.state::<PtyManager>().kill_owned_by(&label);
             app.state::<WatchManager>().stop_owned_by(&label);
+            app.state::<SearchManager>().cancel_owned_by(&label);
             app.state::<ai::AiManager>().acp.close_owned_by(&label);
             app.state::<antigravity::AntigravityManager>().close_owned_by(&label);
             app.state::<claude::ClaudeManager>().close_owned_by(&label);
@@ -236,6 +243,7 @@ pub fn run() {
         RunEvent::Exit => {
             app.state::<PtyManager>().kill_all();
             app.state::<WatchManager>().stop_all();
+            app.state::<SearchManager>().cancel_all();
             app.state::<ai::AiManager>().acp.close_all();
             app.state::<antigravity::AntigravityManager>().close_all();
             app.state::<claude::ClaudeManager>().close_all();

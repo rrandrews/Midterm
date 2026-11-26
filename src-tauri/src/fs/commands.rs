@@ -20,11 +20,13 @@ use tauri::ipc::{Channel, Response};
 use tauri::{State, Window};
 
 use super::complete::{self, CompletionEntry};
-use super::find::{self, FoundFiles};
+use super::copy;
+use super::find::{self, FoundEntries, FoundFiles};
 use super::file::{self, FileVersion, TextFile, WriteExpect, WriteResult};
 use super::git::{self, GitStatus};
 use super::list::{self, FsEntry};
 use super::ops;
+use super::search::{self, SearchManager, TextSearchEvent, TextSearchOptions};
 use super::watch::{WatchEvent, WatchManager};
 
 /// Runs `job` on the blocking thread pool.
@@ -91,6 +93,23 @@ pub async fn fs_trash(paths: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 pub async fn fs_find_files(root: String, limit: usize) -> Result<FoundFiles, String> {
     blocking(move || find::find_files(&PathBuf::from(root), limit)).await
+}
+
+/// Files and directories under `root`, up to `limit`; see [`find::find_entries`].
+#[tauri::command]
+pub async fn fs_find_entries(
+    root: String,
+    limit: usize,
+    show_hidden: bool,
+) -> Result<FoundEntries, String> {
+    blocking(move || find::find_entries(&PathBuf::from(root), limit, show_hidden)).await
+}
+
+/// Copies `from` into the directory `to_dir` under a name that is free;
+/// returns the copy's path. See [`copy::copy_into`].
+#[tauri::command]
+pub async fn fs_copy(from: String, to_dir: String) -> Result<String, String> {
+    blocking(move || copy::copy_into(&PathBuf::from(from), &PathBuf::from(to_dir))).await
 }
 
 /// The file's text, or why it cannot be shown as text; see [`file::read_text`].
@@ -176,5 +195,35 @@ pub fn fs_watch_set(
 #[tauri::command]
 pub fn fs_watch_stop(manager: State<'_, WatchManager>, id: u32) -> Result<(), String> {
     manager.stop(id);
+    Ok(())
+}
+
+/// Starts a text search under `root` on its own thread and returns its id
+/// at once. Results arrive on `on_event` (see [`search::search_text`]); the
+/// search ends by itself, when cancelled, or when the webview goes away.
+/// Synchronous like the watch commands: it only registers and spawns.
+#[tauri::command]
+pub fn fs_search_text(
+    window: Window,
+    manager: State<'_, SearchManager>,
+    root: String,
+    options: TextSearchOptions,
+    on_event: Channel<TextSearchEvent>,
+) -> Result<u32, String> {
+    manager.start(window.label(), move |cancel| {
+        let root = PathBuf::from(root);
+        search::search_text(&root, &options, &cancel, &mut |event| {
+            // The webview is gone (page reloaded): nobody wants the rest.
+            if on_event.send(event).is_err() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    })
+}
+
+/// Cancels a text search. Unknown ids are ignored.
+#[tauri::command]
+pub fn fs_search_cancel(manager: State<'_, SearchManager>, id: u32) -> Result<(), String> {
+    manager.cancel(id);
     Ok(())
 }

@@ -2,7 +2,11 @@
 //!
 //! * [`list`] – directory listings (with ignore rules) and single-path stats.
 //! * [`ops`] – create, rename, move to trash.
-//! * [`find`] – every file under a root, for fuzzy file open.
+//! * [`copy`] – copy a file or tree into a directory, never replacing.
+//! * [`find`] – every file (or file and directory) under a root, for fuzzy
+//!   file open and name search.
+//! * [`search`] – streaming text search (ripgrep's crates) and the registry
+//!   of running searches in Tauri managed state.
 //! * [`file`] – whole-file reads and atomic writes for editors and viewers.
 //! * [`git`] – work tree status.
 //! * [`complete`] – `PATH` executables and directory entries for tab
@@ -15,11 +19,14 @@
 
 pub mod commands;
 pub mod complete;
+pub mod copy;
 pub mod find;
 pub mod file;
 pub mod git;
 pub mod list;
 pub mod ops;
+pub mod search;
 pub mod watch;
 
+pub use search::SearchManager;
 pub use watch::WatchManager;

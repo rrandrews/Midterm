@@ -1,11 +1,17 @@
 import type {
   FileVersion,
+  FoundEntries,
   FoundFiles,
   FsEntry,
   GitCode,
   GitStatus,
   ListOptions,
+  TextMatch,
   TextFile,
+  TextSearch,
+  TextSearchEvent,
+  TextSearchFile,
+  TextSearchOptions,
   WatchEvent,
   Watcher,
   WriteExpect,
@@ -273,4 +279,125 @@ export async function findFiles(root: string, limit: number): Promise<FoundFiles
   if (!lookup(root)?.dir) throw new Error(`Not a directory: ${root}`);
   walk(root === "/" ? "" : root, "");
   return { paths: paths.slice(0, limit), truncated: paths.length > limit };
+}
+
+export async function findEntries(
+  root: string,
+  { limit, showHidden }: { limit: number; showHidden: boolean },
+): Promise<FoundEntries> {
+  const entries: FoundEntries["entries"] = [];
+  const walk = (dir: string, prefix: string) => {
+    const node = lookup(dir);
+    for (const [name, child] of [...(node?.children ?? [])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      const path = `${dir}/${name}`;
+      if (!showHidden && (name.startsWith(".") || IGNORED.has(path))) continue;
+      entries.push({ path: `${prefix}${name}`, dir: child.dir });
+      // `.git` is listed, its contents never.
+      if (child.dir && name !== ".git") walk(path, `${prefix}${name}/`);
+    }
+  };
+  if (!lookup(root)?.dir) throw new Error(`Not a directory: ${root}`);
+  walk(root === "/" ? "" : root, "");
+  return { entries: entries.slice(0, limit), truncated: entries.length > limit };
+}
+
+export async function copyInto(from: string, toDir: string): Promise<string> {
+  const node = lookup(from);
+  const target = lookup(toDir);
+  if (!node) throw new Error(`No such file: ${from}`);
+  if (!target?.children) throw new Error(`Not a directory: ${toDir}`);
+  if (node.dir && (toDir === from || toDir.startsWith(`${from}/`))) throw new Error(`Cannot copy ${from} into itself`);
+  const name = nameOf(from);
+  const dot = name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 && !node.dir && dot < name.length - 1 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  let copyName = name;
+  for (let n = 2; target.children.has(copyName); n++) copyName = `${stem} copy${n > 2 ? ` ${n - 1}` : ""}${ext}`;
+  const clone = (source: Node): Node => ({
+    ...source,
+    ...(source.children
+      ? { children: new Map([...source.children].map(([childName, child]) => [childName, clone(child)])) }
+      : {}),
+  });
+  target.children.set(copyName, clone(node));
+  changed(toDir);
+  return `${toDir === "/" ? "" : toDir}/${copyName}`;
+}
+
+const WINDOW = 300;
+
+function lineMatches(text: string, test: RegExp): TextMatch | null {
+  const ranges: [number, number][] = [];
+  for (const m of text.matchAll(test)) if (m[0].length > 0) ranges.push([m.index, m.index + m[0].length]);
+  const first = ranges[0];
+  if (!first) return null;
+  const column = first[0] + 1;
+  if (text.length <= WINDOW) return { line: 0, column, text, ranges };
+  const start = Math.max(0, first[0] - 60);
+  const end = Math.min(text.length, start + WINDOW);
+  const lead = start > 0 ? 1 : 0;
+  return {
+    line: 0,
+    column,
+    text: `${lead ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`,
+    ranges: ranges.filter(([s]) => s < end).map(([s, e]): [number, number] => [Math.max(s, start) - start + lead, Math.min(e, end) - start + lead]),
+  };
+}
+
+/** Searches the mock tree's file contents (a file without any holds a line naming it) in one batch. */
+export async function searchText(
+  root: string,
+  options: TextSearchOptions,
+  onEvent: (event: TextSearchEvent) => void,
+): Promise<TextSearch> {
+  let cancelled = false;
+  setTimeout(() => {
+    if (cancelled) return;
+    const finish = (event: TextSearchEvent) => onEvent(event);
+    if (options.query === "") return finish({ type: "done", truncated: false, cancelled: false, filesSearched: 0 });
+    let test: RegExp;
+    try {
+      const source = options.regex ? options.query : options.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      test = new RegExp(options.wholeWord ? `\\b(?:${source})\\b` : source, options.caseSensitive ? "gu" : "giu");
+    } catch (error) {
+      return finish({ type: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+    const files: TextSearchFile[] = [];
+    let total = 0;
+    let truncated = false;
+    let searched = 0;
+    const walk = (dir: string, prefix: string): boolean => {
+      const node = lookup(dir);
+      for (const [name, child] of [...(node?.children ?? [])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+        const path = `${dir}/${name}`;
+        if (!options.showHidden && (name.startsWith(".") || IGNORED.has(path))) continue;
+        if (name === ".git") continue;
+        if (child.dir) {
+          if (!walk(path, `${prefix}${name}/`)) return false;
+          continue;
+        }
+        const content = contentOf(path, child);
+        if (content.includes("\u0000")) continue;
+        searched++;
+        const matches: TextMatch[] = [];
+        for (const [index, text] of content.split("\n").entries()) {
+          const found = lineMatches(text, test);
+          if (!found) continue;
+          if (total === options.maxResults) {
+            truncated = true;
+            break;
+          }
+          total++;
+          matches.push({ ...found, line: index + 1 });
+        }
+        if (matches.length > 0) files.push({ path: `${prefix}${name}`, matches });
+        if (truncated) return false;
+      }
+      return true;
+    };
+    if (!lookup(root)?.dir) return finish({ type: "error", message: `Not a directory: ${root}` });
+    walk(root === "/" ? "" : root, "");
+    if (files.length > 0) finish({ type: "files", files });
+    finish({ type: "done", truncated, cancelled: false, filesSearched: searched });
+  }, 0);
+  return { cancel: () => void (cancelled = true) };
 }
