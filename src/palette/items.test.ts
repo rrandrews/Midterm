@@ -68,12 +68,39 @@ describe("paletteItems", () => {
     const items = paletteItems("serv", "all", sources());
     expect(items[0]).toMatchObject({ group: "Tabs", title: "server", action: { kind: "tab", tabId: "t1" } });
   });
+
+  it("handles remote SSH project roots and remote recent files without leaking ssh://", () => {
+    const remoteRoot = "ssh://prod-0123456789ab/home/deploy/api";
+    const items = paletteItems(
+      "server",
+      "files",
+      sources({
+        root: remoteRoot,
+        files: ["src/server.ts", "README.md"],
+        recentFiles: ["ssh://staging-abcdef012345/etc/nginx/server.conf"],
+      }),
+    );
+    const projRemote = items.find((i) => i.title === "server.ts");
+    expect(projRemote).toMatchObject({
+      title: "server.ts",
+      detail: "src",
+      action: { kind: "file", path: `${remoteRoot}/src/server.ts` },
+    });
+    const recentRemote = items.find((i) => i.title === "server.conf");
+    expect(recentRemote).toMatchObject({
+      title: "server.conf",
+      detail: "staging:/etc/nginx",
+      action: { kind: "file", path: "ssh://staging-abcdef012345/etc/nginx/server.conf" },
+    });
+  });
 });
 
 describe("relativeTo", () => {
-  it("strips the root only from paths inside it", () => {
+  it("strips the root only from paths inside it on the same host", () => {
     expect(relativeTo("/repo", "/repo/a/b")).toBe("a/b");
     expect(relativeTo("/repo", "/repository/a")).toBe("/repository/a");
     expect(relativeTo(undefined, "/x")).toBe("/x");
+    expect(relativeTo("ssh://prod-0123456789ab/repo", "ssh://prod-0123456789ab/repo/a/b")).toBe("a/b");
+    expect(relativeTo("/repo", "ssh://prod-0123456789ab/repo/a/b")).toBe("ssh://prod-0123456789ab/repo/a/b");
   });
 });

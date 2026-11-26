@@ -1,4 +1,6 @@
 import { renameOpenModels } from "./editor/registry";
+import { isWithin, joinPath, relativePath } from "./explorer/tree";
+import { isRemotePath } from "./files/location";
 import { forgetWorkspace } from "./workspaces/settings";
 import { peekExplorer } from "./explorer/explorers";
 import { revealInFileManager } from "./ipc/shell";
@@ -498,8 +500,12 @@ export function openDirectory(path: string, { fromPaneId, newPane: alwaysNew = f
   const tab = findTabOfPane(store(), fromPaneId);
   const dock = tab && getDock(tab);
   if (!tab || !dock) return;
-  // Without the explorer plugin, Finder is the folder view there is.
-  if (!isPluginEnabled("explorer")) return revealInFileManager(path);
+  // Without the explorer plugin, Finder is the folder view for local directories;
+  // for remote SSH directories, open a remote terminal there instead.
+  if (!isPluginEnabled("explorer")) {
+    if (isRemotePath(path)) return openTerminalAt(path, fromPaneId);
+    return revealInFileManager(path);
+  }
   if (!alwaysNew) {
     const explorers = listPanes(dock.getModel()).filter((pane) => pane.data.kind === "explorer");
     const target = explorers.find((pane) => pane.id === tab.activePaneId) ?? explorers[0];
@@ -520,10 +526,10 @@ export function openDirectory(path: string, { fromPaneId, newPane: alwaysNew = f
   addPaneBeside(fromPaneId, createPane("explorer", { ...newPaneData("explorer"), root: path, pinned: true }));
 }
 
-/** Opens the default terminal in `cwd`, in a new pane of `fromPaneId`'s tab. */
-export function openTerminalAt(cwd: string, fromPaneId: string): void {
+/** Opens the default terminal in `cwd` (or local home when omitted), in a new pane of `fromPaneId`'s tab. */
+export function openTerminalAt(cwd: string | undefined, fromPaneId: string): void {
   const kind = defaultTerminalKind();
-  addPaneBeside(fromPaneId, createPane(kind, { ...newPaneData(kind), cwd }));
+  addPaneBeside(fromPaneId, createPane(kind, { ...newPaneData(kind), ...(cwd ? { cwd } : {}) }));
 }
 
 /** Points editor and viewer panes showing `from` (or a file inside it) at `to` after a rename. */
@@ -531,7 +537,8 @@ export function renameOpenFiles(from: string, to: string): void {
   renameOpenModels(from, to);
   for (const pane of selectAllPanes(store())) {
     const path = pane.data.path;
-    if (!path || (path !== from && !path.startsWith(`${from}/`))) continue;
-    updatePaneData(pane.id, { path: to + path.slice(from.length) });
+    if (!path || !isWithin(path, from)) continue;
+    const rel = relativePath(path, from);
+    updatePaneData(pane.id, { path: rel ? joinPath(to, rel) : to });
   }
 }

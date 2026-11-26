@@ -25,10 +25,13 @@ import {
 } from "@codemirror/view";
 import { confirm } from "../components/ui/ConfirmDialog";
 import { baseName, parentPath } from "../explorer/tree";
+import { remoteIdOf } from "../files/location";
 import { repoRootOf } from "../files/repoRoot";
 import { watchFile } from "../files/watch";
 import * as fs from "../ipc/fs";
 import type { FileVersion } from "../ipc/fs";
+import type { SshStatus } from "../ipc/ssh";
+import { getConnection, subscribeConnections } from "../ssh/connections";
 import { highlighting } from "./highlight";
 import { loadLanguage } from "./languages";
 import { type TextFormat, clampPosition, decodeText, detectIndent, encodeText, minimalChange } from "./text";
@@ -129,6 +132,8 @@ export class EditorModel {
   private loadToken = 0;
   private checkToken = 0;
   private unwatch: () => void;
+  private readonly unsubSsh: () => void;
+  private lastRemoteStatus: SshStatus | null = null;
   private attachCount = 0;
   private disposed = false;
   private scrollSnapshot: StateEffect<unknown> | null = null;
@@ -145,8 +150,10 @@ export class EditorModel {
     this.host.className = "editor-host";
     this.view = new EditorView({ parent: this.host, state: this.createState("") });
     this.savedDoc = this.view.state.doc;
+    this.lastRemoteStatus = this.currentRemoteStatus();
     this.current = this.buildSnapshot();
     this.unwatch = watchFile(filePath, () => void this.checkDisk());
+    this.unsubSsh = subscribeConnections(() => this.handleSshChange());
     void this.detectLanguage();
     void this.findRepo();
     void this.load(false);
@@ -229,10 +236,28 @@ export class EditorModel {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unsubSsh();
     this.unwatch();
     this.view.destroy();
     this.host.remove();
     this.listeners.clear();
+  }
+
+  private currentRemoteStatus(): SshStatus | null {
+    const rid = remoteIdOf(this.filePath);
+    return rid ? (getConnection(rid)?.status ?? "disconnected") : null;
+  }
+
+  private handleSshChange(): void {
+    if (this.disposed) return;
+    const status = this.currentRemoteStatus();
+    const prev = this.lastRemoteStatus;
+    this.lastRemoteStatus = status;
+    if (status === "connected" && prev !== "connected") {
+      void this.findRepo();
+      if (this.status !== "ready") void this.load(false);
+      else void this.checkDisk();
+    }
   }
 
   /** The font from the settings (CSS font stack and px size). */
@@ -263,6 +288,7 @@ export class EditorModel {
   setPath(path: string): void {
     if (path === this.filePath) return;
     this.filePath = path;
+    this.lastRemoteStatus = this.currentRemoteStatus();
     this.unwatch();
     this.unwatch = watchFile(path, () => void this.checkDisk());
     this.repoRoot = null;
@@ -413,16 +439,23 @@ export class EditorModel {
     try {
       file = await fs.readTextFile(path);
     } catch (error) {
-      const version = await fs.fileVersion(path).catch(() => null);
+      // Distinguish confirmed "missing" (`fileVersion` returns `null`) from
+      // transport / SSH disconnect / permission errors (`fileVersion` rejects).
+      let version: FileVersion | null | undefined;
+      try {
+        version = await fs.fileVersion(path);
+      } catch {
+        version = undefined;
+      }
       if (token !== this.loadToken || this.disposed) return;
       if (this.status === "ready") {
         // Keep the buffer: a deleted file can be saved again, and a failed
         // reload should not hide what is there.
-        if (version) this.error = `Could not reload: ${message(error)}`;
-        else this.external = "deleted";
+        if (version === null) this.external = "deleted";
+        else this.error = `Could not reload: ${message(error)}`;
       } else {
-        this.status = version ? "error" : "missing";
-        this.error = version ? message(error) : null;
+        this.status = version === null ? "missing" : "error";
+        this.error = version === null ? null : message(error);
         this.version = null;
       }
       this.emit();

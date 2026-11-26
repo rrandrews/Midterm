@@ -1,6 +1,9 @@
+import { isWithin, relativePath } from "../explorer/tree";
+import { isRootLocation, remoteIdOf } from "../files/location";
 import { findFiles, gitStatus } from "../ipc/fs";
 import { homeDirectory } from "../ipc/system";
 import { getDock } from "../layout/dock";
+import { homeForLocation, listConnections, subscribeConnections } from "../ssh/connections";
 import { listPanes } from "../state/layout";
 import { selectActiveTab, useAppStore } from "../state/store";
 import { directoryOf } from "../plugins/panes";
@@ -33,7 +36,10 @@ export async function projectRoot(): Promise<string | undefined> {
   if (!dir) return undefined;
   const git = await gitStatus(dir).catch(() => null);
   const root = git?.root ?? dir;
-  return root === homeDirectory() || root === "/" ? undefined : root;
+  if (isRootLocation(root)) return undefined;
+  const home = homeForLocation(root, homeDirectory());
+  if (home && isWithin(root, home) && relativePath(root, home) === "") return undefined;
+  return root;
 }
 
 const FILE_LIMIT = 50_000;
@@ -41,6 +47,17 @@ const FILE_CACHE_MS = 15_000;
 
 type Listing = { root: string; at: number; files: Promise<string[]> };
 let listing: Listing | null = null;
+
+const lastRemoteStatus = new Map<string, string>();
+subscribeConnections(() => {
+  for (const conn of listConnections()) {
+    const prev = lastRemoteStatus.get(conn.id);
+    if (prev !== "connected" && conn.status === "connected" && listing && remoteIdOf(listing.root) === conn.id) {
+      listing = null;
+    }
+    lastRemoteStatus.set(conn.id, conn.status);
+  }
+});
 
 /** Files under `root`, from a listing made in the last few seconds if there is one. */
 export function filesUnder(root: string): Promise<string[]> {

@@ -2,7 +2,7 @@ import { EditorPane, ViewerPane } from "../../components/panes/FilePane";
 import { fileMenu } from "../../editor/menu";
 import { hasUnsavedChanges, peekEditor, revealInPane, unsavedFiles } from "../../editor/registry";
 import { EDITOR_FIELDS, VIEWER_FIELDS } from "../../editor/settings";
-import { baseName } from "../../explorer/tree";
+import { baseName, parentPath } from "../../explorer/tree";
 import { isImagePath } from "../../files/kinds";
 import { activePaneId } from "../../actions";
 import type { PaneData, PaneNode } from "../../state/types";
@@ -10,13 +10,11 @@ import type { PanePlugin, PaneProps, PaneSpec } from "../types";
 import { validateFileData } from "./data";
 import { editorSkills, viewerSkills } from "./fileSkills";
 
-const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/";
-
 /** What editor and viewer panes have in common: a `path`, kept when changing between the two. */
 const filePane: Pick<PaneSpec, "validateData" | "convertData" | "directory" | "menu"> = {
   validateData: validateFileData,
   convertData: (previous: PaneData) => (previous.path ? { path: previous.path } : {}),
-  directory: (pane: PaneNode) => (pane.data.path ? parentOf(pane.data.path) : undefined),
+  directory: (pane: PaneNode) => (pane.data.path ? parentPath(pane.data.path) : undefined),
   menu: (ctx) => fileMenu(ctx.paneId, ctx.data().path),
 };
 

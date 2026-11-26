@@ -1,6 +1,8 @@
 import * as fs from "../ipc/fs";
 import type { Watcher } from "../ipc/fs";
 import { parentPath } from "../explorer/tree";
+import { remoteIdOf } from "./location";
+import { listConnections, subscribeConnections } from "../ssh/connections";
 
 /*
  * One backend watcher shared by every open file (editors and viewers). The
@@ -14,6 +16,20 @@ type Subscription = { dir: string; onChange: () => void };
 const subscriptions = new Set<Subscription>();
 let watcher: Watcher | null = null;
 let starting: Promise<void> | null = null;
+
+const lastRemoteStatus = new Map<string, string>();
+subscribeConnections(() => {
+  for (const conn of listConnections()) {
+    const prev = lastRemoteStatus.get(conn.id);
+    if (prev !== "connected" && conn.status === "connected") {
+      // Re-arm remote watches only; EditorModel/ViewerModel handle their own single reconnect refresh.
+      if (watcher && [...subscriptions].some((s) => remoteIdOf(s.dir) === conn.id)) {
+        watcher.setDirs(watchedDirs());
+      }
+    }
+    lastRemoteStatus.set(conn.id, conn.status);
+  }
+});
 
 function watchedDirs(): string[] {
   return [...new Set([...subscriptions].map((subscription) => subscription.dir))];

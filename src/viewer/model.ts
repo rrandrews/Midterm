@@ -1,7 +1,10 @@
+import { remoteIdOf } from "../files/location";
 import { watchFile } from "../files/watch";
 import { imageType } from "../files/kinds";
 import * as fs from "../ipc/fs";
 import type { FileVersion } from "../ipc/fs";
+import type { SshStatus } from "../ipc/ssh";
+import { getConnection, subscribeConnections } from "../ssh/connections";
 import { renderMarkdown } from "./markdown";
 
 /*
@@ -41,10 +44,15 @@ export class ViewerModel {
   private error: string | null = null;
   /** Blob URLs of images a Markdown document shows, by path. */
   private readonly embedded = new Map<string, Promise<string | null>>();
+  /** Embedded image paths that failed to load (e.g. while SSH was disconnected) and should retry on reconnect. */
+  private readonly failedEmbedded = new Set<string>();
 
   private loadToken = 0;
+  private checkToken = 0;
   private revision = 0;
   private unwatch: () => void;
+  private readonly unsubSsh: () => void;
+  private lastRemoteStatus: SshStatus | null = null;
   private attachCount = 0;
   private disposed = false;
 
@@ -56,8 +64,10 @@ export class ViewerModel {
     private filePath: string,
     readonly mode: "markdown" | "image",
   ) {
+    this.lastRemoteStatus = this.currentRemoteStatus();
     this.current = this.buildSnapshot();
     this.unwatch = watchFile(filePath, () => void this.checkDisk());
+    this.unsubSsh = subscribeConnections(() => this.handleSshChange());
     void this.load();
   }
 
@@ -109,6 +119,7 @@ export class ViewerModel {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unsubSsh();
     this.unwatch();
     this.loadToken++;
     if (this.imageBlobUrl) URL.revokeObjectURL(this.imageBlobUrl);
@@ -116,10 +127,36 @@ export class ViewerModel {
     this.listeners.clear();
   }
 
+  private currentRemoteStatus(): SshStatus | null {
+    const rid = remoteIdOf(this.filePath);
+    return rid ? (getConnection(rid)?.status ?? "disconnected") : null;
+  }
+
+  private handleSshChange(): void {
+    if (this.disposed) return;
+    const status = this.currentRemoteStatus();
+    const prev = this.lastRemoteStatus;
+    this.lastRemoteStatus = status;
+    if (status === "connected" && prev !== "connected") {
+      if (this.status !== "ready") {
+        void this.load();
+      } else {
+        if (this.failedEmbedded.size > 0) {
+          for (const path of this.failedEmbedded) this.embedded.delete(path);
+          this.failedEmbedded.clear();
+          this.revision++;
+          this.emit();
+        }
+        void this.checkDisk();
+      }
+    }
+  }
+
   /** The file was renamed or moved. */
   setPath(path: string): void {
     if (path === this.filePath) return;
     this.filePath = path;
+    this.lastRemoteStatus = this.currentRemoteStatus();
     this.unwatch();
     this.unwatch = watchFile(path, () => void this.checkDisk());
     this.emit();
@@ -132,8 +169,14 @@ export class ViewerModel {
       const type = imageType(path);
       url = type
         ? fs.readFileBytes(path).then(
-            (bytes) => (this.disposed ? null : URL.createObjectURL(new Blob([bytes], { type }))),
-            () => null,
+            (bytes) => {
+              this.failedEmbedded.delete(path);
+              return this.disposed ? null : URL.createObjectURL(new Blob([bytes], { type }));
+            },
+            () => {
+              this.failedEmbedded.add(path);
+              return null;
+            },
           )
         : Promise.resolve(null);
       this.embedded.set(path, url);
@@ -146,6 +189,7 @@ export class ViewerModel {
       void url.then((href) => href && URL.revokeObjectURL(href));
     }
     this.embedded.clear();
+    this.failedEmbedded.clear();
   }
 
   private async load(): Promise<void> {
@@ -155,11 +199,16 @@ export class ViewerModel {
       if (this.mode === "markdown") await this.loadMarkdown(path, token);
       else await this.loadImage(path, token);
     } catch (error) {
-      const version = await fs.fileVersion(path).catch(() => null);
+      let version: FileVersion | null | undefined;
+      try {
+        version = await fs.fileVersion(path);
+      } catch {
+        version = undefined;
+      }
       if (token !== this.loadToken) return;
-      this.status = version ? "error" : "missing";
-      this.error = version ? message(error) : null;
-      this.version = version;
+      this.status = version === null ? "missing" : "error";
+      this.error = version === null ? null : message(error);
+      this.version = version ?? null;
     }
     if (token === this.loadToken) this.emit();
   }
@@ -195,9 +244,10 @@ export class ViewerModel {
 
   private async checkDisk(): Promise<void> {
     if (this.disposed || this.status === "loading") return;
+    const token = ++this.checkToken;
     const path = this.filePath;
     const version = await fs.fileVersion(path).catch(() => undefined);
-    if (version === undefined || this.disposed || path !== this.filePath) return;
+    if (version === undefined || token !== this.checkToken || this.disposed || path !== this.filePath) return;
     if (!fs.sameVersion(version, this.version)) void this.load();
   }
 }

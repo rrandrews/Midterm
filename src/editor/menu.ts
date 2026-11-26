@@ -1,3 +1,4 @@
+import { isRemotePath, posixPathOf } from "../files/location";
 import { copyText } from "../ipc/clipboard";
 import { revealInFileManager } from "../ipc/shell";
 import type { MenuItemSpec } from "../plugins/types";
@@ -8,6 +9,7 @@ export function fileMenu(paneId: string, path: string | undefined): MenuItemSpec
   if (!path) return [];
   const editor = peekEditor(paneId);
   const ready = editor?.snapshot().status === "ready";
+  const remote = isRemotePath(path);
   const items: MenuItemSpec[] = [];
   if (editor && ready) {
     if (!editor.readOnly) {
@@ -22,9 +24,7 @@ export function fileMenu(paneId: string, path: string | undefined): MenuItemSpec
       { type: "separator" },
     );
   }
-  items.push(
-    { label: "Reveal in Finder", run: () => revealInFileManager(path) },
-    { label: "Copy path", run: () => copyText(path) },
-  );
+  if (!remote) items.push({ label: "Reveal in Finder", run: () => revealInFileManager(path) });
+  items.push({ label: "Copy path", run: () => copyText(posixPathOf(path)) });
   return items;
 }

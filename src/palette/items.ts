@@ -1,4 +1,12 @@
 import fuzzysort from "fuzzysort";
+import { baseName, isWithin, joinPath as joinLocation, parentPath, relativePath } from "../explorer/tree";
+import {
+  fallbackHostLabel,
+  isAbsoluteLocation,
+  isRemotePath,
+  isRootLocation,
+  parseLocation,
+} from "../files/location";
 
 /*
  * What the command palette lists for a query. Pure: the palette component
@@ -53,8 +61,10 @@ export type PaletteSources = {
   files: string[];
   /** Command ids, most recent first. */
   recentCommands: readonly string[];
-  /** Absolute paths, most recent first. */
+  /** Absolute paths (local or `ssh://<id>/...`), most recent first. */
   recentFiles: readonly string[];
+  /** Optional formatter for parent directory labels outside `root` (e.g. shortening home / host label). */
+  formatDir?: (dir: string) => string;
 };
 
 export const GROUP_LIMIT = 8;
@@ -70,21 +80,29 @@ export function parseQuery(query: string): ParsedQuery {
   return { scope: "all", text: query.trim() };
 }
 
-const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-const dirName = (path: string) => {
+const relativeDirName = (path: string) => {
   const index = path.lastIndexOf("/");
   return index <= 0 ? "" : path.slice(0, index);
 };
 
+function defaultFormatDir(dir: string): string {
+  const parsed = parseLocation(dir);
+  if (parsed?.kind === "remote") return `${fallbackHostLabel(parsed.remoteId)}:${parsed.path}`;
+  return dir;
+}
+
 /** `path` relative to `root` if inside it, else as is (home abbreviated by the caller if wanted). */
 export function relativeTo(root: string | undefined, path: string): string {
-  if (root && path.startsWith(`${root}/`)) return path.slice(root.length + 1);
+  if (root && isWithin(path, root)) {
+    const rel = relativePath(path, root);
+    if (rel) return rel;
+  }
   return path;
 }
 
 function joinPath(root: string | undefined, relative: string): string {
   if (!root) return relative;
-  return root === "/" ? `/${relative}` : `${root}/${relative}`;
+  return joinLocation(root, relative);
 }
 
 /** A bonus for recently used things: the most recent gets the full bonus. */
@@ -105,14 +123,28 @@ function commandItem(command: CommandSource, highlight: readonly number[], group
   };
 }
 
-function fileItem(root: string | undefined, path: string, highlight: readonly number[], group: PaletteGroup = "Files"): PaletteItem {
-  const shown = relativeTo(root, path);
+function fileItem(
+  root: string | undefined,
+  path: string,
+  highlight: readonly number[],
+  group: PaletteGroup = "Files",
+  formatDir: (dir: string) => string = defaultFormatDir,
+): PaletteItem {
+  let detail: string | undefined;
+  if (root && isWithin(path, root)) {
+    detail = relativeDirName(relativePath(path, root)) || undefined;
+  } else if (isAbsoluteLocation(path)) {
+    const parent = parentPath(path);
+    if (!isRootLocation(parent) || isRemotePath(path)) detail = formatDir(parent);
+  } else {
+    detail = relativeDirName(path) || undefined;
+  }
   return {
     key: `file:${path}`,
     group,
     title: baseName(path),
     highlight,
-    detail: dirName(shown) || undefined,
+    detail,
     icon: "file",
     action: { kind: "file", path },
   };
@@ -153,7 +185,7 @@ export function paletteItems(query: string, mode: PaletteMode, sources: PaletteS
     if (showOthers) {
       items.push(
         ...sources.recentFiles.slice(0, mode === "files" ? GROUP_LIMIT * 2 : RECENT_SHOWN).map((path) =>
-          fileItem(sources.root, path, [], "Recent"),
+          fileItem(sources.root, path, [], "Recent", sources.formatDir),
         ),
       );
     }
@@ -233,8 +265,10 @@ export function paletteItems(query: string, mode: PaletteMode, sources: PaletteS
     });
     groups.push(
       files.map((result) => {
-        const path = result.obj.path.startsWith("/") ? result.obj.path : joinPath(sources.root, result.obj.path);
-        return { item: fileItem(sources.root, path, result[0]?.indexes ?? []), score: result.score };
+        const path = isAbsoluteLocation(result.obj.path)
+          ? result.obj.path
+          : joinPath(sources.root, result.obj.path);
+        return { item: fileItem(sources.root, path, result[0]?.indexes ?? [], "Files", sources.formatDir), score: result.score };
       }),
     );
   }

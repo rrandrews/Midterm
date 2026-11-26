@@ -6,7 +6,7 @@ import { openExternal } from "../../ipc/shell";
 import { registerPaneFocuser } from "../../layout/dock";
 import { headingSlug, resolveImage, resolveLink } from "../../viewer/links";
 import type { ViewerModel } from "../../viewer/model";
-import { StatusMessage } from "./FileStatus";
+import { SshDisconnectedBar, SshHostBadge, StatusMessage } from "./FileStatus";
 
 /** Rendered Markdown or an image, with the file name top-right as in the mockup. */
 export function DocumentView({ paneId, model }: { paneId: string; model: ViewerModel }) {
@@ -73,44 +73,48 @@ export function DocumentView({ paneId, model }: { paneId: string; model: ViewerM
   const label = snap.mode === "image" && dimensions ? `${baseName(snap.path)} · ${dimensions}` : baseName(snap.path);
 
   return (
-    <div className="relative h-full">
-      <div className="viewer-name pointer-events-none absolute top-2 z-[1] font-mono text-micro text-fg-dim">
-        {label}
-      </div>
-      <div
-        ref={scrollRef}
-        tabIndex={-1}
-        className="h-full overflow-auto outline-none"
-        onScroll={(event) => {
-          model.scrollTop = event.currentTarget.scrollTop;
-        }}
-      >
-        {snap.status !== "ready" ? (
-          <div className="flex h-full flex-col">
-            <StatusMessage status={snap.status} path={snap.path} size={snap.size} error={snap.error} />
-          </div>
-        ) : snap.mode === "markdown" ? (
-          <div
-            ref={contentRef}
-            className="markdown-body px-[22px] py-[18px]"
-            onClick={onClick}
-            // Sanitized by DOMPurify in src/viewer/markdown.ts.
-            dangerouslySetInnerHTML={{ __html: snap.html ?? "" }}
-          />
-        ) : (
-          <div className="viewer-image flex h-full items-center justify-center p-6">
-            {snap.imageUrl && (
-              <img
-                src={snap.imageUrl}
-                alt={baseName(snap.path)}
-                className="max-h-full max-w-full object-contain"
-                onLoad={(event) =>
-                  setDimensions(`${event.currentTarget.naturalWidth}×${event.currentTarget.naturalHeight}`)
-                }
-              />
-            )}
-          </div>
-        )}
+    <div className="relative flex h-full flex-col">
+      <SshDisconnectedBar paneId={paneId} path={snap.path} />
+      <div className="relative min-h-0 flex-1">
+        <div className="viewer-name pointer-events-none absolute top-2 z-[1] flex items-center gap-1.5 font-mono text-micro text-fg-dim">
+          <SshHostBadge path={snap.path} />
+          <span>{label}</span>
+        </div>
+        <div
+          ref={scrollRef}
+          tabIndex={-1}
+          className="h-full overflow-auto outline-none"
+          onScroll={(event) => {
+            model.scrollTop = event.currentTarget.scrollTop;
+          }}
+        >
+          {snap.status !== "ready" ? (
+            <div className="flex h-full flex-col">
+              <StatusMessage status={snap.status} path={snap.path} size={snap.size} error={snap.error} />
+            </div>
+          ) : snap.mode === "markdown" ? (
+            <div
+              ref={contentRef}
+              className="markdown-body px-[22px] py-[18px]"
+              onClick={onClick}
+              // Sanitized by DOMPurify in src/viewer/markdown.ts.
+              dangerouslySetInnerHTML={{ __html: snap.html ?? "" }}
+            />
+          ) : (
+            <div className="viewer-image flex h-full items-center justify-center p-6">
+              {snap.imageUrl && (
+                <img
+                  src={snap.imageUrl}
+                  alt={baseName(snap.path)}
+                  className="max-h-full max-w-full object-contain"
+                  onLoad={(event) =>
+                    setDimensions(`${event.currentTarget.naturalWidth}×${event.currentTarget.naturalHeight}`)
+                  }
+                />
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

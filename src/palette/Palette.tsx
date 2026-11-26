@@ -7,6 +7,7 @@ import { chordFromEvent, parseChord, sameChord } from "../commands/keys";
 import { allCommands, bindingsOf, isEnabled, recentCommandIds, shortcutLabel } from "../commands/registry";
 import { homeDirectory } from "../ipc/system";
 import { refocusPane } from "../layout/dock";
+import { displayLocation } from "../ssh/connections";
 import { useAppStore } from "../state/store";
 import { type PaletteItem, type PaletteSources, paletteItems } from "./items";
 import { type PalettePicker, type PalettePrompt, closePalette, performPaletteAction, usePalette } from "./state";
@@ -27,9 +28,8 @@ const ICONS: Record<PaletteItem["icon"], ReactNode> = {
   run: <Play size={13} />,
 };
 
-function abbreviateHome(path: string): string {
-  const home = homeDirectory();
-  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path;
+function formatLocationDir(path: string): string {
+  return displayLocation(path, homeDirectory(), { includeHost: true });
 }
 
 /** The title with matched characters emphasised. */
@@ -80,6 +80,7 @@ function staticSources(): Omit<PaletteSources, "files" | "root"> {
     })),
     recentCommands: recentCommandIds(),
     recentFiles: recentFilePaths(),
+    formatDir: formatLocationDir,
   };
 }
 
@@ -198,7 +199,7 @@ function PaletteBody() {
         ))}
       </Command.List>
       <div className="flex h-7 flex-none items-center gap-3 border-t border-line px-3 text-micro text-fg-dim">
-        <span className="min-w-0 flex-1 truncate font-mono">{root ? abbreviateHome(root) : "No project folder"}</span>
+        <span className="min-w-0 flex-1 truncate font-mono">{root ? formatLocationDir(root) : "No project folder"}</span>
         <span>↩ open</span>
         <span>&gt; commands</span>
         <span>$ run</span>

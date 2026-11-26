@@ -1,4 +1,4 @@
-import { isWithin } from "../explorer/tree";
+import { isWithin, joinPath, relativePath } from "../explorer/tree";
 import { viewerModeFor } from "../files/kinds";
 import { getSettings, useSettings } from "../settings/settings";
 import { monoFontStack } from "../settings/schema";
@@ -119,7 +119,9 @@ export function revealInPane(paneId: string, path: string, line: number, column?
 /** Keeps models in step with a rename of `from` (a file, or a directory containing files) to `to`. */
 export function renameOpenModels(from: string, to: string): void {
   for (const [, { model }] of entries.entries()) {
-    if (isWithin(model.path, from)) model.setPath(to + model.path.slice(from.length));
+    if (!isWithin(model.path, from)) continue;
+    const rel = relativePath(model.path, from);
+    model.setPath(rel ? joinPath(to, rel) : to);
   }
 }
 

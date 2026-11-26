@@ -2,9 +2,11 @@ import { type ReactNode, useEffect, useRef, useSyncExternalStore } from "react";
 import { registerPaneActions } from "../../commands/registry";
 import type { EditorModel, EditorSnapshot } from "../../editor/model";
 import { breadcrumbSegments } from "../../editor/text";
+import { remoteIdOf } from "../../files/location";
 import { homeDirectory } from "../../ipc/system";
 import { registerPaneFocuser } from "../../layout/dock";
-import { StatusMessage } from "./FileStatus";
+import { displayLocation, homeForLocation, useSshConnection } from "../../ssh/connections";
+import { SshDisconnectedBar, SshHostBadge, StatusMessage } from "./FileStatus";
 
 /** Code in CodeMirror: editable in editors, read-only for text in viewers. */
 export function CodeView({ paneId, model }: { paneId: string; model: EditorModel }) {
@@ -43,6 +45,7 @@ export function CodeView({ paneId, model }: { paneId: string; model: EditorModel
   return (
     <div ref={rootRef} tabIndex={-1} className="flex h-full flex-col outline-none">
       <Breadcrumbs snap={snap} />
+      <SshDisconnectedBar paneId={paneId} path={snap.path} />
       <EditorNotice model={model} snap={snap} />
       <div ref={bodyRef} className="min-h-0 flex-1" hidden={!ready} />
       {!ready && <StatusMessage status={snap.status} path={snap.path} size={snap.size} error={snap.error} />}
@@ -52,13 +55,18 @@ export function CodeView({ paneId, model }: { paneId: string; model: EditorModel
 
 /** The 28px path row from the mockup: `src › components › SplitNode.tsx`. */
 function Breadcrumbs({ snap }: { snap: EditorSnapshot }) {
-  const segments = breadcrumbSegments(snap.path, { repoRoot: snap.repoRoot, home: homeDirectory() });
+  // Subscribe to remote connection metadata so remote `~` updates once discovered.
+  useSshConnection(remoteIdOf(snap.path));
+  const home = homeForLocation(snap.path, homeDirectory());
+  const segments = breadcrumbSegments(snap.path, { repoRoot: snap.repoRoot, home });
   const last = segments.length - 1;
+  const full = displayLocation(snap.path, homeDirectory(), { includeHost: true });
   return (
     <div
       className="flex h-7 flex-none items-center gap-1.5 overflow-hidden pr-16 pl-4 text-crumb whitespace-nowrap text-fg-dim"
-      title={snap.path}
+      title={full}
     >
+      <SshHostBadge path={snap.path} />
       {segments.map((segment, index) => (
         <span key={index} className={`flex items-center gap-1.5 ${index === last ? "min-w-0" : "flex-none"}`}>
           {index > 0 && <span aria-hidden="true">›</span>}

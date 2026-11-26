@@ -513,6 +513,8 @@ function DisconnectedBanner({
   remoteId: string;
   hostLabel: string;
 }) {
+  const remote = useSshConnection(remoteId);
+  const canReplaySsh = (remote?.sshArgs.length ?? 0) > 0;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -548,8 +550,8 @@ function DisconnectedBanner({
         </button>
         <button
           type="button"
-          title="Open SSH terminal"
-          onClick={() => openTerminalAt(root, paneId)}
+          title={canReplaySsh ? "Open SSH terminal" : "Open local terminal to reconnect"}
+          onClick={() => openTerminalAt(canReplaySsh ? root : undefined, paneId)}
           className="inline-flex flex-none items-center gap-1 rounded bg-hover px-1.5 py-0.5 text-micro text-fg-dim hover:text-fg-bright"
         >
           <Terminal size={10} />
