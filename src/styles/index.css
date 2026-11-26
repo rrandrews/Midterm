@@ -2,6 +2,7 @@
 @import "./dock.css";
 @import "./terminal.css";
 @import "./explorer.css";
+@import "./scm.css";
 @import "./blocks.css";
 @import "./editor.css";
 @import "./agent.css";

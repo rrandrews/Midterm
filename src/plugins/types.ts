@@ -179,10 +179,10 @@ export type PaneSpec = {
   splittable?: boolean;
   /**
    * Subtabs of this kind show only the plugin's icon (its name in a
-   * tooltip) unless the user names them. By default a subtab shows the icon
-   * and the pane's `tabTitle` (or the plugin's name).
+   * tooltip) unless the user names them. May also be a predicate on the pane.
+   * By default a subtab shows the icon and the pane's `tabTitle` (or the plugin's name).
    */
-  subtabIconOnly?: boolean;
+  subtabIconOnly?: boolean | ((pane: PaneNode) => boolean);
   /** CSS background of the pane; defaults to the generic pane background token. */
   background?: string;
   /** CSS background of the pane while active, if different. */

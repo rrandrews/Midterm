@@ -775,20 +775,21 @@ pub fn parse_commit_files(namestatus_z: &[u8], numstat_z: &[u8]) -> Vec<ScmCommi
     files
 }
 
-/// Parses NUL-delimited `git stash list --format=%gd%x00%at%x00%gs%x00`.
+/// Parses NUL-delimited `git stash list --format=%gd%x00%H%x00%at%x00%gs%x00`.
 pub fn parse_stashes_z(raw: &[u8]) -> Vec<ScmStash> {
     let mut stashes = Vec::new();
     let fields: Vec<&[u8]> = raw.split(|&b| b == 0).collect();
     let mut i = 0;
     let mut fallback_idx = 0;
-    while i + 2 < fields.len() {
+    while i + 3 < fields.len() {
         let reference = String::from_utf8_lossy(fields[i]).trim().to_string();
-        let date = String::from_utf8_lossy(fields[i + 1])
+        let oid = String::from_utf8_lossy(fields[i + 1]).trim().to_string();
+        let date = String::from_utf8_lossy(fields[i + 2])
             .trim()
             .parse::<i64>()
             .unwrap_or(0);
-        let raw_msg = String::from_utf8_lossy(fields[i + 2]).trim().to_string();
-        i += 3;
+        let raw_msg = String::from_utf8_lossy(fields[i + 3]).trim().to_string();
+        i += 4;
 
         if reference.is_empty() {
             continue;
@@ -814,6 +815,7 @@ pub fn parse_stashes_z(raw: &[u8]) -> Vec<ScmStash> {
         stashes.push(ScmStash {
             index,
             reference,
+            oid,
             branch,
             message,
             date,

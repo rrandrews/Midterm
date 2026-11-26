@@ -214,8 +214,9 @@ fn parses_branches_log_full_decorations_commit_files_and_stashes() {
     assert_eq!(files[1].orig_path.as_deref(), Some("old.ts"));
     assert_eq!(files[1].deletions, Some(1));
 
-    let stashes = parse_stashes_z(b"stash@{0}\01700000099\0WIP on main: abc1234 work in progress\0");
+    let stashes = parse_stashes_z(b"stash@{0}\0deadbeef12345678\01700000099\0WIP on main: abc1234 work in progress\0");
     assert_eq!(stashes.len(), 1);
+    assert_eq!(stashes[0].oid, "deadbeef12345678");
     assert_eq!(stashes[0].branch.as_deref(), Some("main"));
     assert_eq!(stashes[0].index, 0);
 }
@@ -309,7 +310,9 @@ async fn end_to_end_scm_workflow_on_real_repo() {
         .unwrap();
     assert_eq!(stash_diff.hunks.len(), 1);
     scm_stash_apply_inner(&ssh, &root, 0, false).await.unwrap();
-    scm_stash_drop_inner(&ssh, &root, 0).await.unwrap();
+    // Drop with mismatched OID must be refused.
+    assert!(scm_stash_drop_inner(&ssh, &root, 0, Some("0000000000000000000000000000000000000000")).await.is_err());
+    scm_stash_drop_inner(&ssh, &root, 0, Some(&stashes[0].oid)).await.unwrap();
     assert!(scm_stashes_inner(&ssh, &root).await.unwrap().is_empty());
     scm_discard_inner(&ssh, &root, &["app.ts".to_string()], &[])
         .await

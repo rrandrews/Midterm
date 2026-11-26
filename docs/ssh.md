@@ -1,7 +1,7 @@
 # SSH remote parity
 
 Midterm supports local-parity workflows over SSH across **classic and block
-terminals**, the **file explorer**, the **editor and viewer**, and the
+terminals**, the **file explorer**, **Source Control**, the **editor and viewer**, and the
 **command palette**, without permanently installing software on remote hosts.
 
 ## Architecture
@@ -38,7 +38,7 @@ none`) and streams an in-memory helper over stdin:
    writable target when its parent directory is read-only), bounded byte reads,
    `PATH` command listing, completion, and `git_status` (when `git` is installed
    on the remote). Features that require `python3` on the remote — live
-   directory watching, name/text search (`fs_find_entries` / `fs_search_text`,
+   directory watching, Source Control (`scm_*` commands), name/text search (`fs_find_entries` / `fs_search_text`,
    which return errors), command-palette file discovery (`fs_find_files`, which
    returns empty), and cross-host streaming copies — are unavailable under the
    shell fallback.

@@ -1,0 +1,79 @@
+/* Source Control sidebar and Diff Viewer (src/scm/). */
+
+/* Header padding adapts to floating pane controls when there is no subtab strip. */
+.scm-header,
+.scm-diff-header {
+  padding-right: 10px;
+}
+.pane-frame:not(.has-subtabs) .scm-header,
+.pane-frame:not(.has-subtabs) .scm-diff-header {
+  padding-right: 48px;
+}
+.pane-frame:not(.has-subtabs):has(.pane-header [data-disabled]) .scm-header,
+.pane-frame:not(.has-subtabs):has(.pane-header [data-disabled]) .scm-diff-header {
+  padding-right: 28px;
+}
+
+.scm-icon-btn {
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+  padding: 4px;
+  color: var(--color-fg-dim);
+}
+.scm-icon-btn:hover {
+  background: var(--color-hover);
+  color: var(--color-fg-bright);
+}
+
+.scm-row-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  padding: 3px;
+  color: var(--color-fg-dim);
+}
+.scm-row-btn:hover {
+  background: var(--color-raised);
+  color: var(--color-fg-bright);
+}
+
+.scm-commit-input {
+  min-height: 58px;
+  max-height: 180px;
+}
+
+/* Diff viewer surfaces derived strictly from theme design tokens (works in dark & light themes). */
+.scm-hunk-header {
+  background: color-mix(in srgb, var(--color-info) 8%, var(--color-field));
+}
+
+.scm-gutter {
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--color-field) 45%, transparent);
+}
+
+.scm-line-add {
+  background: color-mix(in srgb, var(--color-ok) 13%, transparent);
+}
+
+.scm-line-del {
+  background: color-mix(in srgb, var(--color-err) 13%, transparent);
+}
+
+.scm-line-empty {
+  background: color-mix(in srgb, var(--color-fg) 3.5%, transparent);
+}
+
+.scm-word-add {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-ok) 28%, transparent);
+  color: var(--color-fg-bright);
+}
+
+.scm-word-del {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-err) 28%, transparent);
+  color: var(--color-fg-bright);
+}

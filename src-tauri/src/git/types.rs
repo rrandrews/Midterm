@@ -181,6 +181,7 @@ pub struct ScmCommitFile {
 pub struct ScmStash {
     pub index: usize,
     pub reference: String,
+    pub oid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     pub message: String,

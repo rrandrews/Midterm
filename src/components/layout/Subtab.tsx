@@ -37,7 +37,9 @@ export const Subtab = memo(function Subtab({ pane, props }: { pane: PaneNode; pr
   const auto = useSyncExternalStore(subscribeTitles, () => autoLabel(pane));
   const name = paneName(pane);
   const label = name ?? auto;
-  const iconOnly = !name && plugin?.pane.subtabIconOnly === true;
+  const subtabIconOnly = plugin?.pane.subtabIconOnly;
+  const iconOnly =
+    !name && (typeof subtabIconOnly === "function" ? subtabIconOnly(pane) : subtabIconOnly === true);
   const [renaming, setRenaming] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const ctx = useMemo(() => createPaneContext(pane.id, kind), [pane.id, kind]);

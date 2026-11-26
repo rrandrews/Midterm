@@ -1632,7 +1632,7 @@ pub(crate) async fn scm_stashes_inner(
     let out = run_git(
         ssh,
         &repo.root_loc,
-        &["stash", "list", "--format=%gd%x00%at%x00%gs%x00"],
+        &["stash", "list", "--format=%gd%x00%H%x00%at%x00%gs%x00"],
         None,
         true,
         LOCAL_TIMEOUT,
@@ -1732,23 +1732,43 @@ pub(crate) async fn scm_stash_apply_inner(
     Ok(())
 }
 
-/// Drops `stash@{index}`.
+/// Drops `stash@{index}`, optionally verifying it still resolves to `expected_oid`.
 #[tauri::command]
 pub async fn scm_stash_drop(
     ssh: State<'_, SshManager>,
     path: String,
     index: usize,
+    expected_oid: Option<String>,
 ) -> Result<(), String> {
-    scm_stash_drop_inner(&ssh, &path, index).await
+    scm_stash_drop_inner(&ssh, &path, index, expected_oid.as_deref()).await
 }
 
 pub(crate) async fn scm_stash_drop_inner(
     ssh: &SshManager,
     path: &str,
     index: usize,
+    expected_oid: Option<&str>,
 ) -> Result<(), String> {
     let repo = require_repo(ssh, path).await?;
     let stash_ref = format!("stash@{{{index}}}");
+    if let Some(expected) = expected_oid {
+        validate_hash(expected)?;
+        let actual = strip_single_newline(
+            &run_git(
+                ssh,
+                &repo.root_loc,
+                &["rev-parse", "--verify", &stash_ref],
+                None,
+                true,
+                LOCAL_TIMEOUT,
+            )
+            .await?
+            .ok_stdout_complete("rev-parse stash")?,
+        )?;
+        if actual != expected {
+            return Err("Stash list changed before drop — please refresh and retry".into());
+        }
+    }
     run_git(
         ssh,
         &repo.root_loc,

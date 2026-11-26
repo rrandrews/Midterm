@@ -67,7 +67,7 @@ All `PaneSpec` members are optional:
 | `fileHandler(path)` | `"default"`, `"option"` or `false`. `openFile` picks from the enabled plugins. |
 | `reveal(paneId, path, line, column?)` | Opening a file at a line (only handlers with `reveal` are asked). |
 | `splittable: false` | `openFile` avoids splitting this pane (explorers). |
-| `subtabIconOnly` | The pane's subtab shows only the plugin's icon (name in a tooltip) unless the user names it. The explorer does this. See [layout.md](layout.md#subtabs). |
+| `subtabIconOnly` | `boolean \| ((pane: PaneNode) => boolean)`. The pane's subtab shows only the plugin's icon (name in a tooltip) unless the user names it. The explorer sets `true`; Source Control uses a predicate so sidebar panes are icon-only while diff panes show the file label. See [layout.md](layout.md#subtabs). |
 | `size` | `{ minWidth?, minHeight?, maxWidth?, maxHeight? }` in pixels, for the pane's frame. Clamped by the host (`PANE_SIZE_BOUNDS` in `src/layout/paneSize.ts`): minimums to 96–800 wide and 56–600 high, maximums to at least 160 wide / 100 high and the minimum. See [layout.md](layout.md#pane-size-limits). |
 | `background`, `activeBackground` | CSS background, set as `--pane-bg` / `--pane-bg-active`. The default is `--pane-default`. |
 | `ownsContextMenu(paneId, event)` | Leave a right-click to the content (a terminal program reading the mouse). |
@@ -252,6 +252,7 @@ type SkillTool = {
     refuses commands with control characters other than line breaks and
     tabs)
   - `explorer.files`: `list_directory`, `reveal`
+  - `source-control.git`: `status`, `diff`, `log`, `branches`
   - `editor.edit`: `open_file`, `read_open_file`, `save` (write)
   - `viewer.view`: `open_file`
 
@@ -301,7 +302,7 @@ A plugin is a folder with a manifest and an ES module:
   overrides it. Relative paths are resolved to `plugin://` URLs by the
   loader (`resolveIcon`). Without an icon, a generic puzzle icon is shown.
 - The id may not be a built-in one (`terminal`, `block-terminal`,
-  `explorer`, `editor`, `viewer`, `theme-editor`, `agent`, `antigravity`,
+  `explorer`, `source-control`, `editor`, `viewer`, `theme-editor`, `agent`, `antigravity`,
   `claude-code`, `midterm`; `RESERVED_IDS` in `src-tauri/src/plugins/manifest.rs`).
 - `apiVersion` must be `1`.
 - The module's default export is the `PanePlugin`. Its `id` must match the

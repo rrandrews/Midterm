@@ -1,5 +1,6 @@
 import { antigravityPlugin } from "../../antigravity/plugin";
 import { claudeCodePlugin } from "../../claude/plugin";
+import { sourceControlPlugin } from "../../scm/plugin";
 import { registerPlugin } from "../registry";
 import { explorerPlugin } from "./explorer";
 import { editorPlugin, viewerPlugin } from "./files";
@@ -10,6 +11,7 @@ export const BUILTIN_PLUGINS = [
   terminalPlugin,
   blockTerminalPlugin,
   explorerPlugin,
+  sourceControlPlugin,
   editorPlugin,
   viewerPlugin,
   claudeCodePlugin,
