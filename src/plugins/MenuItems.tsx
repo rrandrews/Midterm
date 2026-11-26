@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { shortcutLabel } from "../commands/registry";
 import { MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger } from "../components/ui/Menu";
 import type { MenuItemSpec } from "./types";
@@ -26,6 +27,18 @@ function tidy(items: MenuItemSpec[]): MenuItemSpec[] {
 
 /** Renders declarative menu items (a plugin's right-click items) in a dropdown or context menu. */
 export function MenuItems({ items }: { items: MenuItemSpec[] }) {
+  // A highlighted item that unmounts with the menu gets no blur: end its highlight here.
+  const highlighted = useRef<((on: boolean) => void) | null>(null);
+  useEffect(() => () => highlighted.current?.(false), []);
+  const highlight = (item: MenuItemSpec, on: boolean) => {
+    if (item.type === "separator" || item.type === "submenu" || !item.onHighlight) return;
+    highlighted.current = on ? item.onHighlight : null;
+    try {
+      item.onHighlight(on);
+    } catch (error) {
+      console.error("Menu item highlight failed:", error);
+    }
+  };
   return (
     <>
       {tidy(items).map((item, index) => {
@@ -47,6 +60,8 @@ export function MenuItems({ items }: { items: MenuItemSpec[] }) {
             disabled={item.disabled}
             shortcut={item.shortcut ?? (item.commandId ? shortcutLabel(item.commandId) : undefined)}
             onSelect={() => later(item.run)}
+            onFocus={item.onHighlight && (() => highlight(item, true))}
+            onBlur={item.onHighlight && (() => highlight(item, false))}
           >
             {item.label}
           </MenuItem>

@@ -14,7 +14,8 @@ import { MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger } from
 
 /**
  * The commands that apply to any pane, for its toolbar menu and its
- * right-click menu. Menu content only mounts while the menu is open, so this
+ * right-click menu. They go below the plugin's own items, starting with
+ * the plugin's "Settings…" and a divider. Menu content only mounts while the menu is open, so this
  * reads the store directly instead of subscribing.
  */
 export function PaneMenuItems({ paneId, ctx }: { paneId: string; ctx?: PaneContext }) {
@@ -34,6 +35,11 @@ export function PaneMenuItems({ paneId, ctx }: { paneId: string; ctx?: PaneConte
 
   return (
     <>
+      {kind && (
+        // After the menu has closed and handed focus back, so the dialog keeps it.
+        <MenuItem onSelect={() => setTimeout(() => openSettings(`plugin:${kind}`), 0)}>Settings…</MenuItem>
+      )}
+      {kind && <MenuSeparator />}
       {shown("splitRight") && (
         <MenuItem shortcut={shortcutLabel("pane.splitRight")} onSelect={() => splitPane("right", paneId)}>
           Split right
@@ -114,10 +120,6 @@ export function PaneMenuItems({ paneId, ctx }: { paneId: string; ctx?: PaneConte
         </MenuSub>
       )}
       {anyShown && <MenuSeparator />}
-      {kind && (
-        // After the menu has closed and handed focus back, so the dialog keeps it.
-        <MenuItem onSelect={() => setTimeout(() => openSettings(`plugin:${kind}`), 0)}>Settings…</MenuItem>
-      )}
       <MenuItem shortcut={shortcutLabel("pane.close")} onSelect={() => void closePane(paneId)}>
         Close pane
       </MenuItem>

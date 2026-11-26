@@ -61,7 +61,7 @@ All `PaneSpec` members are optional:
 | `directory(pane)` | The directory a pane is in. Used for the palette's project root and for new terminals. |
 | `explorerFollows` | Unpinned explorers follow this pane's `directory` (terminals). |
 | `tabTitle(pane)` | Title of a tab whose active pane this is. Call `api.panes.refreshTitles()` when its inputs change. |
-| `menu(ctx)` | Right-click items, declared as data, shown above the items every pane has. |
+| `menu(ctx)` | Right-click items, declared as data, shown above the items every pane has (see [Commands and menus](#commands-and-menus)). |
 | `optionsMenu(ctx)` | The same for the pane's … (options) menu. |
 | `hideMenuItems` | Built-in menu items to leave out of both menus: a list of `splitRight`, `splitDown`, `newSubtab`, `changeType`, `agent`, `maximize`, `moveToTab` (`HIDEABLE_PANE_MENU_ITEMS`), or `(ctx) => list`. Unknown names are ignored. **Settings…** and **Close pane** are always shown. |
 | `fileHandler(path)` | `"default"`, `"option"` or `false`. `openFile` picks from the enabled plugins. |
@@ -113,13 +113,18 @@ all use this helper; plugins get it as `api.panes.createState`.
 
 ## Commands and menus
 
-- Every pane's … menu and right-click menu end with the same built-in
-  items (`src/components/layout/PaneMenuItems.tsx`): Split right, Split
-  down, New subtab ›, Change pane type, Agent, Maximize, Move to tab, then **Settings…**
-  (opens the plugin's section in Settings) and **Close pane**. Above them
-  come the plugin's `optionsMenu` items (… menu) or `menu` items
-  (right-click). A plugin may hide any built-in item except the last two
-  (`pane.hideMenuItems`); the Agent pane hides "Agent".
+- Every pane's … menu and right-click menu have the same order: the
+  plugin's own items first (`optionsMenu` in the … menu, `menu` on right
+  click), then **Settings…** (opens the plugin's section in Settings), a
+  divider, the built-in items (`src/components/layout/PaneMenuItems.tsx`):
+  Split right, Split down, New subtab ›, Change pane type, Agent, Maximize,
+  Move to tab, a divider and **Close pane**. A plugin may hide any built-in
+  item except Settings… and Close pane (`pane.hideMenuItems`); the Agent
+  pane hides "Agent", the explorer hides "Maximize" and "Move to tab".
+- A `MenuItemSpec` item may have `onHighlight(on)`, called as the pointer
+  or keyboard highlight enters (`true`) and leaves (`false`) it, and with
+  `false` when the menu closes. The explorer uses it to outline the
+  terminal an item names (`highlightPane`, `src/layout/paneHighlight.ts`).
 - `plugin.commands` are registered while the plugin is enabled.
   `CommandCategory` is any string. `command.menu` names a native menu bar
   submenu ("File", "Edit", "View", "Pane", "Window"); the command is listed

@@ -8,7 +8,7 @@ import { selectActiveTab, useAppStore } from "../state/store";
 import type { PaneData, PaneNode } from "../state/types";
 import { livePane, updatePaneData } from "../actions";
 import { PaneMenuItems } from "../components/layout/PaneMenuItems";
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuSeparator } from "../components/ui/Menu";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "../components/ui/Menu";
 import { AgentCard } from "../ai/agent/AgentCard";
 import { MenuItems } from "./MenuItems";
 import { PluginPlaceholder } from "./PluginPlaceholder";
@@ -159,7 +159,7 @@ function MountedContent({ mount, ctx }: { mount: NonNullable<PanePlugin["pane"][
   return <div ref={ref} tabIndex={-1} className="h-full w-full overflow-auto outline-none" />;
 }
 
-/** The plugin's right-click (`menu`) or … menu (`optionsMenu`) items, with a separator after them. */
+/** The plugin's right-click (`menu`) or … menu (`optionsMenu`) items; the pane's "Settings…" follows them. */
 export function PluginMenuItems({ plugin, ctx, menu }: { plugin: PanePlugin; ctx: PaneContext; menu: "menu" | "optionsMenu" }) {
   let items: MenuItemSpec[] = [];
   try {
@@ -168,12 +168,7 @@ export function PluginMenuItems({ plugin, ctx, menu }: { plugin: PanePlugin; ctx
     console.error(`The ${plugin.id} plugin's ${menu} failed:`, error);
   }
   if (items.length === 0) return null;
-  return (
-    <>
-      <MenuItems items={items} />
-      <MenuSeparator />
-    </>
-  );
+  return <MenuItems items={items} />;
 }
 
 type BoundaryState = { error: Error | null };

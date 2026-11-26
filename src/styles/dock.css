@@ -377,3 +377,14 @@ body:has([data-tabset-maximized]) .pane-frame:not([data-tabset-maximized]) {
 .subtab-gap[data-disabled] {
   cursor: default;
 }
+
+/* A pane pointed at from elsewhere, e.g. a menu item naming it (src/layout/paneHighlight.ts). */
+.pane.is-highlighted::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+  pointer-events: none;
+}

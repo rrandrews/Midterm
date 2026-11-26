@@ -72,6 +72,11 @@ export type MenuItemSpec =
       checked?: boolean;
       disabled?: boolean;
       run: () => unknown;
+      /**
+       * Called with `true` when the item is highlighted (pointer or keys)
+       * and `false` when that ends, including when the menu closes.
+       */
+      onHighlight?: (on: boolean) => void;
     }
   | { type: "separator" }
   | { type: "submenu"; label: string; items: MenuItemSpec[] };
