@@ -740,6 +740,48 @@ impl SshManager {
         Ok(status)
     }
 
+    pub async fn git_exec(
+        &self,
+        remote_id: &str,
+        cwd: &str,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+        read_only: bool,
+        timeout: std::time::Duration,
+    ) -> Result<(i32, Vec<u8>, String, bool), String> {
+        self.client(remote_id)
+            .await?
+            .git_exec(cwd, args, stdin, read_only, timeout)
+            .await
+    }
+
+    pub async fn git_read_untracked(
+        &self,
+        remote_id: &str,
+        root: &str,
+        git_dir: &str,
+        rel_path: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, String> {
+        self.client(remote_id)
+            .await?
+            .git_read_untracked(root, git_dir, rel_path, max_bytes)
+            .await
+    }
+
+    pub async fn git_remove_untracked(
+        &self,
+        remote_id: &str,
+        root: &str,
+        git_dir: &str,
+        rel_paths: &[String],
+    ) -> Result<(), String> {
+        self.client(remote_id)
+            .await?
+            .git_remove_untracked(root, git_dir, rel_paths)
+            .await
+    }
+
     pub async fn find_files(
         &self,
         remote_id: &str,

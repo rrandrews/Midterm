@@ -921,6 +921,107 @@ impl RemoteClient {
         }
     }
 
+    pub async fn git_exec(
+        &self,
+        cwd: &str,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+        read_only: bool,
+        timeout: Duration,
+    ) -> Result<(i32, Vec<u8>, String, bool), String> {
+        match self.kind {
+            HelperKind::Python => {
+                let b64 = base64::engine::general_purpose::STANDARD;
+                let stdin_b64 = stdin.map(|bytes| b64.encode(bytes));
+                let timeout_secs = timeout.as_secs().clamp(1, 120);
+                let rpc_timeout = Duration::from_secs(timeout_secs + 5);
+                let val = self
+                    .py_call(
+                        "git_exec",
+                        json!({
+                            "cwd": cwd,
+                            "args": args,
+                            "stdinB64": stdin_b64,
+                            "readOnly": read_only,
+                            "timeoutSecs": timeout_secs,
+                        }),
+                        rpc_timeout,
+                    )
+                    .await?;
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Resp {
+                    code: i32,
+                    stdout_b64: String,
+                    stderr: String,
+                    truncated: bool,
+                }
+                let resp: Resp = serde_json::from_value(val)
+                    .map_err(|e| format!("invalid git_exec response: {e}"))?;
+                let stdout = b64
+                    .decode(resp.stdout_b64.as_bytes())
+                    .map_err(|e| format!("invalid git_exec stdout: {e}"))?;
+                Ok((resp.code, stdout, resp.stderr, resp.truncated))
+            }
+            HelperKind::ShellFallback => Err(
+                "Source Control over SSH requires python3 on the remote host".into(),
+            ),
+        }
+    }
+
+    pub async fn git_read_untracked(
+        &self,
+        root: &str,
+        git_dir: &str,
+        rel_path: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, String> {
+        match self.kind {
+            HelperKind::Python => {
+                self.py_call_bytes(
+                    "git_read_untracked",
+                    json!({
+                        "root": root,
+                        "gitDir": git_dir,
+                        "relPath": rel_path,
+                        "maxBytes": max_bytes,
+                    }),
+                    DEFAULT_TIMEOUT,
+                )
+                .await
+            }
+            HelperKind::ShellFallback => Err(
+                "Source Control over SSH requires python3 on the remote host".into(),
+            ),
+        }
+    }
+
+    pub async fn git_remove_untracked(
+        &self,
+        root: &str,
+        git_dir: &str,
+        rel_paths: &[String],
+    ) -> Result<(), String> {
+        match self.kind {
+            HelperKind::Python => {
+                self.py_call(
+                    "git_remove_untracked",
+                    json!({
+                        "root": root,
+                        "gitDir": git_dir,
+                        "relPaths": rel_paths,
+                    }),
+                    DEFAULT_TIMEOUT,
+                )
+                .await?;
+                Ok(())
+            }
+            HelperKind::ShellFallback => Err(
+                "Source Control over SSH requires python3 on the remote host".into(),
+            ),
+        }
+    }
+
     pub async fn find_files(&self, root: &str, limit: usize) -> Result<FoundFiles, String> {
         match self.kind {
             HelperKind::Python => {

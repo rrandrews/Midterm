@@ -28,6 +28,7 @@ pub const RESERVED_IDS: &[&str] = &[
     "agent",
     "antigravity",
     "claude-code",
+    "source-control",
 ];
 /// A manifest larger than this is refused (bytes).
 const MANIFEST_LIMIT: u64 = 1024 * 1024;

@@ -1328,6 +1328,211 @@ def op_git_status(path):
     return {"root": root, "branch": branch, "entries": entries}
 
 
+MAX_GIT_EXEC_BYTES = 8 * 1024 * 1024
+MAX_GIT_STDERR_BYTES = 256 * 1024
+_GIT_ENV_STRIP = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+)
+
+
+def _drain_pipe(pipe, limit, out_box):
+    buf = bytearray()
+    truncated = False
+    try:
+        while True:
+            chunk = pipe.read(65536)
+            if not chunk:
+                break
+            if len(buf) < limit:
+                keep = min(limit - len(buf), len(chunk))
+                buf.extend(chunk[:keep])
+                if keep < len(chunk):
+                    truncated = True
+            else:
+                truncated = True
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+    out_box[0] = bytes(buf)
+    out_box[1] = truncated
+
+
+def _write_pipe(pipe, data):
+    try:
+        pipe.write(data)
+    except Exception:
+        pass
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
+def op_git_exec(cwd, args, stdin_b64=None, read_only=True, timeout_secs=30):
+    if not HAS_GIT:
+        raise RuntimeError("git is not installed on the remote host")
+    if not isinstance(cwd, str) or not cwd or "\0" in cwd:
+        raise RuntimeError("invalid git working directory")
+    if not isinstance(args, list) or not all(isinstance(a, str) and "\0" not in a for a in args):
+        raise RuntimeError("invalid git arguments")
+    stdin_bytes = base64.b64decode(stdin_b64) if stdin_b64 is not None else None
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
+    if "LC_CTYPE" not in env and "LC_ALL" in env:
+        env["LC_CTYPE"] = env["LC_ALL"]
+    env.pop("LC_ALL", None)
+    env["LC_MESSAGES"] = "C"
+    env["LANGUAGE"] = "C"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if read_only:
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+    timeout = max(1, min(int(timeout_secs or 30), 120))
+    deadline = time.monotonic() + timeout
+    cmd = ["git", "-C", cwd, "-c", "core.quotepath=false", "--literal-pathspecs"] + args
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+    except Exception as e:
+        raise RuntimeError("git command failed: %s" % e)
+
+    out_box = [b"", False]
+    err_box = [b"", False]
+    t_out = threading.Thread(target=_drain_pipe, args=(proc.stdout, MAX_GIT_EXEC_BYTES, out_box), daemon=True)
+    t_err = threading.Thread(target=_drain_pipe, args=(proc.stderr, MAX_GIT_STDERR_BYTES, err_box), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    t_in = None
+    if stdin_bytes is not None and proc.stdin is not None:
+        t_in = threading.Thread(target=_write_pipe, args=(proc.stdin, stdin_bytes), daemon=True)
+        t_in.start()
+
+    try:
+        remaining = max(0.05, deadline - time.monotonic())
+        proc.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+        if t_in is not None:
+            t_in.join(timeout=1)
+        t_out.join(timeout=1)
+        t_err.join(timeout=1)
+        raise RuntimeError("git command timed out after %ds" % timeout)
+
+    join_budget = max(0.2, min(2.0, deadline - time.monotonic()))
+    if t_in is not None:
+        t_in.join(timeout=join_budget)
+    t_out.join(timeout=join_budget)
+    t_err.join(timeout=join_budget)
+    stderr_text = err_box[0].decode("utf-8", errors="replace")
+    return {
+        "code": proc.returncode,
+        "stdoutB64": base64.b64encode(out_box[0]).decode("ascii"),
+        "stderr": stderr_text,
+        "truncated": bool(out_box[1]),
+    }
+
+
+def _open_confined_parent(root_dir, git_dir, rel_path):
+    if not isinstance(rel_path, str) or not rel_path or rel_path.startswith("/") or "\0" in rel_path:
+        raise RuntimeError("invalid relative path: %s" % rel_path)
+    parts = rel_path.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise RuntimeError("invalid relative path: %s" % rel_path)
+    git_stat = os.stat(git_dir)
+    git_id = (git_stat.st_dev, git_stat.st_ino)
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    cur_fd = os.open(root_dir, dir_flags)
+    try:
+        for seg in parts[:-1]:
+            nxt = os.open(seg, dir_flags | nofollow, dir_fd=cur_fd)
+            os.close(cur_fd)
+            cur_fd = nxt
+            st = os.fstat(cur_fd)
+            if (st.st_dev, st.st_ino) == git_id:
+                raise RuntimeError("refusing to traverse into git metadata directory")
+        leaf = parts[-1]
+        leaf_st = os.lstat(leaf, dir_fd=cur_fd)
+        if (leaf_st.st_dev, leaf_st.st_ino) == git_id:
+            raise RuntimeError("refusing to operate on git metadata directory")
+        return cur_fd, leaf, leaf_st
+    except Exception:
+        try:
+            os.close(cur_fd)
+        except Exception:
+            pass
+        raise
+
+
+def op_git_read_untracked(root_dir, git_dir, rel_path, max_bytes):
+    cur_fd, leaf, st = _open_confined_parent(root_dir, git_dir, rel_path)
+    try:
+        if statmod.S_ISLNK(st.st_mode):
+            target = os.readlink(leaf, dir_fd=cur_fd)
+            return ("symlink -> " + target + "\n").encode("utf-8", errors="replace")
+        if not statmod.S_ISREG(st.st_mode):
+            raise RuntimeError("not a regular file: %s" % rel_path)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        ffd = os.open(leaf, flags, dir_fd=cur_fd)
+        try:
+            fst = os.fstat(ffd)
+            if not statmod.S_ISREG(fst.st_mode):
+                raise RuntimeError("not a regular file: %s" % rel_path)
+            cap = max(1, min(int(max_bytes), 4 * 1024 * 1024))
+            chunks = []
+            total = 0
+            while total <= cap:
+                data = os.read(ffd, min(65536, cap + 1 - total))
+                if not data:
+                    break
+                chunks.append(data)
+                total += len(data)
+            return b"".join(chunks)
+        finally:
+            os.close(ffd)
+    finally:
+        os.close(cur_fd)
+
+
+def op_git_remove_untracked(root_dir, git_dir, rel_paths):
+    for rel in rel_paths:
+        try:
+            cur_fd, leaf, st = _open_confined_parent(root_dir, git_dir, rel)
+        except FileNotFoundError:
+            continue
+        try:
+            if statmod.S_ISDIR(st.st_mode):
+                raise RuntimeError("refusing to delete directory as untracked file: %s" % rel)
+            os.unlink(leaf, dir_fd=cur_fd)
+        finally:
+            os.close(cur_fd)
+
+
 # --- Walk, Find Files, Find Entries ---
 
 def _walk_sorted(root, show_hidden, cancel_event=None):
@@ -2581,6 +2786,28 @@ def dispatch(req):
             send_ok(req_id, op_file_version(req["path"]))
         elif op == "git_status":
             send_ok(req_id, op_git_status(req["path"]))
+        elif op == "git_exec":
+            send_ok(
+                req_id,
+                op_git_exec(
+                    req["cwd"],
+                    req["args"],
+                    req.get("stdinB64"),
+                    bool(req.get("readOnly", True)),
+                    req.get("timeoutSecs", 30),
+                ),
+            )
+        elif op == "git_read_untracked":
+            raw = op_git_read_untracked(
+                req["root"],
+                req["gitDir"],
+                req["relPath"],
+                int(req.get("maxBytes", 2 * 1024 * 1024)),
+            )
+            send_bytes(req_id, raw)
+        elif op == "git_remove_untracked":
+            op_git_remove_untracked(req["root"], req["gitDir"], req["relPaths"])
+            send_ok(req_id, None)
         elif op == "find_files":
             send_ok(req_id, op_find_files(req["root"], int(req.get("limit", 50000))))
         elif op == "find_entries":

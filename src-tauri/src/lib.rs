@@ -2,6 +2,7 @@ mod ai;
 mod antigravity;
 mod claude;
 mod fs;
+mod git;
 mod menu;
 mod plugins;
 mod pty;
@@ -204,6 +205,32 @@ pub fn run() {
             fs::commands::fs_watch_start,
             fs::commands::fs_watch_set,
             fs::commands::fs_watch_stop,
+            git::commands::scm_status,
+            git::commands::scm_diff,
+            git::commands::scm_stage,
+            git::commands::scm_unstage,
+            git::commands::scm_discard,
+            git::commands::scm_apply_patch,
+            git::commands::scm_commit,
+            git::commands::scm_undo_last_commit,
+            git::commands::scm_branches,
+            git::commands::scm_checkout,
+            git::commands::scm_delete_branch,
+            git::commands::scm_rename_branch,
+            git::commands::scm_merge,
+            git::commands::scm_abort,
+            git::commands::scm_fetch,
+            git::commands::scm_pull,
+            git::commands::scm_push,
+            git::commands::scm_log,
+            git::commands::scm_commit_files,
+            git::commands::scm_stashes,
+            git::commands::scm_stash_files,
+            git::commands::scm_stash_push,
+            git::commands::scm_stash_apply,
+            git::commands::scm_stash_drop,
+            git::commands::scm_init,
+            git::commands::scm_resolve_conflict,
             ssh::commands::ssh_register_connection,
             ssh::commands::ssh_connection_ended,
             ssh::commands::ssh_reconnect,
