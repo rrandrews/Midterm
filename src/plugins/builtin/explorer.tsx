@@ -1,5 +1,7 @@
+import { activePaneId } from "../../actions";
+import { paneActionCommand } from "../../commands/registry";
 import { ExplorerPane } from "../../components/panes/ExplorerPane";
-import { explorerMenu } from "../../components/panes/ExplorerMenus";
+import { explorerMenu, explorerOptionsMenu } from "../../components/panes/ExplorerMenus";
 import { type ExplorerData, peekExplorer } from "../../explorer/explorers";
 import type { SettingField } from "../fields";
 import type { PanePlugin, PaneProps } from "../types";
@@ -10,15 +12,15 @@ function Explorer({ paneId }: PaneProps) {
   return <ExplorerPane paneId={paneId} />;
 }
 
+// Following a terminal and hidden files are per explorer, in its … menu.
 const EXPLORER_FIELDS: SettingField[] = [
   {
-    key: "followTerminal",
+    key: "striped",
     type: "toggle",
-    label: "Follow the terminal",
-    hint: "New explorers open at the last focused terminal's directory (pin one to stop).",
-    default: true,
+    label: "Striped rows",
+    hint: "Alternate rows get a slightly different shade.",
+    default: false,
   },
-  { key: "showHidden", type: "toggle", label: "Show hidden and ignored files", default: false },
 ];
 
 /** File explorer panes: a live tree of a directory. */
@@ -35,10 +37,23 @@ export const explorerPlugin: PanePlugin = {
       const model = peekExplorer(ctx.paneId);
       return model ? explorerMenu(model) : [];
     },
+    optionsMenu: (ctx) => {
+      const model = peekExplorer(ctx.paneId);
+      return model ? explorerOptionsMenu(model) : [];
+    },
+    hideMenuItems: ["maximize", "moveToTab"],
     splittable: false,
     subtabIconOnly: true,
     background: "var(--pane-explorer)",
   },
+  // ⌘F (the app's Find) searches names; this searches what files contain.
+  commands: [
+    paneActionCommand(
+      { id: "explorer.searchText", title: "Search in files", category: "Explorer", keys: ["Cmd+Ctrl+F"] },
+      "searchText",
+      activePaneId,
+    ),
+  ],
   settings: { fields: EXPLORER_FIELDS },
   skills: explorerSkills,
 };

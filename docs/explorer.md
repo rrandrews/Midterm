@@ -7,7 +7,11 @@ system, git and watcher commands in the Rust backend.
 
 Uses [`ignore`](https://crates.io/crates/ignore) (ripgrep's ignore rules),
 [`git2`](https://crates.io/crates/git2) (vendored libgit2, no network
-features), [`notify`](https://crates.io/crates/notify) with
+features), ripgrep's library crates
+([`grep-searcher`](https://crates.io/crates/grep-searcher),
+[`grep-regex`](https://crates.io/crates/grep-regex),
+[`grep-matcher`](https://crates.io/crates/grep-matcher)) for text search,
+[`notify`](https://crates.io/crates/notify) with
 [`notify-debouncer-mini`](https://crates.io/crates/notify-debouncer-mini),
 and [`trash`](https://crates.io/crates/trash).
 
@@ -15,6 +19,9 @@ and [`trash`](https://crates.io/crates/trash).
 |---|---|
 | `list.rs` | `list_dir` (one level, ignore rules, sorting) and `stat`. |
 | `ops.rs` | `create`, `rename` (no-replace, case-only renames), `trash`. |
+| `copy.rs` | `copy_into`: a file or tree into a directory under a free Finder-style name. Every file is created with `create_new` and written through that handle (a clash inside a tree is an error, never an overwrite); a failed copy removes only what it created, entry by entry. |
+| `find.rs` | `find_files` (palette) and `find_entries` (files and directories, name search) over one shared walker (`walk`). |
+| `search.rs` | `search_text` (pure: root, options, cancel flag, event callback) and `SearchManager` (running searches in Tauri managed state). |
 | `git.rs` | `status`: branch and one letter per changed file. |
 | `watch.rs` | `DirWatch` (one watcher), `reported_dirs` (event → directories, pure), `WatchManager` (registry in Tauri managed state). |
 | `commands.rs` | The commands below: thin adapters. |
@@ -34,6 +41,10 @@ All paths are absolute strings. `src/ipc/fs.ts` is the only caller, except for t
 | `fs_rename` | `from`, `to` | Rename or move. Errors if `to` exists, except a case-only rename of the same entry. |
 | `fs_trash` | `paths` | Moves to the system trash. A symlink is trashed, not its target. |
 | `fs_find_files` | `root`, `limit` | `{ paths, truncated }`: every file under `root` (relative, `/`-separated, sorted), hidden and ignored entries skipped, symlinks not followed. For the palette (`find.rs`). |
+| `fs_find_entries` | `root`, `limit`, `showHidden` | `{ entries: { path, dir }[], truncated }`: files and directories under `root` (not `root` itself; relative, `/`-separated, walk order = sorted by name per directory). Without `showHidden` the same skipping as `fs_find_files`; with it everything, except the contents of `.git` directories (the `.git` entry is listed). Symlinks not followed, reported with their target's kind. |
+| `fs_copy` | `from`, `toDir` | Copies a file or directory tree into `toDir`, never replacing: a taken name becomes `a copy.txt`, `a copy 2.txt`, … (`dir copy`, `.env copy`: the extension is what follows the last dot, unless the name starts with it). Returns the copy's path. Symlinks are copied as links, permissions kept, sockets/FIFOs inside a tree skipped. Errors if a directory is copied into itself or a descendant; a failed tree copy is removed again. |
+| `fs_search_text` | `root`, `options`, `onEvent` | Starts a text search and returns its id at once; results stream on `onEvent` (see [Text search](#text-search)). |
+| `fs_search_cancel` | `id` | Cancels a search. Unknown ids are ignored. |
 | `git_status` | `path` | `{ root, branch, entries }` or `null` outside a work tree (or bare). |
 | `fs_watch_start` | `onEvent` | Returns a watcher id. Events arrive as `{ dirs }`. |
 | `fs_watch_set` | `id`, `dirs` | Replaces the watched set. Errors on an unknown id. |
@@ -50,6 +61,43 @@ All paths are absolute strings. `src/ipc/fs.ts` is the only caller, except for t
 - On macOS `fs_trash` uses `NSFileManager`, not the crate's default of
   scripting Finder, which would make macOS ask for permission to control
   Finder. The cost: "Put Back" may be missing for those items.
+
+### Text search
+
+`search.rs` runs ripgrep's engine (`grep-regex` matcher, `grep-searcher`
+searcher) over the `ignore` walker from `find.rs`: sequential, sorted by
+name, symlinks not followed, the same hidden/ignored rules as
+`fs_find_entries` (with `showHidden`, `.git` contents are still skipped).
+
+- Query is literal unless `regex` (Rust regex syntax; case-insensitive
+  unless `caseSensitive`; `wholeWord` wraps it in word boundaries). An
+  invalid pattern, or a root that is not a directory, sends one `error`
+  event and no `done`. An empty query sends `done` at once.
+- A file with a NUL byte anywhere is binary and skipped (its matches are
+  dropped even if found before the NUL), as is a file over 8 MiB.
+  UTF-16 files with a BOM are decoded by the searcher.
+- A match is a line. Offsets are UTF-16 code units (JS string indices),
+  computed by matching again on the line after lossy UTF-8 conversion, so
+  invalid bytes become `U+FFFD` and ranges stay right. A regex matching
+  the empty string yields only its non-empty matches; lines with none are
+  dropped. Lines over 300 units are cut to a 300-unit window starting 60
+  units before the first match, with `…` where cut and ranges clipped to it;
+  `column` still refers to the full line. A byte-level regex match inside a
+  multibyte character grows to the whole character. At most 100 ranges are
+  kept per line.
+- `maxResults` counts matching lines over all files; the search stops at the
+  first match beyond it (`truncated: true`), after sending what it had.
+- Events: `files` batches (flushed at 100 files or 50 ms; each file is in one
+  batch with all its matches), then one `done { truncated, cancelled,
+  filesSearched }`.
+- Threads: `fs_search_text` is synchronous (registers the search, spawns a
+  `text-search-<id>` thread, returns the id); the thread removes its entry
+  when it ends. `fs_search_cancel` sets the search's `AtomicBool`, checked
+  between files and on every match, so it also interrupts a big file. The
+  channel failing to send (webview gone) cancels too. Searches are tagged
+  with their window and cancelled, like watchers, on page (re)load, window
+  destruction and exit (`lib.rs`). A cancelled search still sends `done`
+  with `cancelled: true`.
 
 ### Hidden and ignored
 
@@ -114,8 +162,8 @@ Status never writes the index (no `update_index`): a write would wake the
 
 ### Threads
 
-- `fs_list_dir`, `fs_stat`, `fs_create`, `fs_rename`, `fs_trash` and
-  `git_status` are `async` and run on Tauri's blocking pool, so a large
+- `fs_list_dir`, `fs_stat`, `fs_create`, `fs_rename`, `fs_trash`,
+  `fs_copy`, `fs_find_entries` and `git_status` are `async` and run on Tauri's blocking pool, so a large
   directory, repository or slow mount never stalls the main thread. Their
   relative order is not guaranteed; the frontend awaits each.
 - The watch commands are synchronous (main thread, ordered with each other
@@ -130,14 +178,19 @@ Status never writes the index (no `update_index`): a write would wake the
 
 | File | Role |
 |---|---|
-| `src/ipc/fs.ts` | Typed wrapper over the backend commands; the contract. |
+| `src/ipc/fs.ts` | Typed wrapper over the backend commands; the contract. `searchText` wraps the streaming channel and returns `{ cancel }`. |
 | `src/ipc/fsMock.ts` | In-memory tree used outside Tauri (`bun run dev`), with dotfiles, an ignored directory and git statuses. |
 | `src/explorer/tree.ts` | Pure helpers: paths, `flattenTree` (the visible rows), `gitBadges` (roll-up), `findByPrefix` (type-ahead). Unit-tested. |
-| `src/explorer/model.ts` | `ExplorerModel`: one pane's root, expanded directories, listings, selection, inline edit, git status and watcher. |
-| `src/explorer/explorers.ts` | Models keyed by pane id (a shared pane state), and root following: unpinned explorers follow the `directory` of the last focused pane whose plugin sets `explorerFollows` (terminals). |
-| `src/plugins/builtin/explorer.tsx` | The explorer plugin: data validation, menu, settings (follow the terminal, hidden files by default). |
-| `ExplorerPane.tsx` | Header, virtualized tree (`@tanstack/react-virtual`), keyboard, inline rename/create. A row is: indent, chevron, 16px file icon (`FileIcon`, see [icons.md](icons.md)), name, git badge. |
-| `ExplorerMenus.tsx` | Right-click items for entries and for the explorer as a whole; trash confirmation. |
+| `src/explorer/model.ts` | `ExplorerModel`: one pane's root, link, expanded directories, listings, selection, inline edit, moves and copies, git status and watcher. Unit-tested against the mock (`model.test.ts`). |
+| `src/explorer/explorers.ts` | Models keyed by pane id (a shared pane state), and root following: an explorer linked to a terminal follows its `directory`; other unpinned explorers follow the last focused pane whose plugin sets `explorerFollows` (terminals). `linkablePanes` lists the candidates. |
+| `src/explorer/clipboard.ts` | The explorers' file clipboard (paths and cut or copy), shared by every explorer in the window. |
+| `src/explorer/drag.ts` | The drag in progress (paths, pointer, drop target, copy), shared so every explorer can outline its target folder. |
+| `src/explorer/search.ts` | Pure helpers for the search panel: fuzzy name matching, text results as rows, highlighted segments. Unit-tested. |
+| `src/plugins/builtin/explorer.tsx` | The explorer plugin: data validation, menus (`menu`, `optionsMenu`, hides Maximize and Move to tab), the `explorer.searchText` command, settings (striped rows). |
+| `ExplorerPane.tsx` | Top folder, virtualized tree (`@tanstack/react-virtual`), selection, keyboard, inline rename/create, the search overlay. A row is: indent, chevron, 16px file icon (`FileIcon`, see [icons.md](icons.md)), name, git badge. |
+| `useExplorerDrag.ts` | Dragging entries with pointer events (see [Drag and drop](#drag-and-drop)). |
+| `ExplorerSearch.tsx` | ⌘F name search and ⌃⌘F text search (see [Search](#search)). |
+| `ExplorerMenus.tsx` | Right-click items for entries (one or several) and for the explorer as a whole, the … menu items, trash confirmation, cut/copy/paste helpers. |
 
 ### State outside React
 
@@ -147,8 +200,8 @@ model once its pane is gone from the store and it is off screen. The
 component reads `model.snapshot()` with `useSyncExternalStore`.
 
 What survives a restart is written to the pane's `PaneData` (`root`,
-`pinned`, `showHidden`, `expanded`) through `updatePaneData` whenever it
-changes.
+`pinned`, `link`, `showHidden`, `expanded`) through `updatePaneData`
+whenever it changes. Selection and the clipboard are not saved.
 
 ### Loading and watching
 
@@ -165,13 +218,113 @@ changes.
   kind. Files show their letter; directories show a dot in the color of the
   most significant status inside them (C > D > M > R > A > U).
 
-### Root
+### Root and the top folder
 
-An unpinned explorer follows the terminal that last had focus in its tab
-(remembered per tab, since focus moves to the explorer as soon as it is
-used): its root is that terminal's working directory. Pinning (pane menu,
-"Show only this folder", "Go to parent folder") stops following;
-unpinning jumps back to the terminal's directory.
+There is no path header: the root is the top folder, a fixed row above
+the tree (`~` for home, `/`, else its name; full path in its tooltip),
+in a slightly larger, bold font. Its entries sit at depth 0 under it,
+not indented. A pin or link icon follows the name. While the explorer
+has focus, New file and New folder buttons show at its right (left of
+the pane's hover controls); they create in `targetDir()`: the cursor if
+it is a folder, else the cursor's folder, else the root. A click on the
+top folder clears the selection; right-click gives the explorer menu;
+it is a drop target for the root.
+
+The root follows a terminal, chosen in **Link to terminal ›** (… menu
+and right-click menu):
+
+- **Last focused terminal** (the default): the terminal that last had
+  focus in its tab (remembered per tab, since focus moves to the
+  explorer as soon as it is used).
+- **A terminal of the tab**, listed by its directory (numbered when two
+  share one). Highlighting an item outlines that terminal
+  (`onHighlight` → `highlightPane`). Saved as `link`; if that terminal
+  closes or leaves the tab, the explorer goes back to the last focused
+  one.
+- **None (stay in this folder)**: pinned. "Show only this folder" and
+  "Go to parent folder" also pin.
+
+**Show hidden files** (… menu and right-click menu) is per explorer
+(saved as `showHidden`); new explorers start without. Neither option is
+in Settings any more; Settings → Explorer has **Striped rows**, which
+shades every other row (`.is-stripe`).
+
+### Menus
+
+- … menu: Link to terminal ›, Show hidden files, then Settings…, a
+  divider and the pane items without Maximize and Move to tab (see
+  [plugins.md](plugins.md#commands-and-menus)).
+- Right-click on the empty area or the top folder: New file, New folder,
+  Paste, Link to terminal ›, Go to parent folder, Show hidden files,
+  Collapse all, Refresh, Reveal in Finder, Open in new terminal, Copy
+  path, then the pane items.
+- Right-click on an entry: for the selection if the entry is in it
+  (several: no Open/New/Rename items, counts in the labels), else that
+  entry alone (which gets selected): Open / New…, Reveal in Finder,
+  Cut, Copy, Paste (into a folder, or the file's folder), Duplicate,
+  Copy path(s), Copy relative path(s), Rename…, Move to Trash.
+
+### Selection
+
+The model keeps a cursor (`selected`, what the keyboard acts on), a set
+(`selection`) and an anchor for ranges. Click selects one; ⌘-click adds
+or removes; ⇧-click (and ⇧ with the arrow, page and Home/End keys)
+selects from the anchor, ⇧⌘-click adds a range. ⌘A selects every row
+shown. Collapsing a folder deselects what it hides. Commands act on
+`selectedPaths()`: the selected rows shown, in tree order, leaving out
+any inside a selected folder (they go with it), or the cursor alone.
+
+### Moving and copying
+
+`transfer(paths, dir, "move" | "copy")`: moves with `fs_rename`
+(refusing a folder into itself, skipping moves into the same folder;
+open folders and the selection follow, and `renameOpenFiles` updates
+panes showing moved files), copies with `fs_copy` (free Finder-style
+names, never replacing). Afterwards `dir` is opened and what arrived is
+selected. Errors are summed up in the error line. `duplicate` copies
+next to the original. A move onto an existing name fails with an error
+(no replace prompt), and so does a move to another volume (`rename`
+does not cross file systems). What arrives is selected only if it is
+in this explorer's tree.
+
+Clipboard: ⌘C / ⌘X put the selection on the explorers' clipboard (paths
+only; cut rows are dimmed), ⌘V pastes into `targetDir()` (a cut is moved
+once, then the clipboard keeps only what failed to move, to retry). The system clipboard is untouched,
+except ⌥⌘C, which copies the paths as text.
+
+### Drag and drop
+
+Pointer events, not HTML drag and drop (the window takes native file
+drops). A press on a row that moves 4px starts a drag of the selection
+(if the row is in it) or the row; a drag image follows the pointer.
+Targets are found under the pointer by markup: `data-drop-dir` on rows
+(a folder, or a file's folder), the top folder and the tree's empty area
+(the root), in any explorer; a terminal pane gets the paths typed in,
+shell-quoted (and is outlined). ⌥ copies instead of moving (a + on the
+drag image). Hovering a closed folder 700 ms opens it; near a tree's top
+or bottom edge it scrolls. Escape cancels; the click that ends a drag is
+swallowed.
+
+### Search
+
+`ExplorerSearch` is an overlay over the pane: a bar slides down over the
+top folder, and once there is a query, results cover the tree (the tree
+stays usable while the query is empty). Escape closes it; the last
+query per pane and mode comes back, selected, next time. ⌘F and ⌃⌘F
+switch modes while it is open. ↑ ↓ Page Up/Down move, ↩ acts.
+
+- **⌘F, names** (the app's `pane.find`, registered as the pane's `find`
+  action): `fs_find_entries` lists up to 50,000 files and folders once
+  (cached 30 s per root), filtered with fuzzysort on the name and the
+  path (name matches weigh more; ties go to shallower paths). ↩ or a
+  click reveals the entry in the tree and closes the search; ⌘↩ or
+  ⌘-click opens a file and keeps the search open.
+- **⌃⌘F, text** (`explorer.searchText`, the pane's `searchText`
+  action): `fs_search_text` 200 ms after typing, the previous search
+  cancelled; up to 2,000 matching lines, grouped by file. Toggles: match
+  case (⌥⌘C), whole word (⌥⌘W), regular expression (⌥⌘R). ↩ or a click
+  opens the file at the match (`openFile` with line and column); on a
+  file row it collapses the file.
 
 ### Opening files
 
@@ -198,8 +351,15 @@ pinned to it.
 | ← | Collapse; otherwise go to the parent |
 | ⌘O, ⌘↓ | Open a file, toggle a directory (with ⇧: open in a new pane) |
 | ↩, F2 | Rename (as in Finder) |
-| ⌘⌫ | Move to Trash (asks) |
+| ⇧ + the keys above | Extend the selection |
+| ⌘A | Select all rows shown |
+| ⌘C, ⌘X, ⌘V | Copy, cut, paste (into the cursor's folder) |
+| ⌥⌘C | Copy the selected paths as text |
+| ⌘F, ⌃⌘F | Find by name, search in files |
+| Escape | Several selected: keep only the cursor |
+| ⌘⌫ | Move the selection to Trash (asks) |
 | letters | Type-ahead; repeating one letter cycles through names starting with it |
 
-Mouse: a click selects (and toggles a directory), a double click opens a
-file, a middle click opens it in a new pane.
+Mouse: a click selects (and toggles a directory), ⌘-click and ⇧-click
+change the selection, a double click opens a file, a middle click opens
+it in a new pane, a drag moves (see above).

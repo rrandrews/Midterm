@@ -15,7 +15,7 @@ import {
 import { peekSession } from "./sessions";
 
 /** Pastes into the blocks input editor if it is showing, else into the terminal. */
-function paste(paneId: string, text: string): void {
+export function pasteIntoTerminal(paneId: string, text: string): void {
   if (!text) return;
   const editor = document.querySelector<HTMLTextAreaElement>(`[data-pane-id="${CSS.escape(paneId)}"] .blocks-input-text`);
   if (editor) {
@@ -47,7 +47,7 @@ export function terminalMenu(paneId: string): MenuItemSpec[] {
   }
   items.push(
     { label: "Copy", shortcut: "⌘C", disabled: !selection, run: () => copyText(selection) },
-    { label: "Paste", shortcut: "⌘V", disabled: !session, run: () => pasteText().then((text) => paste(paneId, text)) },
+    { label: "Paste", shortcut: "⌘V", disabled: !session, run: () => pasteText().then((text) => pasteIntoTerminal(paneId, text)) },
     { label: "Select all", disabled: !session, run: () => session?.selectAll() },
     { label: "Clear", disabled: !session, run: () => session?.clear() },
   );

@@ -20,6 +20,7 @@ export function validateExplorerData(raw: Record<string, unknown>): Fields {
   const data: Fields = {};
   if (nonEmpty(raw.root)) data.root = raw.root;
   if (typeof raw.pinned === "boolean") data.pinned = raw.pinned;
+  if (typeof raw.link === "string") data.link = raw.link;
   if (typeof raw.showHidden === "boolean") data.showHidden = raw.showHidden;
   if (Array.isArray(raw.expanded)) {
     const expanded = raw.expanded.filter(nonEmpty);

@@ -1,19 +1,33 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, Pin } from "lucide-react";
-import { type KeyboardEvent, type MouseEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ChevronDown, ChevronRight, FilePlus, FolderPlus, Link2, Pin } from "lucide-react";
+import {
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { createPortal } from "react-dom";
 import { openFile, renameOpenFiles } from "../../actions";
+import { registerPaneActions } from "../../commands/registry";
 import { focusPane, registerPaneFocuser } from "../../layout/dock";
 import type { GitCode } from "../../ipc/fs";
 import { homeDirectory } from "../../ipc/system";
+import { fileClipboard, subscribeFileClipboard } from "../../explorer/clipboard";
+import { dropDir, explorerDrag, subscribeExplorerDrag } from "../../explorer/drag";
 import { acquireExplorer, releaseExplorer } from "../../explorer/explorers";
 import type { ExplorerModel, ExplorerSnapshot } from "../../explorer/model";
-import { type Row, displayPath, findByPrefix, parentPath, rowId } from "../../explorer/tree";
+import { type Row, baseName, displayPath, findByPrefix, parentPath, rowId } from "../../explorer/tree";
 import { InlineEdit } from "../ui/InlineEdit";
 import { PaneMenuItems } from "../layout/PaneMenuItems";
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuSeparator } from "../ui/Menu";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "../ui/Menu";
 import { MenuItems } from "../../plugins/MenuItems";
 import { usePluginSettings } from "../../plugins/settings";
-import { EntryMenuItems, confirmTrash, explorerMenu } from "./ExplorerMenus";
+import { EntryMenuItems, confirmTrash, copyEntries, copyPaths, explorerMenu, pasteInto } from "./ExplorerMenus";
+import { ExplorerSearch, type ExplorerSearchMode } from "./ExplorerSearch";
+import { useExplorerDrag } from "./useExplorerDrag";
 import { FileIcon, drawsIcons } from "../../icons/FileIcon";
 import { useActiveIconSet } from "../../icons/state";
 import type { LoadedIconSet } from "../../icons/types";
@@ -49,12 +63,9 @@ const BADGE_TITLE: Record<GitCode, string> = {
  */
 export function ExplorerPane({ paneId }: { paneId: string }) {
   const [model, setModel] = useState<ExplorerModel | null>(null);
-  const settings = usePluginSettings("explorer");
-  const defaults = useRef({ pinned: false, showHidden: false });
-  defaults.current = { pinned: settings.followTerminal === false, showHidden: settings.showHidden === true };
 
   useEffect(() => {
-    const acquired = acquireExplorer(paneId, defaults.current);
+    const acquired = acquireExplorer(paneId);
     acquired.attach();
     setModel(acquired);
     return () => releaseExplorer(acquired);
@@ -65,11 +76,15 @@ export function ExplorerPane({ paneId }: { paneId: string }) {
 
 function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel }) {
   const icons = useActiveIconSet();
+  const striped = usePluginSettings("explorer").striped === true;
   const snap = useSyncExternalStore(model.subscribe, model.snapshot);
+  const clipboard = useSyncExternalStore(subscribeFileClipboard, fileClipboard);
+  const drag = useSyncExternalStore(subscribeExplorerDrag, explorerDrag);
   const treeRef = useRef<HTMLDivElement>(null);
   const typeahead = useRef({ text: "", at: 0 });
   /** Path the context menu is for; `null` for the empty area. */
   const [menuPath, setMenuPath] = useState<string | null>(null);
+  const [search, setSearch] = useState<ExplorerSearchMode | null>(null);
 
   const virtualizer = useVirtualizer({
     count: snap.rows.length,
@@ -83,13 +98,31 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
     [paneId],
   );
 
+  // ⌘F finds files and folders by name, ⌃⌘F searches inside files (`explorer.searchText`).
+  useEffect(
+    () => registerPaneActions(paneId, { find: () => setSearch("name"), searchText: () => setSearch("text") }),
+    [paneId],
+  );
+
+  const closeSearch = () => {
+    setSearch(null);
+    focusPane(paneId);
+  };
+
   const rows = snap.rows;
   const selectedIndex = rows.findIndex((row) => rowId(row) === snap.selected);
+  const cut = new Set(clipboard?.cut ? clipboard.paths : []);
+  const dropInto = dropDir(drag);
 
-  const selectIndex = (index: number) => {
+  /** The paths a command acts on, starting from `path`: the selection if `path` is in it. */
+  const pathsFor = (path: string) => (snap.selection.has(path) ? model.selectedPaths() : [path]);
+  const { onRowPointerDown, consumeClick } = useExplorerDrag({ model, pathsFor });
+
+  const selectIndex = (index: number, extend = false) => {
     const row = rows[Math.max(0, Math.min(rows.length - 1, index))];
     if (row?.type !== "entry") return;
-    model.select(row.entry.path);
+    if (extend) model.selectRange(row.entry.path);
+    else model.select(row.entry.path);
     virtualizer.scrollToIndex(rows.indexOf(row), { align: "auto" });
   };
 
@@ -101,6 +134,23 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
     else open(row.entry.path, newPane);
   };
 
+  /** A revealed path to scroll to once its row is shown (its folders may still be loading). */
+  const pendingReveal = useRef<string | null>(null);
+  const reveal = (path: string) => {
+    setSearch(null);
+    pendingReveal.current = path;
+    model.reveal(path);
+    focusPane(paneId);
+  };
+  useEffect(() => {
+    const path = pendingReveal.current;
+    if (!path) return;
+    const index = snap.rows.findIndex((row) => rowId(row) === path);
+    if (index === -1) return;
+    pendingReveal.current = null;
+    virtualizer.scrollToIndex(index, { align: "center" });
+  }, [snap.rows, virtualizer]);
+
   const onKeyDown = (event: KeyboardEvent) => {
     if (snap.editing) return;
     const row = rows[selectedIndex];
@@ -109,42 +159,66 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
       event.preventDefault();
       event.stopPropagation();
     };
+    const key = event.key.toLowerCase();
+    const cmdOnly = event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
     if (event.metaKey && event.key === "Backspace") {
       handled();
-      if (row?.type === "entry") void confirmTrash(model, [row.entry.path]);
+      void confirmTrash(model, model.selectedPaths());
       return;
     }
     // Finder's keys: ⌘O (or ⌘↓) opens, ↩ renames.
-    if (event.metaKey && !event.ctrlKey && !event.altKey && (event.key.toLowerCase() === "o" || event.key === "ArrowDown")) {
+    if (event.metaKey && !event.ctrlKey && !event.altKey && (key === "o" || event.key === "ArrowDown")) {
       handled();
       if (row) activate(row, event.shiftKey);
       return;
     }
+    if (cmdOnly && key === "a") {
+      handled();
+      model.selectAll();
+      return;
+    }
+    if (cmdOnly && (key === "c" || key === "x")) {
+      handled();
+      copyEntries(model.selectedPaths(), key === "x");
+      return;
+    }
+    if (cmdOnly && key === "v") {
+      handled();
+      void pasteInto(model, model.targetDir());
+      return;
+    }
+    // ⌥⌘C: Finder's "Copy as pathname". Matched on the physical key: ⌥ changes `key`.
+    if (event.metaKey && event.altKey && !event.ctrlKey && event.code === "KeyC") {
+      handled();
+      copyPaths(model.selectedPaths());
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const extend = event.shiftKey;
     switch (event.key) {
       case "ArrowDown":
         handled();
-        selectIndex(selectedIndex === -1 ? 0 : nextEntry(rows, selectedIndex, 1));
+        selectIndex(selectedIndex === -1 ? 0 : nextEntry(rows, selectedIndex, 1), extend);
         return;
       case "ArrowUp":
         handled();
-        selectIndex(selectedIndex === -1 ? 0 : nextEntry(rows, selectedIndex, -1));
+        selectIndex(selectedIndex === -1 ? 0 : nextEntry(rows, selectedIndex, -1), extend);
         return;
       case "PageDown":
         handled();
-        selectIndex(nextEntry(rows, Math.min(rows.length - 1, selectedIndex + page), -1, true));
+        selectIndex(nextEntry(rows, Math.min(rows.length - 1, selectedIndex + page), -1, true), extend);
         return;
       case "PageUp":
         handled();
-        selectIndex(nextEntry(rows, Math.max(0, selectedIndex - page), 1, true));
+        selectIndex(nextEntry(rows, Math.max(0, selectedIndex - page), 1, true), extend);
         return;
       case "Home":
         handled();
-        selectIndex(nextEntry(rows, 0, 1, true));
+        selectIndex(nextEntry(rows, 0, 1, true), extend);
         return;
       case "End":
         handled();
-        selectIndex(nextEntry(rows, rows.length - 1, -1, true));
+        selectIndex(nextEntry(rows, rows.length - 1, -1, true), extend);
         return;
       case "ArrowRight":
         handled();
@@ -171,10 +245,15 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
         return;
       case "Escape":
         typeahead.current.text = "";
+        // Several selected: back to just the cursor.
+        if (snap.selection.size > 1) {
+          handled();
+          model.select(snap.selected);
+        }
         return;
     }
     // Type-ahead: printable characters select the next matching name.
-    if (event.key.length === 1 && event.key !== " ") {
+    if (event.key.length === 1 && event.key !== " " && !event.shiftKey) {
       handled();
       const now = performance.now();
       const state = typeahead.current;
@@ -189,38 +268,67 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
   const onContextMenu = (event: MouseEvent) => {
     const path = (event.target as HTMLElement).closest<HTMLElement>("[data-path]")?.dataset.path ?? null;
     setMenuPath(path);
-    if (path) model.select(path);
+    // Right-clicking outside the selection selects just that entry; inside, the menu is for all of it.
+    if (path && !snap.selection.has(path)) model.select(path);
+  };
+
+  const onRowClick = (event: MouseEvent, row: Row) => {
+    if (consumeClick() || row.type !== "entry") return;
+    const { path, kind } = row.entry;
+    if (event.shiftKey) model.selectRange(path, event.metaKey);
+    else if (event.metaKey) model.toggleSelected(path);
+    else {
+      model.select(path);
+      if (kind === "dir" && event.detail === 1) model.toggle(path);
+    }
   };
 
   const menuRow = menuPath ? rows.find((row) => rowId(row) === menuPath) : undefined;
+  const createIn = (kind: "file" | "dir") => model.startCreate(model.targetDir(), kind);
 
   return (
-    <div className="flex h-full flex-col">
-      <Header snap={snap} />
+    <div className="explorer relative flex h-full flex-col">
+      <RootHeader snap={snap} dropping={dropInto === snap.root} onCreate={createIn} onClick={() => model.select(null)} />
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
             ref={treeRef}
             role="tree"
             aria-label="Files"
+            aria-multiselectable="true"
             aria-activedescendant={selectedIndex === -1 ? undefined : rowDomId(paneId, snap.selected)}
             tabIndex={0}
-            className="explorer-tree relative min-h-0 flex-1 overflow-y-auto outline-none"
+            data-drop-dir={snap.root}
+            className={`explorer-tree relative min-h-0 flex-1 overflow-y-auto outline-none select-none ${
+              dropInto === snap.root ? "is-drop-target" : ""
+            }`}
             onKeyDown={onKeyDown}
             onContextMenu={onContextMenu}
+            onClick={(event) => {
+              // A click on the empty space below the rows clears the selection.
+              if (event.target === event.currentTarget || !(event.target as HTMLElement).closest("[data-path]")) {
+                if (!consumeClick()) model.select(null);
+              }
+            }}
           >
             <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
               {virtualizer.getVirtualItems().map((item) => {
                 const row = rows[item.index];
+                const id = rowId(row);
                 return (
                   <TreeRow
-                    key={rowId(row)}
+                    key={id}
                     paneId={paneId}
                     model={model}
                     snap={snap}
                     row={row}
                     icons={icons}
                     top={item.start}
+                    stripe={striped && item.index % 2 === 1}
+                    cut={cut.has(id)}
+                    dropping={dropInto === id}
+                    onClick={(event) => onRowClick(event, row)}
+                    onPointerDown={(event) => onRowPointerDown(event, id)}
                     onActivate={(newPane) => activate(row, newPane)}
                   />
                 );
@@ -237,13 +345,13 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
               paneId={paneId}
               model={model}
               entry={menuRow.entry}
+              paths={pathsFor(menuRow.entry.path)}
               root={snap.root}
               onOpen={(newPane) => open(menuRow.entry.path, newPane)}
             />
           ) : (
             <>
               <MenuItems items={explorerMenu(model)} />
-              <MenuSeparator />
               <PaneMenuItems paneId={paneId} />
             </>
           )}
@@ -253,6 +361,19 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
         <div role="status" className="border-t border-line px-3 py-1.5 text-meta text-err">
           {snap.error}
         </div>
+      )}
+      {search && (
+        <ExplorerSearch
+          paneId={paneId}
+          mode={search}
+          root={snap.root}
+          showHidden={snap.showHidden}
+          onClose={closeSearch}
+          onReveal={reveal}
+        />
+      )}
+      {drag?.source === paneId && (
+        <DragImage paths={drag.paths} x={drag.x} y={drag.y} copy={drag.copy && drag.target?.type === "dir"} />
       )}
     </div>
   );
@@ -270,19 +391,83 @@ function rowDomId(paneId: string, path: string | null): string {
   return `explorer-${paneId}-${encodeURIComponent(path ?? "")}`;
 }
 
-function Header({ snap }: { snap: ExplorerSnapshot }) {
-  const shown = displayPath(snap.root, homeDirectory());
+/** The root's name as the top folder shows it: `~` for home, `/` for the file system root. */
+function rootName(root: string): string {
+  if (root === "/") return "/";
+  if (root === homeDirectory()) return "~";
+  return baseName(root);
+}
+
+type RootHeaderProps = {
+  snap: ExplorerSnapshot;
+  /** Entries dragged over it would drop into the root. */
+  dropping: boolean;
+  onCreate: (kind: "file" | "dir") => void;
+  onClick: () => void;
+};
+
+/**
+ * The top folder: the root, a little larger than the rows, which sit
+ * under it without an indent. New file and new folder buttons show while
+ * the explorer has focus.
+ */
+function RootHeader({ snap, dropping, onCreate, onClick }: RootHeaderProps) {
+  const icons = useActiveIconSet();
+  const name = rootName(snap.root);
+  const full = displayPath(snap.root, homeDirectory());
+  const keepFocus = (event: PointerEvent) => event.preventDefault();
   return (
     // Right padding leaves room for the pane's hover controls.
-    <div className="flex h-[30px] flex-none items-center gap-1.5 pt-1 pr-14 pl-3" title={snap.root}>
-      {/* Truncates from the left, so the end of a long path stays visible. */}
-      <span className="min-w-0 truncate font-mono text-meta text-fg-dim [direction:rtl]">
-        <bdi>{shown}</bdi>
+    <div
+      className={`explorer-root flex h-[30px] flex-none items-center gap-1.5 pt-0.5 pr-14 pl-3 ${dropping ? "is-drop-target" : ""}`}
+      title={full}
+      data-drop-dir={snap.root}
+      onClick={onClick}
+    >
+      <FileIcon set={icons.set} light={icons.light} name={name} path={snap.root} kind="dir" expanded />
+      <span className="min-w-0 truncate text-input font-semibold text-fg-bright">{name}</span>
+      {snap.pinned && <Pin size={10} strokeWidth={2} className="flex-none text-fg-dim" aria-label="Pinned" />}
+      {snap.link && <Link2 size={11} strokeWidth={2} className="flex-none text-fg-dim" aria-label="Linked to a terminal" />}
+      <span className="explorer-root-actions ml-auto flex flex-none items-center gap-0.5">
+        <button
+          type="button"
+          aria-label="New file"
+          title="New file"
+          className="explorer-root-button"
+          onPointerDown={keepFocus}
+          onClick={(event) => {
+            event.stopPropagation();
+            onCreate("file");
+          }}
+        >
+          <FilePlus size={13} strokeWidth={1.75} />
+        </button>
+        <button
+          type="button"
+          aria-label="New folder"
+          title="New folder"
+          className="explorer-root-button"
+          onPointerDown={keepFocus}
+          onClick={(event) => {
+            event.stopPropagation();
+            onCreate("dir");
+          }}
+        >
+          <FolderPlus size={13} strokeWidth={1.75} />
+        </button>
       </span>
-      {snap.pinned && (
-        <Pin size={10} strokeWidth={2} className="flex-none text-fg-dim" aria-label="Pinned" />
-      )}
     </div>
+  );
+}
+
+/** What follows the pointer while entries are dragged. */
+function DragImage({ paths, x, y, copy }: { paths: string[]; x: number; y: number; copy: boolean }) {
+  return createPortal(
+    <div className="explorer-drag-image" style={{ left: x + 12, top: y + 10 }}>
+      {copy && <span className="explorer-drag-copy">+</span>}
+      {paths.length === 1 ? baseName(paths[0]) : `${paths.length} items`}
+    </div>,
+    document.body,
   );
 }
 
@@ -293,16 +478,24 @@ type TreeRowProps = {
   row: Row;
   icons: { set: LoadedIconSet | null; light: boolean };
   top: number;
+  /** Shaded, for striped rows. */
+  stripe: boolean;
+  /** On the clipboard after ⌘X. */
+  cut: boolean;
+  /** Dragged entries would drop into this folder. */
+  dropping: boolean;
+  onClick: (event: MouseEvent) => void;
+  onPointerDown: (event: PointerEvent) => void;
   onActivate: (newPane: boolean) => void;
 };
 
 /** Width the icon and its gap take, when the set draws icons. */
 const ICON_SPACE = 16 + 6;
 
-function TreeRow({ paneId, model, snap, row, icons, top, onActivate }: TreeRowProps) {
+function TreeRow({ paneId, model, snap, row, icons, top, stripe, cut, dropping, onClick, onPointerDown, onActivate }: TreeRowProps) {
   const indent = PAD_LEFT + row.depth * INDENT;
   const style = { top, height: ROW_HEIGHT, paddingLeft: indent };
-  const base = "absolute inset-x-0 flex items-center gap-1.5 pr-3 whitespace-nowrap";
+  const base = `absolute inset-x-0 flex items-center gap-1.5 pr-3 whitespace-nowrap ${stripe ? "is-stripe" : ""}`;
   const finishEditing = () => {
     model.cancelEdit();
     focusPane(paneId);
@@ -336,7 +529,8 @@ function TreeRow({ paneId, model, snap, row, icons, top, onActivate }: TreeRowPr
   }
 
   const { entry, expanded } = row;
-  const selected = snap.selected === entry.path;
+  const selected = snap.selection.has(entry.path);
+  const cursor = snap.selected === entry.path;
   const renaming = snap.editing?.type === "rename" && snap.editing.path === entry.path;
   const badge = snap.badges.get(entry.path);
   const dim = entry.ignored || entry.hidden;
@@ -349,17 +543,16 @@ function TreeRow({ paneId, model, snap, row, icons, top, onActivate }: TreeRowPr
       aria-expanded={entry.kind === "dir" ? expanded : undefined}
       aria-selected={selected}
       data-path={entry.path}
+      data-drop-dir={entry.kind === "dir" ? entry.path : parentPath(entry.path)}
       title={entry.symlink ? `${entry.name} (symbolic link)` : undefined}
       className={`${base} explorer-row cursor-default text-ui ${
         selected ? "is-selected text-fg-bright" : dim ? "text-fg-faint" : "text-fg-mid"
-      } ${dim ? "is-dim" : ""}`}
+      } ${cursor ? "is-cursor" : ""} ${dim ? "is-dim" : ""} ${cut ? "is-cut" : ""} ${dropping ? "is-drop-target" : ""}`}
       style={style}
-      onClick={(event) => {
-        model.select(entry.path);
-        if (entry.kind === "dir" && event.detail === 1) model.toggle(entry.path);
-      }}
-      onDoubleClick={() => {
-        if (entry.kind === "file") onActivate(false);
+      onClick={onClick}
+      onPointerDown={onPointerDown}
+      onDoubleClick={(event) => {
+        if (entry.kind === "file" && !event.metaKey && !event.shiftKey) onActivate(false);
       }}
       onAuxClick={(event) => {
         // Middle click opens in a new pane.

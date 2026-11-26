@@ -22,6 +22,8 @@ export type ExplorerData = PaneData & {
   root?: string;
   /** The root stays put instead of following the focused terminal's directory. */
   pinned?: boolean;
+  /** The pane (a terminal in the same tab) whose directory the root follows, instead of the last focused one. */
+  link?: string;
   /** Dotfiles and ignored files are listed too. */
   showHidden?: boolean;
   /** Expanded directories (absolute paths). */
@@ -36,23 +38,25 @@ const models = createPaneState<ExplorerModel>({
   },
 });
 
-function createModel(paneId: string, defaults: { pinned: boolean; showHidden: boolean }): ExplorerModel {
+function createModel(paneId: string): ExplorerModel {
   const tab = findTabOfPane(useAppStore.getState(), paneId);
   const data = tab && (findPane(tab.layout, paneId)?.data as ExplorerData | undefined);
   const model: ExplorerModel = new ExplorerModel(
     paneId,
     {
       root: data?.root,
-      pinned: data?.pinned ?? defaults.pinned,
-      showHidden: data?.showHidden ?? defaults.showHidden,
+      pinned: data?.pinned ?? false,
+      link: data?.link ?? null,
+      showHidden: data?.showHidden ?? false,
       expanded: data?.expanded,
     },
     (settings) => {
       if (models.get(paneId) !== model) return;
       updatePaneData(paneId, {
         root: settings.root,
-        pinned: settings.pinned,
-        showHidden: settings.showHidden,
+        pinned: settings.pinned || undefined,
+        link: settings.link ?? undefined,
+        showHidden: settings.showHidden || undefined,
         expanded: settings.expanded.length ? settings.expanded : undefined,
       });
     },
@@ -67,10 +71,10 @@ function createModel(paneId: string, defaults: { pinned: boolean; showHidden: bo
 
 /**
  * The pane's explorer model, created if needed, for a mounted component
- * (which calls `releaseExplorer` when done). `defaults` apply to a new pane.
+ * (which calls `releaseExplorer` when done).
  */
-export function acquireExplorer(paneId: string, defaults = { pinned: false, showHidden: false }): ExplorerModel {
-  return models.acquire(paneId, () => createModel(paneId, defaults));
+export function acquireExplorer(paneId: string): ExplorerModel {
+  return models.acquire(paneId, () => createModel(paneId));
 }
 
 /** Takes an explorer off screen; it is disposed only if its pane is gone. */
@@ -106,6 +110,17 @@ function directoryOf(pane: PaneNode): string | undefined {
 
 function followDirectory(model: ExplorerModel, tab: Tab): void {
   if (model.isPinned) return;
+  const linked = model.linkedPane;
+  if (linked) {
+    const pane = findPane(tab.layout, linked);
+    // A linked terminal that closed (or left the tab) hands over to the focused one.
+    if (!pane || !leads(pane)) model.setLink(null);
+    else {
+      const dir = directoryOf(pane);
+      if (dir) model.setRoot(dir);
+      return;
+    }
+  }
   const remembered = lastFollowed.get(tab.id);
   const known = remembered ? findPane(tab.layout, remembered) : undefined;
   if (known && leads(known)) waitingForFocus.delete(model.paneId);
@@ -142,6 +157,15 @@ export function scheduleFollowing(): void {
     followQueued = false;
     updateFollowing();
   });
+}
+
+/** The panes an explorer in `tab` can be linked to (terminals), in layout order, with their directories. */
+export function linkablePanes(paneId: string): { pane: PaneNode; directory: string | undefined }[] {
+  const tab = findTabOfPane(useAppStore.getState(), paneId);
+  if (!tab) return [];
+  return listPanes(tab.layout)
+    .filter(leads)
+    .map((pane) => ({ pane, directory: directoryOf(pane) }));
 }
 
 /** Follows again right away, e.g. after the explorer is unpinned. */

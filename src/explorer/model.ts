@@ -5,6 +5,7 @@ import {
   type GitBadges,
   type Listing,
   type Row,
+  baseName,
   flattenTree,
   gitBadges,
   isWithin,
@@ -25,6 +26,8 @@ import {
 export type ExplorerSettings = {
   root: string;
   pinned: boolean;
+  /** The pane (a terminal) whose directory the root follows, instead of the last focused one. */
+  link: string | null;
   showHidden: boolean;
   expanded: string[];
 };
@@ -36,9 +39,13 @@ export type Editing =
 export type ExplorerSnapshot = {
   root: string;
   pinned: boolean;
+  link: string | null;
   showHidden: boolean;
   rows: Row[];
+  /** The cursor: the entry the keyboard acts on (and the last one clicked). */
   selected: string | null;
+  /** Every selected entry (the cursor's too, unless ⌘-clicked off). */
+  selection: ReadonlySet<string>;
   editing: Editing | null;
   badges: GitBadges;
   branch: string | null;
@@ -47,6 +54,11 @@ export type ExplorerSnapshot = {
   /** The last failed operation, shown briefly. */
   error: string | null;
 };
+
+/** The paths not inside another of them (a selected folder carries its selected contents). */
+function topmost(paths: string[]): string[] {
+  return paths.filter((path) => !paths.some((other) => other !== path && isWithin(path, other)));
+}
 
 /** Git status is looked up again this long after the last change. */
 const GIT_REFRESH_MS = 400;
@@ -57,12 +69,16 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 export class ExplorerModel {
   private root: string;
   private pinned: boolean;
+  private link: string | null;
   private showHidden: boolean;
   private readonly expanded: Set<string>;
   private readonly listings = new Map<string, Listing>();
   /** Bumped per directory on each load, so a slow, stale response is dropped. */
   private readonly loadTokens = new Map<string, number>();
   private selected: string | null = null;
+  private selection = new Set<string>();
+  /** Where a ⇧-click range starts. */
+  private anchor: string | null = null;
   private editing: Editing | null = null;
   private git: GitStatus | null = null;
   private gitToken = 0;
@@ -86,6 +102,7 @@ export class ExplorerModel {
   ) {
     this.root = initial.root ?? homeDirectory() ?? "/";
     this.pinned = initial.pinned ?? false;
+    this.link = initial.link ?? null;
     this.showHidden = initial.showHidden ?? false;
     this.expanded = new Set(initial.expanded ?? []);
     this.current = this.buildSnapshot();
@@ -110,9 +127,11 @@ export class ExplorerModel {
     return {
       root: this.root,
       pinned: this.pinned,
+      link: this.link,
       showHidden: this.showHidden,
       rows: flattenTree({ root: this.root, expanded: this.expanded, listings: this.listings, creating }),
       selected: this.selected,
+      selection: new Set(this.selection),
       editing: this.editing,
       badges: gitBadges(this.git),
       branch: this.git?.branch ?? null,
@@ -125,6 +144,7 @@ export class ExplorerModel {
     this.persist({
       root: this.root,
       pinned: this.pinned,
+      link: this.link,
       showHidden: this.showHidden,
       expanded: [...this.expanded],
     });
@@ -169,6 +189,11 @@ export class ExplorerModel {
     return this.pinned;
   }
 
+  /** The pane the root follows, if linked to one. */
+  get linkedPane(): string | null {
+    return this.link;
+  }
+
   setRoot(path: string): void {
     if (path === this.root) return;
     this.root = path;
@@ -180,9 +205,20 @@ export class ExplorerModel {
     this.emit();
   }
 
+  /** Pinning stays in the folder, and ends a link to a terminal. */
   setPinned(pinned: boolean): void {
-    if (pinned === this.pinned) return;
+    if (pinned === this.pinned && (!pinned || this.link === null)) return;
     this.pinned = pinned;
+    if (pinned) this.link = null;
+    this.save();
+    this.emit();
+  }
+
+  /** Follows `paneId`'s directory (unpinning), or, with `null`, the last focused terminal again. */
+  setLink(paneId: string | null): void {
+    if (paneId === this.link && !this.pinned) return;
+    this.link = paneId;
+    this.pinned = false;
     this.save();
     this.emit();
   }
@@ -211,8 +247,12 @@ export class ExplorerModel {
 
   collapse(path: string): void {
     if (!this.expanded.delete(path)) return;
-    // A selection hidden inside the collapsed directory moves up to it.
-    if (this.selected && this.selected !== path && isWithin(this.selected, path)) this.selected = path;
+    // A cursor hidden inside the collapsed directory moves up to it; hidden entries are deselected.
+    if (this.selected && this.selected !== path && isWithin(this.selected, path)) {
+      this.selected = path;
+      this.selection.add(path);
+    }
+    for (const selected of this.selection) if (selected !== path && isWithin(selected, path)) this.selection.delete(selected);
     this.afterExpansionChange();
   }
 
@@ -225,6 +265,7 @@ export class ExplorerModel {
     if (this.expanded.size === 0) return;
     this.expanded.clear();
     if (this.selected && parentPath(this.selected) !== this.root) this.selected = null;
+    for (const selected of this.selection) if (parentPath(selected) !== this.root) this.selection.delete(selected);
     this.afterExpansionChange();
   }
 
@@ -255,15 +296,76 @@ export class ExplorerModel {
 
   // --- Selection and editing ---
 
+  /** Selects only `path` (nothing for `null`), which becomes the cursor and the range anchor. */
   select(path: string | null): void {
-    if (path === this.selected) return;
+    if (path === this.selected && this.selection.size === (path ? 1 : 0) && (!path || this.selection.has(path))) return;
+    this.selected = path;
+    this.anchor = path;
+    this.selection = new Set(path ? [path] : []);
+    this.emit();
+  }
+
+  /** ⌘-click: adds `path` to the selection or takes it out. */
+  toggleSelected(path: string): void {
+    if (this.selection.has(path)) this.selection.delete(path);
+    else this.selection.add(path);
+    this.selected = path;
+    this.anchor = path;
+    this.emit();
+  }
+
+  /**
+   * ⇧-click or ⇧-arrow: selects the entries from the anchor to `path`, as
+   * shown; `add` keeps what else was selected (⇧⌘-click).
+   */
+  selectRange(path: string, add = false): void {
+    const ids = this.current.rows.flatMap((row) => (row.type === "entry" ? [row.entry.path] : []));
+    const to = ids.indexOf(path);
+    if (to === -1) return;
+    let from = this.anchor ? ids.indexOf(this.anchor) : -1;
+    if (from === -1) {
+      from = to;
+      this.anchor = path;
+    }
+    const range = ids.slice(Math.min(from, to), Math.max(from, to) + 1);
+    this.selection = new Set(add ? [...this.selection, ...range] : range);
     this.selected = path;
     this.emit();
   }
 
+  /** Selects every entry shown. */
+  selectAll(): void {
+    const ids = this.current.rows.flatMap((row) => (row.type === "entry" ? [row.entry.path] : []));
+    this.selection = new Set(ids);
+    if (!this.selected && ids.length) this.selected = ids[0];
+    this.emit();
+  }
+
+  /**
+   * The selected entries that are shown, in tree order, without any inside
+   * another selected directory (they go along with it); the cursor alone
+   * if nothing is selected.
+   */
+  selectedPaths(): string[] {
+    const shown = this.current.rows.flatMap((row) =>
+      row.type === "entry" && this.selection.has(row.entry.path) ? [row.entry.path] : [],
+    );
+    if (shown.length > 0) return topmost(shown);
+    // The cursor counts only while it is a row shown here (not, say, left behind by a move elsewhere).
+    const cursor = this.selected;
+    return cursor && this.current.rows.some((row) => row.type === "entry" && row.entry.path === cursor) ? [cursor] : [];
+  }
+
+  /** Where new entries and pasted ones go: the cursor if it is a folder, else the cursor's folder, else the root. */
+  targetDir(): string {
+    const row = this.selected ? this.current.rows.find((candidate) => rowId(candidate) === this.selected) : undefined;
+    if (row?.type !== "entry") return this.root;
+    return row.entry.kind === "dir" ? row.entry.path : parentPath(row.entry.path);
+  }
+
   /** Starts renaming an entry in place. */
   startRename(path: string): void {
-    this.selected = path;
+    this.select(path);
     this.editing = { type: "rename", path };
     this.emit();
   }
@@ -301,20 +403,107 @@ export class ExplorerModel {
       this.fail(`Could not rename: ${message(error)}`);
       return null;
     }
-    // Open directories inside the renamed one stay open under the new name.
-    for (const path of [...this.expanded]) {
-      if (isWithin(path, from)) {
-        this.expanded.delete(path);
-        this.expanded.add(to + path.slice(from.length));
-      }
-    }
-    if (this.selected && isWithin(this.selected, from)) this.selected = to + this.selected.slice(from.length);
-    this.save();
-    // Renamed open directories are new paths: load and watch them.
-    for (const path of this.expanded) if (isWithin(path, to)) void this.load(path);
+    this.remap(from, to);
     this.updateWatchedDirs();
     await this.load(parentPath(from));
     return { from, to };
+  }
+
+  /** After `from` moved to `to`: open directories and the selection inside it follow. */
+  private remap(from: string, to: string): void {
+    const moved = (path: string) => (isWithin(path, from) ? to + path.slice(from.length) : path);
+    for (const path of [...this.expanded]) {
+      if (isWithin(path, from)) {
+        this.expanded.delete(path);
+        this.expanded.add(moved(path));
+      }
+    }
+    if (this.selected) this.selected = moved(this.selected);
+    if (this.anchor) this.anchor = moved(this.anchor);
+    this.selection = new Set([...this.selection].map(moved));
+    this.save();
+    // Moved open directories are new paths: load them (and they get watched).
+    for (const path of this.expanded) if (isWithin(path, to)) void this.load(path);
+  }
+
+  /**
+   * Moves or copies entries into `dir` (copies get a free name, as in
+   * Finder). Moves that go nowhere are skipped; a folder cannot go into
+   * itself. Selects what arrived; resolves to the moves made, for open
+   * files to follow.
+   */
+  async transfer(
+    paths: string[],
+    dir: string,
+    mode: "move" | "copy",
+  ): Promise<{ moves: { from: string; to: string }[]; failed: string[] }> {
+    const moves: { from: string; to: string }[] = [];
+    const failed: string[] = [];
+    const arrived: string[] = [];
+    const errors: string[] = [];
+    const touched = new Set([dir]);
+    for (const path of topmost(paths)) {
+      if (isWithin(dir, path)) {
+        errors.push(`“${baseName(path)}” cannot go inside itself.`);
+        failed.push(path);
+        continue;
+      }
+      if (mode === "move" && parentPath(path) === dir) continue;
+      try {
+        if (mode === "copy") {
+          arrived.push(await fs.copyInto(path, dir));
+        } else {
+          const to = joinPath(dir, baseName(path));
+          await fs.rename(path, to);
+          moves.push({ from: path, to });
+          arrived.push(to);
+          touched.add(parentPath(path));
+          this.remap(path, to);
+        }
+      } catch (error) {
+        errors.push(`Could not ${mode} “${baseName(path)}”: ${message(error)}`);
+        failed.push(path);
+      }
+    }
+    if (errors.length) this.fail(errors.length === 1 ? errors[0] : `${errors[0]} (and ${errors.length - 1} more)`);
+    if (arrived.length === 0) return { moves, failed };
+    // Show what arrived: open the folder it went to, and select it.
+    if (dir !== this.root && isWithin(dir, this.root) && !this.expanded.has(dir)) {
+      this.expanded.add(dir);
+      this.save();
+    }
+    this.updateWatchedDirs();
+    await Promise.all([...touched].filter((path) => path === this.root || this.expanded.has(path)).map((path) => this.load(path)));
+    // Select what arrived, if it arrived in this tree (a drop into another explorer leaves this one's selection).
+    const here = arrived.filter((path) => isWithin(path, this.root));
+    if (here.length) {
+      this.selection = new Set(here);
+      this.selected = here[here.length - 1];
+      this.anchor = this.selected;
+    }
+    this.emit();
+    return { moves, failed };
+  }
+
+  /** Copies of entries next to them ("a copy.txt"). */
+  async duplicate(paths: string[]): Promise<void> {
+    const errors: string[] = [];
+    const arrived: string[] = [];
+    for (const path of topmost(paths)) {
+      try {
+        arrived.push(await fs.copyInto(path, parentPath(path)));
+      } catch (error) {
+        errors.push(`Could not duplicate “${baseName(path)}”: ${message(error)}`);
+      }
+    }
+    if (errors.length) this.fail(errors[0]);
+    await Promise.all([...new Set(arrived.map(parentPath))].map((dir) => this.load(dir)));
+    if (arrived.length) {
+      this.selection = new Set(arrived);
+      this.selected = arrived[arrived.length - 1];
+      this.anchor = this.selected;
+      this.emit();
+    }
   }
 
   /** Finishes creating; resolves to the new entry's path, or `null` if nothing was created. */
@@ -336,6 +525,8 @@ export class ExplorerModel {
       return null;
     }
     this.selected = path;
+    this.anchor = path;
+    this.selection = new Set([path]);
     await this.load(editing.dir);
     return { path, kind: editing.kind };
   }
@@ -348,14 +539,17 @@ export class ExplorerModel {
       this.fail(`Could not move to the Trash: ${message(error)}`);
       return false;
     }
-    // The selection moves to whatever takes the trashed row's place.
-    const index = this.current.rows.findIndex((row) => rowId(row) === this.selected);
+    // The selection moves to whatever takes the trashed rows' place.
+    const entriesBefore = this.current.rows.filter((row) => row.type === "entry");
+    const firstGone = entriesBefore.findIndex((row) => row.type === "entry" && paths.some((path) => isWithin(row.entry.path, path)));
     await Promise.all([...new Set(paths.map(parentPath))].map((dir) => this.load(dir)));
-    if (this.selected && paths.some((path) => isWithin(this.selected ?? "", path))) {
+    const gone = (candidate: string) => paths.some((path) => isWithin(candidate, path));
+    for (const selected of this.selection) if (gone(selected)) this.selection.delete(selected);
+    if (this.selected && gone(this.selected)) {
       const entries = this.current.rows.filter((row) => row.type === "entry");
-      const next = entries[Math.max(0, Math.min(index, entries.length - 1))];
+      const next = entries[Math.max(0, Math.min(firstGone, entries.length - 1))];
       this.select(next?.type === "entry" ? next.entry.path : null);
-    }
+    } else this.emit();
     return true;
   }
 
