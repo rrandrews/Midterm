@@ -265,4 +265,20 @@ describe("resolveDir", () => {
     expect(resolveDir("/etc/", env)).toBe("/etc");
     expect(resolveDir("x/", { cwd: undefined, home: undefined })).toBeUndefined();
   });
+
+  it("preserves ssh:// host when resolving remote directories", () => {
+    const rEnv = {
+      cwd: "ssh://prod-0123456789ab/srv/app",
+      home: "ssh://prod-0123456789ab/home/deploy",
+      remoteId: "prod-0123456789ab",
+    };
+    expect(resolveDir("", rEnv)).toBe("ssh://prod-0123456789ab/srv/app");
+    expect(resolveDir("src/", rEnv)).toBe("ssh://prod-0123456789ab/srv/app/src");
+    expect(resolveDir("~/", rEnv)).toBe("ssh://prod-0123456789ab/home/deploy");
+    expect(resolveDir("~/bin/", rEnv)).toBe("ssh://prod-0123456789ab/home/deploy/bin");
+    expect(resolveDir("/", rEnv)).toBe("ssh://prod-0123456789ab/");
+    expect(resolveDir("/etc/", rEnv)).toBe("ssh://prod-0123456789ab/etc");
+    // Mismatched local home must not be used for a remote ~ completion.
+    expect(resolveDir("~/", { cwd: rEnv.cwd, home: "/Users/me", remoteId: rEnv.remoteId })).toBeUndefined();
+  });
 });

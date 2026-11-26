@@ -1,5 +1,6 @@
 import { closePaneNow, updatePaneData } from "../actions";
 import { homeDirectory } from "../ipc/system";
+import { homeForLocation, hostLabelForLocation, subscribeConnections } from "../ssh/connections";
 import { createPaneState } from "../plugins/paneState";
 import { refreshTabTitles } from "../plugins/tabTitles";
 import { useSettings } from "../settings/settings";
@@ -99,8 +100,12 @@ export function releaseSession(session: TerminalSession): void {
 export function terminalTabTitle(pane: PaneNode): string | undefined {
   const session = sessions.get(pane.id);
   const cwd = session?.cwd ?? (pane.data as TerminalData).cwd;
-  return terminalTitle(session?.foregroundProgram ?? null, cwd, homeDirectory()) || undefined;
+  const home = session?.shellHome ?? (cwd ? homeForLocation(cwd, homeDirectory()) : homeDirectory());
+  const host = session?.remoteLabel ?? (cwd ? (hostLabelForLocation(cwd) ?? undefined) : undefined);
+  return terminalTitle(session?.effectiveForeground ?? null, cwd, home, host) || undefined;
 }
+
+subscribeConnections(() => refreshTabTitles());
 
 /*
  * Settings and the theme apply to the live terminals of the active

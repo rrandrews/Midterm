@@ -72,10 +72,10 @@ export function canRun(session: TerminalSession): boolean {
 export function runFromBlocks(session: TerminalSession, command: string, scope?: string): void {
   if (!command.trim() || !canRun(session)) return;
   if (scope !== undefined && session.blocks.scope !== scope) return;
-  // A nested shell's commands (over ssh) stay out of this machine's history.
-  const root = !session.blocks.snapshot().nested;
-  const previous = root ? session.blocks.commandsFor("").slice(-1)[0] : undefined;
-  if (session.runCommand(command) && root) {
+  // Remote shell commands (nested or direct SSH) stay out of this machine's history.
+  const localRoot = session.blocks.scope === "";
+  const previous = localRoot ? session.blocks.commandsFor("").slice(-1)[0] : undefined;
+  if (session.runCommand(command) && localRoot) {
     recordCommand(command);
     recordPair(previous, command);
   }

@@ -1,4 +1,5 @@
 import type { IBuffer, IDisposable, IEvent, IMarker } from "@xterm/xterm";
+import { formatRemoteLocation } from "../files/location";
 import { TypedLine } from "./typedLine";
 
 /*
@@ -89,10 +90,12 @@ export type Block = {
   readonly id: number;
   /** The command line, as sent from the input editor or read back from the prompt. */
   readonly command: string;
-  /** Working directory when the command started. */
+  /** Working directory when the command started (clean POSIX path). */
   readonly cwd: string | undefined;
-  /** Host of `cwd` when it is not this machine (a nested shell over ssh). */
+  /** Host of `cwd` when it is not this machine (a nested or direct SSH shell). */
   readonly host: string | undefined;
+  /** Tracked Midterm SSH remote id when `cwd` resides on a managed SSH connection. */
+  readonly remoteId?: string;
   /** Run by a shell nested inside a root command (see "Nested shells"). */
   readonly nested: boolean;
   /** Git branch of `cwd` when it started, once looked up; `null` outside a repository. */
@@ -151,17 +154,19 @@ export type BlocksSnapshot = {
   readonly location: BlockLocation;
 };
 
-/** A working directory and, when it is not this machine, its host. */
-export type BlockLocation = { readonly cwd?: string; readonly host?: string };
+/** A working directory and, when it is not this machine, its host and optional managed remote id. */
+export type BlockLocation = { readonly cwd?: string; readonly host?: string; readonly remoteId?: string };
 
 /**
- * Which commands a history entry belongs with: `""` for the root shell, a
- * host for a nested shell that reported one, `"nested"` otherwise.
+ * Which commands a history entry belongs with: `""` for the local root shell,
+ * `"ssh:<remoteId>"` for a managed SSH connection, a host for an untracked
+ * nested shell that reported one, `"nested"` otherwise.
  */
 export type CommandScope = string;
 
 /** The scope of a prompt or block: `nested` and where it is. */
 export function scopeOf(nested: boolean, location: BlockLocation | undefined): CommandScope {
+  if (location?.remoteId) return `ssh:${location.remoteId}`;
   if (!nested) return "";
   return location?.host ?? "nested";
 }
@@ -169,6 +174,13 @@ export function scopeOf(nested: boolean, location: BlockLocation | undefined): C
 export type BlockTrackerOptions = {
   /** The root shell's working directory as last reported (OSC 7 from this machine). */
   cwd: () => string | undefined;
+  /**
+   * Optional full location for the root shell (used by direct-SSH panes whose
+   * root shell is already remote). When omitted, `{ cwd: cwd() }` is used.
+   */
+  rootLocation?: () => BlockLocation | undefined;
+  /** Called on each OSC 133 mark after scope transitions, with the mark and whether nested. */
+  onMark?: (mark: PromptMark, nested: boolean) => void;
   /** Looks up a directory's git branch (`null` outside a work tree). */
   branch?: (cwd: string) => Promise<string | null>;
   /** How long to wait for the first mark after output starts. */
@@ -222,7 +234,7 @@ export class BlockTracker {
   private rootAid: string | null | undefined;
   private nested = false;
   /** The root command a nested shell runs inside (`ssh host`), for the closing block. */
-  private outer: { command: string; cwd: string | undefined; startedAt: number } | undefined;
+  private outer: { command: string; location: BlockLocation; startedAt: number } | undefined;
   /** The last OSC 7 since the current root command started (a nested shell's). */
   private innerLocation: BlockLocation | undefined;
 
@@ -385,7 +397,17 @@ export class BlockTracker {
 
   /** The scope of the prompt: whose history applies to it. */
   get scope(): CommandScope {
-    return scopeOf(this.nested, this.innerLocation);
+    return scopeOf(this.nested, this.nested ? this.innerLocation : this.options.rootLocation?.());
+  }
+
+  /** The root shell's `aid=`, once observed (`undefined` if unknown or absent). */
+  get rootShellAid(): string | undefined {
+    return this.rootAid ?? undefined;
+  }
+
+  /** Command line of the currently running block, if any. */
+  runningCommand(): string | undefined {
+    return this.runningBlock()?.command;
   }
 
   /**
@@ -399,12 +421,12 @@ export class BlockTracker {
 
   /**
    * Records a working directory report (OSC 7). `host` is unset for this
-   * machine. Root blocks take their directory from `options.cwd`; this is
-   * where a nested shell's comes from.
+   * machine. Root blocks take their directory from `options.cwd` (or
+   * `options.rootLocation`); this is where a nested shell's comes from.
    */
   noteCwd(location: BlockLocation): void {
     this.innerLocation = location;
-    if (this.nested) this.changed();
+    if (this.nested || this.options.rootLocation?.()) this.changed();
   }
 
   /**
@@ -482,6 +504,7 @@ export class BlockTracker {
       if (this.nested && mark.aid === this.rootAid) {
         // The root shell is back: the nested one (and ssh) ended.
         this.closeNested(mark.kind === "D" ? mark.exitCode : undefined);
+        this.options.onMark?.(mark, this.nested);
         if (mark.kind === "D") {
           this.phase = "prompt";
           this.changed();
@@ -489,7 +512,12 @@ export class BlockTracker {
         }
       } else if (!this.nested && mark.kind === "A" && mark.aid !== this.rootAid && this.runningBlock()) {
         this.enterNested();
+        this.options.onMark?.(mark, this.nested);
+      } else {
+        this.options.onMark?.(mark, this.nested);
       }
+    } else {
+      this.options.onMark?.(mark, this.nested);
     }
     switch (mark.kind) {
       case "A":
@@ -546,7 +574,15 @@ export class BlockTracker {
   private enterNested(): void {
     const running = this.runningBlock();
     if (!running) return;
-    this.outer = { command: running.command, cwd: running.cwd, startedAt: running.startedAt };
+    this.outer = {
+      command: running.command,
+      location: {
+        cwd: running.cwd,
+        ...(running.host !== undefined ? { host: running.host } : {}),
+        ...(running.remoteId !== undefined ? { remoteId: running.remoteId } : {}),
+      },
+      startedAt: running.startedAt,
+    };
     this.nested = true;
     // The A that follows ends the outer block, which holds the banner.
   }
@@ -575,7 +611,7 @@ export class BlockTracker {
     if (!start) return;
     this.addBlock(outer.command, start, true, {
       record: false,
-      location: { cwd: outer.cwd },
+      location: outer.location,
       nested: false,
       startedAt: outer.startedAt,
     });
@@ -599,13 +635,15 @@ export class BlockTracker {
   ): void {
     const nested = overrides.nested ?? this.nested;
     const location: BlockLocation =
-      overrides.location ?? (nested ? (this.innerLocation ?? {}) : { cwd: this.options.cwd() });
-    const { cwd, host } = location;
+      overrides.location ??
+      (nested ? (this.innerLocation ?? {}) : (this.options.rootLocation?.() ?? { cwd: this.options.cwd() }));
+    const { cwd, host, remoteId } = location;
     const block: Block = {
       id: this.nextId++,
       command,
       cwd,
       host,
+      ...(remoteId ? { remoteId } : {}),
       nested,
       branch: undefined,
       start,
@@ -627,10 +665,17 @@ export class BlockTracker {
       this.commandList.push({ command, scope });
       if (this.commandList.length > MAX_PANE_COMMANDS) this.commandList.shift();
     }
-    // Never looked up on this machine for a nested shell's directory: one
-    // reporting `localhost` or this host name may still be elsewhere.
-    if (cwd && !host && !nested && this.options.branch) {
-      this.options.branch(cwd).then(
+    // Look up git branch for local root blocks and tracked SSH remotes; never
+    // touch this machine's filesystem for an untracked nested shell.
+    const branchTarget = cwd
+      ? remoteId
+        ? formatRemoteLocation(remoteId, cwd)
+        : !host && !nested
+          ? cwd
+          : null
+      : null;
+    if (branchTarget && this.options.branch) {
+      this.options.branch(branchTarget).then(
         (branch) => {
           block.branch = branch;
           if (this.blocks.includes(block)) this.changed();
@@ -756,7 +801,7 @@ export class BlockTracker {
       altScreen: this.altScreen,
       blocks: [...this.blocks],
       nested: this.nested,
-      location: this.nested ? (this.innerLocation ?? {}) : {},
+      location: this.nested ? (this.innerLocation ?? {}) : (this.options.rootLocation?.() ?? {}),
     };
   }
 

@@ -1,32 +1,44 @@
+import { formatRemoteLocation, parseLocation, remoteIdOf } from "../files/location";
 import { completeList, pathCommands } from "../ipc/complete";
 import { BUILTINS, type Candidate, type CompletionContext, filterCandidates } from "./completion";
 
 /** Where the prompt is: what relative paths, `~` and command names resolve against. */
 export type CompletionEnv = {
-  /** The prompt's working directory; no path completion without it. */
+  /** The prompt's working directory (local or `ssh://<id>/<path>`); no path completion without it. */
   cwd: string | undefined;
-  /** The home directory, for `~/`. */
+  /** The matching host's home directory, for `~/`. */
   home: string | undefined;
-  /** The shell's reported `PATH`; the app's own when unset. */
+  /** The shell's reported `PATH`; the app's own when unset (local only). */
   path: string | undefined;
+  /** Managed SSH remote id when completing on a remote host. */
+  remoteId?: string | null;
 };
 
 /**
- * The absolute directory `dir` (`~/x/`, `/x/`, `x/` or empty, as in
- * `CompletionContext.dir`) names, without a trailing slash except for `/`;
- * `undefined` if it cannot be resolved.
+ * The absolute location `dir` (`~/x/`, `/x/`, `x/` or empty, as in
+ * `CompletionContext.dir`) names, without a trailing slash except for `/`,
+ * preserving any `ssh://<remoteId>` host prefix; `undefined` if it cannot be
+ * resolved.
  */
-export function resolveDir(dir: string, env: Pick<CompletionEnv, "cwd" | "home">): string | undefined {
-  let absolute: string;
-  if (dir.startsWith("/")) absolute = dir;
-  else if (dir.startsWith("~/")) {
+export function resolveDir(dir: string, env: Pick<CompletionEnv, "cwd" | "home" | "remoteId">): string | undefined {
+  const remoteId = env.remoteId ?? (env.cwd ? remoteIdOf(env.cwd) : null);
+  let posix: string;
+  if (dir.startsWith("/")) {
+    posix = dir;
+  } else if (dir.startsWith("~/")) {
     if (!env.home) return undefined;
-    absolute = env.home + dir.slice(1);
+    const homeParsed = parseLocation(env.home);
+    if (!homeParsed) return undefined;
+    if (remoteId && (homeParsed.kind !== "remote" || homeParsed.remoteId !== remoteId)) return undefined;
+    posix = homeParsed.path === "/" ? dir.slice(1) : homeParsed.path + dir.slice(1);
   } else {
     if (!env.cwd) return undefined;
-    absolute = dir ? `${env.cwd.replace(/\/$/, "")}/${dir}` : env.cwd;
+    const cwdParsed = parseLocation(env.cwd);
+    if (!cwdParsed) return undefined;
+    posix = dir ? `${cwdParsed.path.replace(/\/$/, "")}/${dir}` : cwdParsed.path;
   }
-  return absolute.length > 1 ? absolute.replace(/\/+$/, "") : absolute;
+  const clean = posix.length > 1 ? posix.replace(/\/+$/, "") : posix;
+  return remoteId ? formatRemoteLocation(remoteId, clean) : clean;
 }
 
 /** The candidates for `context`, filtered by what is typed. */
@@ -39,7 +51,8 @@ export async function findCandidates(
   }
   let candidates: Candidate[];
   if (context.kind === "command") {
-    const names = await pathCommands(env.path).catch(() => [] as string[]);
+    const remoteId = env.remoteId ?? (env.cwd ? remoteIdOf(env.cwd) : null);
+    const names = await pathCommands(env.path, remoteId ?? undefined).catch(() => [] as string[]);
     candidates = [...names, ...BUILTINS].map((name) => ({ name, dir: false }));
   } else {
     const dir = resolveDir(context.dir, env);

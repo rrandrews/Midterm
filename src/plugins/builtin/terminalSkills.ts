@@ -1,4 +1,5 @@
 import { activePaneId, livePane } from "../../actions";
+import { posixPathOf } from "../../files/location";
 import { selectAllPanes, useAppStore } from "../../state/store";
 import { blockOutput, canRun, runFromBlocks } from "../../terminal/blockMode";
 import { isSessionKind } from "../../terminal/kinds";
@@ -57,9 +58,9 @@ export const terminalSkills: Skill[] = [
           return {
             paneId: id,
             integration: snap.integration,
-            cwd: (snap.nested ? snap.location.cwd : session.cwd) ?? null,
+            cwd: (snap.nested ? snap.location.cwd : session.cwd ? posixPathOf(session.cwd) : undefined) ?? null,
             // Set while the prompt is a shell on another machine (over ssh).
-            host: snap.nested ? (snap.location.host ?? "unknown") : null,
+            host: session.remoteLabel ?? (snap.nested ? (snap.location.host ?? "unknown") : null),
             blocks: snap.blocks.slice(-count).map((block) => ({
               command: block.command,
               cwd: block.cwd ?? null,

@@ -1,9 +1,12 @@
 import { openDirectory, openFile } from "../actions";
+import { baseName } from "../explorer/tree";
+import { formatRemoteLocation, isRemotePath, parseLocation, posixPathOf, sameHost } from "../files/location";
 import { copyText } from "../ipc/clipboard";
 import * as fs from "../ipc/fs";
 import { openWithDefaultApp, revealInFileManager } from "../ipc/shell";
 import { homeDirectory } from "../ipc/system";
 import type { MenuItemSpec } from "../plugins/types";
+import { displayLocation, homeForLocation } from "../ssh/connections";
 import { editorDraft } from "../ai/editorRequests";
 import { canRun, runFromBlocks } from "./blockMode";
 import type { Block } from "./blocks";
@@ -72,13 +75,18 @@ export function pathKind(path: string, { fresh = false } = {}): Promise<PathKind
 export async function findPathLinks(text: string, cwds: string | readonly (string | undefined)[] | undefined): Promise<PathLink[]> {
   const matches = findFileLinks(text, { names: true });
   if (matches.length === 0) return [];
-  const home = homeDirectory();
+  const localHome = homeDirectory();
   const dirs = [...new Set(typeof cwds === "string" || cwds === undefined ? [cwds] : cwds)];
   const links = await Promise.all(
     matches.map(async (match): Promise<PathLink | null> => {
+      const triedAbsolute = new Set<string>();
       for (const cwd of dirs) {
+        const home = cwd ? homeForLocation(cwd, localHome) : localHome;
         const resolved = resolveLinkPath(match.path, cwd, home);
-        if (!resolved) continue;
+        if (!resolved || triedAbsolute.has(resolved)) continue;
+        if (match.path.startsWith("/") || match.path === "~" || match.path.startsWith("~/")) {
+          triedAbsolute.add(resolved);
+        }
         let path = resolved;
         let kind = await pathKind(path);
         // `link@` is `link` (ls -F), unless an entry is really called `link@`.
@@ -88,8 +96,7 @@ export async function findPathLinks(text: string, cwds: string | readonly (strin
           if (unmarked && kind) path = unmarked;
         }
         if (!kind) {
-          // An absolute or ~ path does not depend on the directory.
-          if (!cwd || path === resolveLinkPath(match.path, undefined, home)) break;
+          if (!cwd) break;
           continue;
         }
         const target: PathTarget = { path, kind };
@@ -111,24 +118,55 @@ export function openPathTarget(target: PathTarget, fromPaneId: string, { newPane
   else openFile(target.path, { fromPaneId, newPane, line: target.line, column: target.column });
 }
 
+type BlockHost = { kind: "local" } | { kind: "remote"; remoteId: string } | { kind: "untracked" };
+
+function blockHostOf(block: Pick<Block, "host" | "nested" | "remoteId">): BlockHost {
+  if (block.remoteId) return { kind: "remote", remoteId: block.remoteId };
+  if (block.host || block.nested) return { kind: "untracked" };
+  return { kind: "local" };
+}
+
+function blockLocation(block: Pick<Block, "cwd" | "host" | "nested" | "remoteId">): string | null | undefined {
+  if (block.remoteId) return block.cwd ? formatRemoteLocation(block.remoteId, block.cwd) : undefined;
+  if (block.host || block.nested) return null;
+  return block.cwd;
+}
+
+function locationMatchesHost(location: string, host: BlockHost): boolean {
+  const parsed = parseLocation(location);
+  if (!parsed || host.kind === "untracked") return false;
+  if (host.kind === "local") return parsed.kind === "local";
+  return parsed.kind === "remote" && parsed.remoteId === host.remoteId;
+}
+
 /**
  * Directories to resolve block `index`'s output against: where the shell
  * was after it (the next block's directory, or `current` for the last),
  * then where it started. A command that changed directory (`cd x && ls`)
  * most likely printed names relative to where it ended. Null when the
- * output is a nested shell's (ssh): not files here.
+ * output belongs to an untracked nested shell.
  */
 export function blockDirectories(
-  blocks: readonly Pick<Block, "cwd" | "host" | "nested">[],
+  blocks: readonly Pick<Block, "cwd" | "host" | "nested" | "remoteId">[],
   index: number,
   current: string | undefined,
-  nested: boolean,
+  untrackedNested: boolean,
 ): (string | undefined)[] | null {
   const block = blocks[index];
-  if (!block || block.host || block.nested) return null;
+  if (!block) return null;
+  const host = blockHostOf(block);
+  if (host.kind === "untracked") return null;
+  const startLoc = blockLocation(block);
+  if (startLoc === null) return null;
   const next = blocks[index + 1];
-  const after = next ? (next.host || next.nested ? undefined : next.cwd) : nested ? undefined : current;
-  return [...new Set([after, block.cwd].filter((dir): dir is string => !!dir))];
+  let after: string | undefined;
+  if (next) {
+    const nextLoc = blockLocation(next);
+    if (nextLoc && locationMatchesHost(nextLoc, host)) after = nextLoc;
+  } else if (!untrackedNested && current && locationMatchesHost(current, host)) {
+    after = current;
+  }
+  return [...new Set([after, startLoc].filter((dir): dir is string => !!dir))];
 }
 
 /** Whether a click on a link is a ⌘-click (Ctrl-click elsewhere): open in a new pane. */
@@ -139,35 +177,38 @@ export function isNewPaneClick(event: MouseEvent | { metaKey: boolean; ctrlKey: 
 /**
  * The `cd` argument for `dir` from `cwd`: `./sub/dir` inside it (the `./`
  * keeps `CDPATH` out and a name like `-P` from being an option), else the
- * absolute path. Quoted for the shell.
+ * absolute POSIX path. Quoted for the shell; strips any `ssh://` prefix.
  */
 export function cdArgument(dir: string, cwd: string | undefined): string {
-  return shellQuoteArg(cwd && dir.startsWith(`${cwd}/`) ? `./${dir.slice(cwd.length + 1)}` : dir);
+  const target = posixPathOf(dir);
+  const base = cwd ? posixPathOf(cwd) : undefined;
+  return shellQuoteArg(base && target.startsWith(`${base}/`) ? `./${target.slice(base.length + 1)}` : target);
 }
 
 /**
  * Whether a click on a folder can `cd` the pane's shell there: it is idle
- * at a prompt of this machine's shell, no program it started without a
- * command mark (bash's `(cat)`) has the terminal, and no command is being
- * written (in the input editor or on the shell's line), which the `cd`
- * would throw away.
+ * at a prompt (local or tracked SSH remote), on the same host as `targetDir`
+ * (when given), no program has the terminal, and no command is being written.
  */
-export function canChangeDirectory(paneId: string): boolean {
+export function canChangeDirectory(paneId: string, targetDir?: string): boolean {
   const session = peekSession(paneId);
-  if (!session || !canRun(session) || session.blocks.snapshot().nested) return false;
-  if (session.foregroundProgram && !session.foregroundProgram.isShell) return false;
+  if (!session || !canRun(session) || session.isUntrackedNested) return false;
+  const fg = session.effectiveForeground;
+  if (fg && !fg.isShell) return false;
+  if (targetDir && session.cwd && !sameHost(targetDir, session.cwd)) return false;
   return !session.blocks.typedPromptInput() && !editorDraft(paneId)?.trim();
 }
 
 /** Runs `cd <dir>` in the pane's shell when `canChangeDirectory`. Returns whether it did. */
 export function changeDirectory(paneId: string, dir: string): boolean {
   const session = peekSession(paneId);
-  if (!session || !canChangeDirectory(paneId)) return false;
+  if (!session || !canChangeDirectory(paneId, dir)) return false;
   if (dir === session.cwd) return true;
+  const posix = posixPathOf(dir);
   // Typed as keystrokes: a control character would act (a tab completes),
   // and quoting a backslash differs between shells (fish).
-  if (/[\\\u0000-\u001f\u007f]/.test(dir)) return false;
-  runFromBlocks(session, `cd ${cdArgument(dir, session.cwd)}`);
+  if (/[\\\u0000-\u001f\u007f]/.test(posix)) return false;
+  runFromBlocks(session, `cd ${cdArgument(posix, session.cwd)}`);
   return true;
 }
 
@@ -274,29 +315,36 @@ export function subscribeTip(listener: () => void): () => void {
 
 export const currentTip = (): PathTipState | null => shownTip;
 
-/** `~`-relative path for display. */
+/** `~`-relative path for display (with `<host>:` prefix for remote locations). */
 export function displayPath(path: string): string {
-  const home = homeDirectory();
-  if (home && (path === home || path.startsWith(`${home}/`))) return `~${path.slice(home.length)}`;
-  return path;
-}
-
-function baseName(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1) || path;
+  return displayLocation(path, homeDirectory(), { includeHost: true });
 }
 
 /** The right-click menu of a file or folder in a terminal's output (instead of the pane's). */
 export function pathMenuItems(paneId: string, target: PathTarget): MenuItemSpec[] {
   const dir = target.kind === "dir";
-  return [
+  const remote = isRemotePath(target.path);
+  const items: MenuItemSpec[] = [
     dir
-      ? { label: "Change to this folder", shortcut: "Click", disabled: !canChangeDirectory(paneId), run: () => changeDirectory(paneId, target.path) }
+      ? {
+          label: "Change to this folder",
+          shortcut: "Click",
+          disabled: !canChangeDirectory(paneId, target.path),
+          run: () => changeDirectory(paneId, target.path),
+        }
       : { label: "Open file", shortcut: "Click", run: () => openPathTarget(target, paneId) },
     { label: "Open in new pane", shortcut: "⌘Click", run: () => openPathTarget(target, paneId, { newPane: true }) },
-    { label: "Open in default application", run: () => openWithDefaultApp(target.path) },
-    { label: "Reveal in Finder", run: () => revealInFileManager(target.path) },
+  ];
+  if (!remote) {
+    items.push(
+      { label: "Open in default application", run: () => openWithDefaultApp(target.path) },
+      { label: "Reveal in Finder", run: () => revealInFileManager(target.path) },
+    );
+  }
+  items.push(
     { type: "separator" },
     { label: dir ? "Copy folder name" : "Copy file name", run: () => void copyText(baseName(target.path)) },
-    { label: "Copy full path", run: () => void copyText(target.path) },
-  ];
+    { label: "Copy full path", run: () => void copyText(posixPathOf(target.path)) },
+  );
+  return items;
 }

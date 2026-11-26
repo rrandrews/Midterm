@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import { activePaneId, livePane } from "../actions";
+import { posixPathOf } from "../files/location";
 import { aiCancel, aiSuggest, toAiError } from "../ipc/ai";
 import { homeDirectory } from "../ipc/system";
 import { getSettings, useSettings } from "../settings/settings";
+import { getConnection } from "../ssh/connections";
 import { blockOutput, canRun, requestedMode } from "../terminal/blockMode";
 import { type Block, type BlocksSnapshot, scopeOf } from "../terminal/blocks";
 import { commandPairs, loadCommandLog } from "../terminal/commandLog";
@@ -103,7 +105,7 @@ export type ContextSource = {
   /** The foreground program's name when it is a shell. */
   shell: string | undefined;
   output: (block: Block) => string;
-  os: string;
+  os: string | undefined;
   homeRelative: (path: string | undefined) => string | undefined;
 };
 
@@ -125,11 +127,19 @@ export function contextInputOf(
   const before = block ? (at < 0 ? snapshot.blocks.filter((b) => b.id < block.id) : snapshot.blocks.slice(0, at)) : snapshot.blocks;
   const finished = before.filter((b) => b.end !== undefined && b.command.trim() && scopeOf(b.nested, b) === scope);
   const recentBlocks = options.limit > 0 ? finished.slice(-options.limit) : [];
-  // At a nested shell (over ssh) the machine is another one: its host and
-  // directory, no local OS, branch or shell.
-  const remote = block ? block.nested : snapshot.nested;
-  const cwd = block ? block.cwd : remote ? snapshot.location.cwd : source.cwd;
+  // Remote (nested or direct SSH): use its host, directory, and tracked metadata
+  // (never local OS/shell/branch for an untracked remote shell).
+  const remoteId = block ? block.remoteId : snapshot.location.remoteId;
+  const remote = block
+    ? Boolean(block.nested || block.remoteId || block.host)
+    : Boolean(snapshot.nested || snapshot.location.remoteId || snapshot.location.host);
+  const cwd = block
+    ? block.cwd
+    : snapshot.nested || snapshot.location.remoteId || snapshot.location.host
+      ? snapshot.location.cwd
+      : source.cwd;
   const host = remote ? ((block ? block.host : snapshot.location.host) ?? "unknown") : undefined;
+  const remoteConn = remoteId ? getConnection(remoteId) : undefined;
   let commands = source.commandsFor(scope).slice(-50);
   if (block) {
     // The pane's command list is de-duplicated (a command run again moves
@@ -145,16 +155,16 @@ export function contextInputOf(
     commands = commands.filter((command) => !later.has(command.trim()));
   }
   return {
-    os: remote ? undefined : source.os,
+    os: remote ? (remoteConn?.remoteOs ?? undefined) : source.os,
     host,
-    shell: remote ? undefined : source.shell,
-    cwd: remote ? cwd : source.homeRelative(cwd),
-    branch: remote ? null : (options.branch ?? null),
+    shell: remote ? (remoteConn?.remoteShell ?? undefined) : source.shell,
+    cwd: remote ? (cwd ? posixPathOf(cwd) : undefined) : source.homeRelative(cwd),
+    branch: remote && !remoteId ? null : (options.branch ?? null),
     blocks: recentBlocks.map((b) => ({
       command: b.command,
       exitCode: b.exitCode,
       output: source.output(b),
-      cwd: b.host ? `${b.host}:${b.cwd ?? "?"}` : source.homeRelative(b.cwd),
+      cwd: b.host ? `${b.host}:${b.cwd ? posixPathOf(b.cwd) : "?"}` : source.homeRelative(b.cwd),
     })),
     recentCommands: commands,
     beforeBlock: block ? true : undefined,
@@ -171,16 +181,24 @@ export async function contextFor(paneId: string, options: { block?: Block } = {}
   if (!session) return null;
   const { block } = options;
   const snapshot = session.blocks.snapshot();
-  const remote = block ? block.nested : snapshot.nested;
+  const untrackedRemote = block
+    ? (block.nested || Boolean(block.host)) && !block.remoteId
+    : session.isUntrackedNested;
   const cwd = block ? block.cwd : session.cwd;
   // For the prompt, looked up now (the last block's branch is from when it
   // started, before a `git switch`); for a block, the one it ran on.
-  const branch = remote ? null : block ? (block.branch ?? null) : cwd ? await branchOf(cwd).catch(() => null) : null;
-  const foreground = session.foregroundProgram;
+  const branch = untrackedRemote
+    ? null
+    : block
+      ? (block.branch ?? null)
+      : cwd
+        ? await branchOf(cwd).catch(() => null)
+        : null;
+  const foreground = session.effectiveForeground;
   const input = contextInputOf(
     {
       snapshot,
-      cwd: session.cwd,
+      cwd: session.cwd ? posixPathOf(session.cwd) : undefined,
       scope: session.blocks.scope,
       commandsFor: (scope) => session.blocks.commandsFor(scope),
       shell: foreground?.isShell ? foreground.name : undefined,

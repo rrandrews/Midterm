@@ -1,6 +1,5 @@
 import { type KeyboardEvent, type RefObject, useEffect, useRef, useState } from "react";
 import { parseSlash, slashCompletesPath, slashCompletion } from "../../ai/slash";
-import { homeDirectory } from "../../ipc/system";
 import {
   applyCandidate,
   applyPrefix,
@@ -97,7 +96,12 @@ export function useCompletion({
     const context = completionContext(line, caret);
     if (!context) return false;
     const id = ++lookup.current;
-    void findCandidates(context, { cwd: session.cwd, home: homeDirectory(), path: session.shellPath }).then(
+    void findCandidates(context, {
+      cwd: session.cwd,
+      home: session.shellHome,
+      path: session.shellPath,
+      remoteId: session.remoteId,
+    }).then(
       ({ matches, ignoreCase }) => {
         const input = inputRef.current;
         // Typed or moved meanwhile: the result is for another word.

@@ -61,7 +61,7 @@ export function TerminalPane({ paneId, blocks }: { paneId: string; blocks: boole
   const { fullPanePrograms } = useBlockTerminalSettings();
   const foregroundName = useSyncExternalStore(
     session?.subscribeForeground ?? noSubscribe,
-    session ? () => session.foregroundProgram?.name : noForeground,
+    session ? () => session.effectiveForeground?.name : noForeground,
   );
   const running = snapshot.phase === "running" ? snapshot.blocks[snapshot.blocks.length - 1] : undefined;
   const fullPane =
@@ -209,7 +209,7 @@ function PathTip({ paneId, session }: { paneId: string; session: TerminalSession
   const dir = tip.target.kind === "dir";
   // Only what a click will do now: a program reading the mouse (classic view) gets plain clicks.
   const plain = !(session?.wantsMouse && tip.view === "terminal");
-  const click = !plain ? null : dir ? (canChangeDirectory(paneId) ? "Click to cd here" : null) : "Click to open";
+  const click = !plain ? null : dir ? (canChangeDirectory(paneId, tip.target.path) ? "Click to cd here" : null) : "Click to open";
   const hint = [click, dir ? "⌘-click: new explorer pane" : "⌘-click: new pane"].filter(Boolean).join(" · ");
   return (
     <AnchoredTip

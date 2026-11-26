@@ -1,3 +1,4 @@
+import { formatRemoteLocation, parseLocation } from "../files/location";
 import { normalizePath } from "../viewer/links";
 
 /*
@@ -103,10 +104,30 @@ function looksLikeName(path: string): boolean {
   return /[\p{L}\p{N}]/u.test(name);
 }
 
-/** An absolute path for a reference in output, resolved against the terminal's directory. */
-export function resolveLinkPath(path: string, cwd: string | undefined, home: string | undefined): string | null {
-  if (path.startsWith("/")) return normalizePath(path);
-  if (path === "~" || path.startsWith("~/")) return home ? normalizePath(home + path.slice(1)) : null;
+/** An absolute location for a reference in output, resolved against the terminal's directory (preserving any SSH host). */
+export function resolveLinkPath(
+  path: string,
+  cwd: string | undefined,
+  home: string | undefined,
+  remoteIdHint?: string | null,
+): string | null {
+  const cwdParsed = cwd ? parseLocation(cwd) : null;
+  const remoteId = cwdParsed?.kind === "remote" ? cwdParsed.remoteId : (remoteIdHint ?? null);
+  if (path.startsWith("/")) {
+    const norm = normalizePath(path);
+    return remoteId ? formatRemoteLocation(remoteId, norm) : norm;
+  }
+  if (path === "~" || path.startsWith("~/")) {
+    if (!home) return null;
+    const homeParsed = parseLocation(home);
+    if (!homeParsed) return null;
+    if (remoteId && (homeParsed.kind !== "remote" || homeParsed.remoteId !== remoteId)) return null;
+    const norm = normalizePath(homeParsed.path + path.slice(1));
+    return homeParsed.kind === "remote" ? formatRemoteLocation(homeParsed.remoteId, norm) : norm;
+  }
   if (path.startsWith("~")) return null; // ~user
-  return cwd ? normalizePath(`${cwd}/${path}`) : null;
+  if (!cwdParsed) return null;
+  if (remoteId && (cwdParsed.kind !== "remote" || cwdParsed.remoteId !== remoteId)) return null;
+  const norm = normalizePath(`${cwdParsed.path}/${path}`);
+  return cwdParsed.kind === "remote" ? formatRemoteLocation(cwdParsed.remoteId, norm) : norm;
 }

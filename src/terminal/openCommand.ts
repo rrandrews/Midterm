@@ -1,5 +1,4 @@
 import { registerSlashHandler } from "../ai/slash";
-import { homeDirectory } from "../ipc/system";
 import { resolveLinkPath } from "./fileLinks";
 import { type PathTarget, openPathTarget, pathKind } from "./pathTargets";
 import { peekSession } from "./sessions";
@@ -55,14 +54,14 @@ export function shellWord(text: string): string {
 async function resolveOpen(paneId: string, args: string): Promise<PathTarget | string> {
   const session = peekSession(paneId);
   if (!session) return "This terminal is not available.";
-  if (session.blocks.snapshot().nested) return "/open opens files on this machine; this shell is on another one.";
+  if (session.isUntrackedNested) return "/open is unavailable inside an untracked nested shell.";
   const parsed = parseOpenArgument(args);
   if (!parsed) return "Name a file or folder to open: /open <file or folder>";
-  const home = homeDirectory();
+  const home = session.shellHome;
   const candidates: OpenArgument[] = [{ name: parsed.whole }];
   if (parsed.positioned) candidates.push(parsed.positioned);
   for (const candidate of candidates) {
-    const path = resolveLinkPath(candidate.name, session.cwd, home);
+    const path = resolveLinkPath(candidate.name, session.cwd, home, session.remoteId);
     const kind = path ? await pathKind(path, { fresh: true }) : null;
     if (!path || !kind) continue;
     const target: PathTarget = { path, kind };

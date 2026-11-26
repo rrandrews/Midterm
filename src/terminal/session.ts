@@ -4,18 +4,31 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type IDisposable, type ITerminalOptions, type ITheme, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import {
+  fallbackHostLabel,
+  formatRemoteLocation,
+  parseLocation,
+} from "../files/location";
+import {
+  getConnection,
+  hostLabelForLocation,
+  markTerminalEnded,
+  registerConnection,
+  updateConnectionMeta,
+} from "../ssh/connections";
 import { effectiveSolid, oscColor } from "./solidBackground";
 import { type Pty, type PtyExit, type PtyForeground, spawnPty } from "../ipc/pty";
 import { type TerminalEnvironment, terminalEnvironmentForPane } from "../workspaces/settings";
 import { copyText } from "../ipc/clipboard";
 import { openExternal } from "../ipc/shell";
-import { localHostname } from "../ipc/system";
-import { type Block, BlockTracker, outputRows } from "./blocks";
+import { homeDirectory, localHostname } from "../ipc/system";
+import { type Block, type BlockLocation, BlockTracker, type PromptMark, outputRows } from "./blocks";
+import { commandPrograms } from "./fullPane";
 import { blockDirectories } from "./pathTargets";
 import { branchOf } from "./gitBranch";
 import { registerFileLinks } from "./fileLinkProvider";
 import { fitTerminal } from "./fit";
-import { OSC_PATH, parseOsc7, parsePathReport } from "./osc";
+import { OSC_PATH, OSC_SSH, parseOsc7, parsePathReport, parseSshOsc } from "./osc";
 import { isAppShortcut } from "../shortcuts";
 import { type TerminalConfig, terminalConfig, terminalSettings } from "./settings";
 import { TERMINAL_OPTIONS, terminalOptions } from "./theme";
@@ -73,6 +86,41 @@ type Phase = "idle" | "starting" | "running" | "ended";
 
 type Input = { binary: boolean; data: string };
 
+/** State of an active first-hop SSH session inside this terminal. */
+type ActiveRemote = {
+  readonly id: string;
+  label: string;
+  /** True when the PTY itself was spawned directly as `ssh -t ...` (no local wrapper shell). */
+  readonly direct: boolean;
+  /**
+   * Registration lifecycle with the Rust SSH manager:
+   * - `pending`: `ssh_register_connection` IPC is in flight (fail-closed until resolved)
+   * - `registered`: backend accepted registration (must call `markTerminalEnded` on exit)
+   * - `direct`: spawned directly onto an already-registered connection (do not decrement refcount)
+   */
+  registration: "pending" | "registered" | "direct";
+  /** First remote shell `aid=` observed for this first-hop connection. */
+  aid: string | undefined;
+  /** First OSC 7 hostname reported by this first-hop remote shell. */
+  oscHost: string | undefined;
+  /** True while a deeper (2nd-hop) nested shell is running inside this remote. */
+  subNested: boolean;
+  cwd: string | undefined;
+  home: string | undefined;
+  shell: string | undefined;
+  path: string | undefined;
+};
+
+function generateSshToken(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * One terminal: an xterm.js instance bound to a PTY.
  *
@@ -114,11 +162,17 @@ export class TerminalSession {
   /** Bytes settled before the PTY handle was known. */
   private pendingAck = 0;
 
-  /** Last directory the shell reported; until then, where it was started. */
-  private currentCwd: string | undefined;
+  /** Last local directory the shell reported; until then, where it was started (if local). */
+  private localCwd: string | undefined;
+  /** Initial `ssh://` location when this terminal was spawned directly onto a remote host. */
+  private readonly directRemoteInitial: string | undefined;
+  /** Per-PTY secret token authenticating local `OSC 6974;ssh=start/end` control messages. */
+  private readonly sshToken = generateSshToken();
+  /** Active managed SSH session (nested via `ssh <host>` or direct-SSH pane). */
+  private activeRemote: ActiveRemote | null = null;
   /** The file and folder links in output (their provider and listeners). */
   private readonly fileLinks: IDisposable;
-  /** The root shell's `PATH`, from OSC 6973; unset until the first report. */
+  /** The root local shell's `PATH`, from OSC 6973; unset until the first report. */
   private reportedPath: string | undefined;
   /**
    * Fallback when this machine's host name is unknown: the host named in
@@ -137,10 +191,30 @@ export class TerminalSession {
   constructor(
     readonly paneId: string,
     private readonly events: SessionEvents,
-    /** Directory to start the shell in; the home directory if unset or missing. */
+    /** Directory to start the shell in (local path or `ssh://<id>/<path>`); home if unset or missing. */
     initialCwd?: string,
   ) {
-    this.currentCwd = initialCwd;
+    const parsedInitial = initialCwd ? parseLocation(initialCwd) : null;
+    if (parsedInitial?.kind === "remote") {
+      const normalized = formatRemoteLocation(parsedInitial.remoteId, parsedInitial.path);
+      this.directRemoteInitial = normalized;
+      const existing = getConnection(parsedInitial.remoteId);
+      this.activeRemote = {
+        id: parsedInitial.remoteId,
+        label: hostLabelForLocation(normalized) ?? fallbackHostLabel(parsedInitial.remoteId),
+        direct: true,
+        registration: "direct",
+        aid: undefined,
+        oscHost: undefined,
+        subNested: false,
+        cwd: parsedInitial.path,
+        home: existing?.remoteHome ?? undefined,
+        shell: existing?.remoteShell ?? undefined,
+        path: undefined,
+      };
+    } else {
+      this.localCwd = initialCwd;
+    }
     this.host.className = "terminal-host";
 
     this.term.loadAddon(this.search);
@@ -157,7 +231,7 @@ export class TerminalSession {
       }),
     );
 
-    // Paths a shell over ssh prints are not files here.
+    // Clickable files and folders in output (local and tracked SSH remotes).
     this.fileLinks = registerFileLinks(
       this.term,
       paneId,
@@ -179,30 +253,46 @@ export class TerminalSession {
       this.handleCwdReport(data);
       return true;
     });
-    // Apps (codex) ask for the default background to blend against; a
-    // transparent theme would answer black, so answer with the solid color.
-    this.term.parser.registerOscHandler(OSC_PATH, (data) => {
-      const report = parsePathReport(data);
-      // A nested shell (ssh) reports its own, which is no use here.
-      if (report && this.blocks.isRootReport(report.aid)) this.reportedPath = report.path;
+    this.term.parser.registerOscHandler(OSC_SSH, (data) => {
+      this.handleSshOsc(data);
       return true;
     });
+    // Track `PATH` for both the local root shell and a tracked first-hop SSH shell.
+    this.term.parser.registerOscHandler(OSC_PATH, (data) => {
+      const report = parsePathReport(data);
+      if (report) this.handlePathReport(report.path, report.aid);
+      return true;
+    });
+    // Apps (codex) ask for the default background to blend against; a
+    // transparent theme would answer black, so answer with the solid color.
     this.term.parser.registerOscHandler(11, (data) => this.answerBackgroundQuery(data));
     this.term.parser.registerOscHandler(111, () => {
       this.backgroundSet = false;
       return false;
     });
     this.term.buffer.onBufferChange(() => this.refreshSolid());
-    this.blocks = new BlockTracker(this.term, { cwd: () => this.currentCwd, branch: branchOf });
+    this.blocks = new BlockTracker(this.term, {
+      cwd: () => this.localCwd,
+      rootLocation: this.activeRemote?.direct ? () => this.directRootLocation() : undefined,
+      onMark: (mark, nested) => this.handleBlockMark(mark, nested),
+      branch: branchOf,
+    });
     // Back at a prompt, the shell has the terminal again: look the foreground
     // up now rather than at the next poll, so the next command is not taken
     // for the program that just exited (full-pane programs, tab titles).
     let lastPhase = this.blocks.snapshot().phase;
+    let lastRunningCmd = this.blocks.runningCommand();
     this.blocks.subscribe(() => {
       const { phase } = this.blocks.snapshot();
-      if (phase === lastPhase) return;
+      const runningCmd = this.blocks.runningCommand();
+      const phaseChanged = phase !== lastPhase;
+      const cmdChanged = runningCmd !== lastRunningCmd;
       lastPhase = phase;
-      if (phase !== "prompt" || this.disposed) return;
+      lastRunningCmd = runningCmd;
+      if (this.activeRemote && (phaseChanged || cmdChanged) && !this.disposed) {
+        this.notifyEffectiveForeground();
+      }
+      if (!phaseChanged || phase !== "prompt" || this.disposed) return;
       clearTimeout(this.foregroundTimer);
       this.foregroundTimer = undefined;
       void this.foreground().catch(() => {});
@@ -253,7 +343,7 @@ export class TerminalSession {
       solidForFullscreen: settings.solidForFullscreen,
       solidBackgroundCommands: settings.solidBackgroundCommands,
       alternateScreen: this.term.buffer.active.type === "alternate",
-      foregroundName: this.lastForeground?.name,
+      foregroundName: this.effectiveForeground?.name,
     });
   }
 
@@ -341,12 +431,43 @@ export class TerminalSession {
     return this.attached;
   }
 
-  /** The terminal's foreground program as last looked up; `null` before the shell runs. */
+  /** The terminal's raw OS foreground program as last looked up; `null` before the shell runs. */
   get foregroundProgram(): PtyForeground | null {
     return this.lastForeground;
   }
 
-  /** Calls `listener` when `foregroundProgram` changes; returns the unsubscribe. For `useSyncExternalStore`. */
+  /**
+   * Effective foreground program: on a tracked SSH connection, derives the
+   * remote shell/program from OSC 133 marks so tab titles, solid background,
+   * and full-pane mode reflect what runs on the remote instead of always `"ssh"`.
+   */
+  get effectiveForeground(): PtyForeground | null {
+    const remote = this.trackedRemote();
+    if (remote && this.blocks) {
+      const snap = this.blocks.snapshot();
+      if (snap.integration === "present") {
+        if (snap.phase === "prompt") {
+          return {
+            pid: this.lastForeground?.pid ?? 0,
+            name: remote.shell || "ssh",
+            isShell: true,
+          };
+        }
+        const cmd = this.blocks.runningCommand();
+        const prog = cmd ? commandPrograms(cmd)[0] : undefined;
+        if (prog) {
+          return {
+            pid: this.lastForeground?.pid ?? 0,
+            name: prog,
+            isShell: false,
+          };
+        }
+      }
+    }
+    return this.lastForeground;
+  }
+
+  /** Calls `listener` when `foregroundProgram` or remote command state changes; returns the unsubscribe. */
   readonly subscribeForeground = (listener: () => void): (() => void) => {
     this.foregroundListeners.add(listener);
     return () => this.foregroundListeners.delete(listener);
@@ -360,14 +481,61 @@ export class TerminalSession {
     return current;
   }
 
-  /** The shell's `PATH` as it last reported it (OSC 6973); `undefined` before the first report. */
+  /** The active shell's `PATH` as last reported (OSC 6973); `undefined` if unknown or in an untracked nested shell. */
   get shellPath(): string | undefined {
-    return this.reportedPath;
+    if (this.activeRemote) {
+      const tracked = this.trackedRemote();
+      return tracked ? tracked.path : undefined;
+    }
+    return this.blocks.snapshot().nested ? undefined : this.reportedPath;
   }
 
-  /** The shell's working directory, as far as we know. */
+  /** Managed SSH remote id currently active in this terminal (`null` when local, pending registration, or in a 2nd-hop shell). */
+  get remoteId(): string | null {
+    return this.trackedRemote()?.id ?? null;
+  }
+
+  /** Friendly host label for the active managed SSH connection, or `null` when local/untracked. */
+  get remoteLabel(): string | null {
+    return this.trackedRemote()?.label ?? null;
+  }
+
+  /** Whether the terminal is inside an untracked nested shell (2nd-hop SSH, pending registration, `docker exec`, or unwrapped `ssh`). */
+  get isUntrackedNested(): boolean {
+    if (this.activeRemote) return this.activeRemote.subNested || this.activeRemote.registration === "pending";
+    return this.blocks.snapshot().nested;
+  }
+
+  /** Home directory matching the active shell's host (`ssh://<id><remoteHome>` when remote, else local home). */
+  get shellHome(): string | undefined {
+    if (this.activeRemote) {
+      const remote = this.trackedRemote();
+      if (!remote) return undefined;
+      const h = remote.home ?? getConnection(remote.id)?.remoteHome ?? undefined;
+      return h ? formatRemoteLocation(remote.id, h) : undefined;
+    }
+    return homeDirectory();
+  }
+
+  /**
+   * The shell's working directory (`ssh://<id>/<path>` on a tracked SSH remote,
+   * or local POSIX path). Never falls back to `localCwd` while on a remote host.
+   */
   get cwd(): string | undefined {
-    return this.currentCwd;
+    if (this.activeRemote) {
+      const remote = this.trackedRemote();
+      if (!remote) return undefined;
+      if (remote.cwd) return formatRemoteLocation(remote.id, remote.cwd);
+      if (remote.direct) return this.directRemoteInitial;
+      return undefined;
+    }
+    return this.localCwd;
+  }
+
+  private trackedRemote(): ActiveRemote | null {
+    const remote = this.activeRemote;
+    if (!remote || remote.subNested || remote.registration === "pending") return null;
+    return remote;
   }
 
   /** Shows the terminal inside `container`, starting the shell on first use. */
@@ -497,6 +665,8 @@ export class TerminalSession {
     if (this.disposed) return;
     this.disposed = true;
     this.phase = "ended";
+    if (this.activeRemote?.registration === "registered") markTerminalEnded(this.activeRemote.id);
+    this.activeRemote = null;
     clearTimeout(this.foregroundTimer);
     clearTimeout(this.copyTimer);
     clearTimeout(this.bellTimer);
@@ -526,10 +696,11 @@ export class TerminalSession {
         // Closed while the environment was looked up: start nothing.
         if (this.disposed) return null;
         return spawnPty({
-          cwd: this.currentCwd,
+          cwd: this.directRemoteInitial ?? this.localCwd,
           shell: shell || undefined,
           shellArgs,
           sshIntegration,
+          sshToken: this.sshToken,
           env,
           secrets,
           python,
@@ -631,16 +802,193 @@ export class TerminalSession {
 
   private noteForeground(current: PtyForeground | null): void {
     if (this.disposed) return;
-    // The root shell has the terminal again, so no nested shell (ssh) is
-    // running, whatever marks were missed.
-    if (current?.isShell) this.blocks.resetScope();
+    // The local root shell has the terminal again, so no nested shell (ssh) is
+    // running, whatever marks were missed (never applies to direct-SSH panes).
+    if (current?.isShell && !this.activeRemote?.direct) {
+      this.blocks.resetScope();
+      if (this.activeRemote) this.endActiveRemote();
+    }
     const last = this.lastForeground;
     this.lastForeground = current;
     if (last?.pid !== current?.pid || last?.name !== current?.name) {
-      this.refreshSolid();
-      this.events.onForegroundChange(this);
-      for (const listener of this.foregroundListeners) listener();
+      this.notifyEffectiveForeground();
     }
+  }
+
+  private notifyEffectiveForeground(): void {
+    this.refreshSolid();
+    this.events.onForegroundChange(this);
+    for (const listener of this.foregroundListeners) listener();
+  }
+
+  private directRootLocation(): BlockLocation | undefined {
+    const remote = this.activeRemote;
+    if (!remote?.direct) return undefined;
+    return {
+      cwd: remote.cwd,
+      host: remote.label,
+      remoteId: remote.id,
+    };
+  }
+
+  private endActiveRemote(): void {
+    const ended = this.activeRemote;
+    if (!ended || ended.direct) return;
+    this.activeRemote = null;
+    if (ended.registration === "registered") markTerminalEnded(ended.id);
+    this.notifyEffectiveForeground();
+    if (this.localCwd) this.events.onCwdChange(this, this.localCwd);
+  }
+
+  private handleBlockMark(mark: PromptMark, nested: boolean): void {
+    const remote = this.activeRemote;
+    if (!remote) return;
+    const prevSub = remote.subNested;
+    if (remote.direct) {
+      if (!nested) {
+        if (mark.aid && !remote.aid) remote.aid = mark.aid;
+        remote.subNested = false;
+      } else {
+        remote.subNested = true;
+      }
+      if (remote.subNested !== prevSub) {
+        if (remote.subNested && this.blocks.snapshot().location.remoteId) {
+          this.blocks.noteCwd({});
+        }
+        this.notifyEffectiveForeground();
+      }
+      return;
+    }
+    // Nested SSH inside a local root shell.
+    if (!nested && mark.aid !== undefined && mark.aid === this.blocks.rootShellAid) {
+      // Local root shell printed a mark even if OSC 6974;ssh=end was missed.
+      this.endActiveRemote();
+      return;
+    }
+    if (nested) {
+      if (remote.aid === undefined && mark.aid) {
+        remote.aid = mark.aid;
+        remote.subNested = false;
+      } else if (remote.aid !== undefined) {
+        if (mark.aid !== undefined) {
+          remote.subNested = mark.aid !== remote.aid;
+        } else if (!remote.subNested && mark.kind === "A" && this.blocks.runningCommand() !== undefined) {
+          // A 2nd-hop nested shell without `aid=` printed a prompt while a 1st-hop command ran.
+          remote.subNested = true;
+        }
+      }
+      if (remote.subNested !== prevSub) {
+        if (remote.subNested) {
+          // Clear hop1's remoteId/cwd if hop2 didn't already replace it with its own OSC 7.
+          if (this.blocks.snapshot().location.remoteId) this.blocks.noteCwd({});
+        } else if (remote.registration === "registered") {
+          this.blocks.noteCwd({ cwd: remote.cwd, host: remote.label, remoteId: remote.id });
+        } else {
+          this.blocks.noteCwd({ cwd: remote.cwd, host: remote.label });
+        }
+        this.notifyEffectiveForeground();
+      }
+    }
+  }
+
+  private handleSshOsc(data: string): void {
+    const event = parseSshOsc(data);
+    if (!event) return;
+    if (event.kind === "start") {
+      if (event.token !== this.sshToken || this.activeRemote?.direct) return;
+      if (this.activeRemote?.registration === "registered") markTerminalEnded(this.activeRemote.id);
+      const existing = getConnection(event.id);
+      const remoteObj: ActiveRemote = {
+        id: event.id,
+        label: event.label,
+        direct: false,
+        registration: "pending",
+        aid: undefined,
+        oscHost: undefined,
+        subNested: false,
+        cwd: undefined,
+        home: existing?.remoteHome ?? undefined,
+        shell: existing?.remoteShell ?? undefined,
+        path: undefined,
+      };
+      this.activeRemote = remoteObj;
+      void registerConnection({
+        id: event.id,
+        label: event.label,
+        host: event.host,
+        user: event.user,
+        port: event.port,
+        controlPath: event.controlPath,
+        ownedSocket: event.ownedSocket,
+        sshArgs: event.sshArgs,
+      }).then(
+        (info) => {
+          if (this.disposed || this.activeRemote !== remoteObj) {
+            // Session ended or moved on before registration resolved: release the backend refcount.
+            markTerminalEnded(info.id);
+            return;
+          }
+          remoteObj.registration = "registered";
+          // Replay any `meta=1` observed while registration was pending, and pull server-discovered metadata.
+          if (remoteObj.home || remoteObj.shell) {
+            updateConnectionMeta(info.id, { remoteHome: remoteObj.home, remoteShell: remoteObj.shell });
+          }
+          if (info.remoteHome && !remoteObj.home) remoteObj.home = info.remoteHome;
+          if (info.remoteShell && !remoteObj.shell) remoteObj.shell = info.remoteShell;
+          if (remoteObj.cwd && !remoteObj.subNested) {
+            this.blocks.noteCwd({ cwd: remoteObj.cwd, host: remoteObj.label, remoteId: remoteObj.id });
+            this.events.onCwdChange(this, formatRemoteLocation(remoteObj.id, remoteObj.cwd));
+          }
+          this.notifyEffectiveForeground();
+        },
+        (error) => {
+          console.warn("Could not register SSH connection:", error);
+          if (this.disposed || this.activeRemote !== remoteObj) return;
+          // Fail closed: downgrade to an untracked nested session without affecting other panes.
+          this.activeRemote = null;
+          if (this.blocks.snapshot().nested) {
+            this.blocks.noteCwd({ cwd: remoteObj.cwd, host: remoteObj.label });
+          }
+          this.notifyEffectiveForeground();
+        },
+      );
+      this.notifyEffectiveForeground();
+      return;
+    }
+    if (event.kind === "end") {
+      if (event.token !== this.sshToken) return;
+      if (this.activeRemote && !this.activeRemote.direct && this.activeRemote.id === event.id) {
+        this.endActiveRemote();
+      }
+      return;
+    }
+    // `meta=1` (home & shell): applies to an active first-hop remote shell (buffered if registration is pending).
+    const remote = this.activeRemote;
+    if (!remote || remote.subNested) return;
+    if (!remote.direct && event.aid !== undefined && event.aid === this.blocks.rootShellAid) return;
+    if (remote.aid !== undefined && event.aid !== undefined && event.aid !== remote.aid) return;
+    if (event.aid && remote.aid === undefined) remote.aid = event.aid;
+    if (event.home) remote.home = event.home;
+    if (event.shell) remote.shell = event.shell;
+    if (remote.registration !== "pending") {
+      updateConnectionMeta(remote.id, { remoteHome: event.home, remoteShell: event.shell });
+    }
+    this.notifyEffectiveForeground();
+  }
+
+  private handlePathReport(path: string, aid: string | undefined): void {
+    const remote = this.activeRemote;
+    if (remote) {
+      if (remote.subNested) return;
+      if (remote.direct) {
+        if (this.blocks.isRootReport(aid)) remote.path = path;
+      } else if (aid !== this.blocks.rootShellAid && (remote.aid === undefined || aid === remote.aid)) {
+        if (aid && remote.aid === undefined) remote.aid = aid;
+        remote.path = path;
+      }
+      return;
+    }
+    if (this.blocks.isRootReport(aid)) this.reportedPath = path;
   }
 
   /**
@@ -648,8 +996,8 @@ export class TerminalSession {
    * where its command ran (see `blockDirectories`); other rows (prompts,
    * output from before the blocks known, e.g. cleared) where the next
    * command started, which is where the shell was when they were printed;
-   * rows after the last block in the current directory. Null for a nested
-   * shell's (ssh) output.
+   * rows after the last block in the current directory. Null for an
+   * untracked nested shell's output or before a remote cwd is known.
    */
   private linkDirectories(row: number): readonly (string | undefined)[] | null {
     const snapshot = this.blocks.snapshot();
@@ -660,29 +1008,59 @@ export class TerminalSession {
       for (let i = blocks.length - 1; i >= 0; i--) {
         const rows = outputRows(blocks[i], buffer);
         if (!rows || rows.to <= row) break;
-        if (row >= rows.from) return blockDirectories(blocks, i, this.currentCwd, snapshot.nested);
+        if (row >= rows.from) return blockDirectories(blocks, i, this.cwd, this.isUntrackedNested);
         following = blocks[i];
       }
     }
-    if (following) return following.host || following.nested ? null : [following.cwd ?? this.currentCwd];
-    return snapshot.nested ? null : [this.currentCwd];
+    if (following) {
+      if (following.remoteId) return following.cwd ? [formatRemoteLocation(following.remoteId, following.cwd)] : null;
+      return following.host || following.nested ? null : [following.cwd ?? this.localCwd];
+    }
+    if (this.isUntrackedNested) return null;
+    if (this.activeRemote && !this.cwd) return null;
+    return [this.cwd];
   }
 
   private handleCwdReport(data: string): void {
     const reported = parseOsc7(data);
     if (!reported) return;
+    const remote = this.activeRemote;
+    if (remote) {
+      const snap = this.blocks.snapshot();
+      const foreignRunningHost =
+        remote.aid !== undefined &&
+        snap.phase === "running" &&
+        remote.oscHost !== undefined &&
+        reported.host !== remote.oscHost;
+      if (remote.subNested || foreignRunningHost) {
+        this.blocks.noteCwd({ cwd: reported.path, host: reported.host || undefined });
+        return;
+      }
+      remote.oscHost ??= reported.host;
+      const changed = remote.cwd !== reported.path;
+      remote.cwd = reported.path;
+      if (remote.registration === "pending") {
+        this.blocks.noteCwd({ cwd: reported.path, host: remote.label });
+        return;
+      }
+      this.blocks.noteCwd({ cwd: reported.path, host: remote.label, remoteId: remote.id });
+      if (changed) this.events.onCwdChange(this, formatRemoteLocation(remote.id, reported.path));
+      return;
+    }
     const local = this.isLocal(reported.host);
     // Every report, remote ones too, places a nested shell's blocks.
     this.blocks.noteCwd({ cwd: reported.path, host: local ? undefined : reported.host });
     // Only this machine's directories become the pane's (splits open there).
-    if (!local || reported.path === this.currentCwd) return;
-    this.currentCwd = reported.path;
+    if (!local || reported.path === this.localCwd) return;
+    this.localCwd = reported.path;
     this.events.onCwdChange(this, reported.path);
   }
 
   private handleExit({ code, runtimeMs }: PtyExit): void {
     if (this.disposed) return;
     this.phase = "ended";
+    if (this.activeRemote?.registration === "registered") markTerminalEnded(this.activeRemote.id);
+    this.activeRemote = null;
     clearTimeout(this.foregroundTimer);
     this.noteForeground(null);
     this.queuedInput = [];

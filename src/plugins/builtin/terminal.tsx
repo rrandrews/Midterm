@@ -37,8 +37,23 @@ const terminalPaneSpec: Omit<PaneSpec, "component"> = {
   convertData: (previous) => (isSessionKind(previous.kind) ? validateTerminalData(previous) : undefined),
   keepsStateOnChangeTo: isSessionKind,
   closeBlockers: async (paneId) => {
-    const foreground = await peekSession(paneId)?.foreground().catch(() => null);
-    return foreground && !foreground.isShell ? [{ type: "running", name: foreground.name || "a program" }] : [];
+    const session = peekSession(paneId);
+    if (!session) return [];
+    // Always rely on the real OS foreground check for close safety: on a remote
+    // SSH shell, OSC 133 marks cannot observe unmarked foreground processes (like
+    // bash `(cat)`), so an active `ssh` process must still warn before closing.
+    const raw = await session.foreground().catch(() => null);
+    if (!raw || raw.isShell) return [];
+    const remoteLabel = session.remoteLabel;
+    if (remoteLabel) {
+      const eff = session.effectiveForeground;
+      const name =
+        eff && !eff.isShell && eff.name && eff.name !== "ssh"
+          ? `${eff.name} on ${remoteLabel}`
+          : `ssh (${remoteLabel})`;
+      return [{ type: "running", name }];
+    }
+    return [{ type: "running", name: raw.name || "a program" }];
   },
   directory: (pane) => peekSession(pane.id)?.cwd ?? (pane.data as TerminalData).cwd,
   explorerFollows: true,

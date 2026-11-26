@@ -377,6 +377,25 @@ describe("BlockTracker: nested shells (ssh)", () => {
     expect(t.branch).not.toHaveBeenCalled();
   });
 
+  it("looks up remote git branch and uses ssh:<id> scope for tracked remote blocks", async () => {
+    const t = await sshSession();
+    t.branch.mockClear();
+    t.tracker.noteCwd({ cwd: "/srv/app", host: "prod", remoteId: "prod-0123456789ab" });
+    t.tracker.submit("git status");
+    await t.write(`git status\r\n${remote.C}clean\r\n${remote.D(0)}${remote.prompt()}`);
+    await Promise.resolve();
+    expect(t.branch).toHaveBeenCalledWith("ssh://prod-0123456789ab/srv/app");
+    expect(t.tracker.snapshot().blocks[1]).toMatchObject({
+      nested: true,
+      cwd: "/srv/app",
+      host: "prod",
+      remoteId: "prod-0123456789ab",
+      branch: "main",
+    });
+    expect(t.tracker.scope).toBe("ssh:prod-0123456789ab");
+    expect(t.tracker.commandsFor("ssh:prod-0123456789ab")).toEqual(["git status"]);
+  });
+
   it("takes reports (PATH) from the root shell only", async () => {
     const fresh = setup();
     // Before any mark the first shell is the root.

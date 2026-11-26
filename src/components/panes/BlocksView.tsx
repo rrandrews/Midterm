@@ -6,7 +6,10 @@ import { useSettings } from "../../settings/settings";
 import { useThemeRevision } from "../../theme/state";
 import { type CSSProperties, type RefObject, memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import type { ITheme } from "@xterm/xterm";
+import { displayPath } from "../../explorer/tree";
+import { formatRemoteLocation, posixPathOf } from "../../files/location";
 import { homeDirectory } from "../../ipc/system";
+import { useSshConnection } from "../../ssh/connections";
 import { type Line, type Run, formatDuration, logicalLines, renderRows, splitAtLinks } from "../../terminal/blockRender";
 import {
   canReplay,
@@ -15,7 +18,7 @@ import {
   replayBlock,
   setContextBlock,
 } from "../../terminal/blockMode";
-import { type Block, type BlocksSnapshot, outputRows, scopeOf } from "../../terminal/blocks";
+import { type Block, type BlockLocation, type BlocksSnapshot, outputRows } from "../../terminal/blocks";
 import { branchOf } from "../../terminal/gitBranch";
 import {
   type PathLink,
@@ -88,11 +91,25 @@ export function BlocksView({
     if (scroller && stuck.current) scroller.scrollTop = scroller.scrollHeight;
   }, [snapshot]);
 
-  // A nested shell (over ssh) is somewhere else: its own report, never the pane's cwd.
-  const where = snapshot.nested ? snapshot.location : { cwd: session.cwd };
-  // Never looked up here for a nested shell: even reporting this host, it may be another machine.
-  const branch = useBranch(snapshot.nested ? undefined : where.cwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
-  const promptScope = scopeOf(snapshot.nested, snapshot.location);
+  // Prompt location: nested shell's report, tracked direct-SSH remote, or local cwd.
+  const where: BlockLocation = snapshot.nested
+    ? snapshot.location
+    : session.remoteId
+      ? {
+          cwd: session.cwd ? posixPathOf(session.cwd) : undefined,
+          host: session.remoteLabel ?? undefined,
+          remoteId: session.remoteId,
+        }
+      : { cwd: session.cwd };
+  // Git branch: looked up for local roots and tracked SSH remotes; never for untracked nested shells.
+  const branchCwd =
+    where.remoteId && where.cwd
+      ? formatRemoteLocation(where.remoteId, where.cwd)
+      : !snapshot.nested && !where.host
+        ? where.cwd
+        : undefined;
+  const branch = useBranch(branchCwd, snapshot.blocks.length + (atPrompt ? 1 : 0));
+  const promptScope = session.blocks.scope;
   const aiReady = useSettings((state) => featureReady("explain", state));
 
   return (
@@ -122,7 +139,7 @@ export function BlocksView({
                 session={session}
                 block={block}
                 // Where the command left the shell (`cd x && ls` lists x): the next block's directory.
-                dirs={blockDirectories(snapshot.blocks, index, session.cwd, snapshot.nested)?.join("\n")}
+                dirs={blockDirectories(snapshot.blocks, index, session.cwd, session.isUntrackedNested)?.join("\n")}
                 branch={block.branch}
                 // Only at a prompt of the same shell: "Run again" must not run a remote command here.
                 runnable={atPrompt && canReplay(session, block)}
@@ -133,7 +150,7 @@ export function BlocksView({
                 key={block.id}
                 session={session}
                 block={block}
-                dirs={blockDirectories(snapshot.blocks, index, session.cwd, snapshot.nested)?.join("\n")}
+                dirs={blockDirectories(snapshot.blocks, index, session.cwd, session.isUntrackedNested)?.join("\n")}
                 branch={block.branch}
               />
             ),
@@ -150,7 +167,7 @@ export function BlocksView({
           inputRef={inputRef}
           footer={(status) => (
             <div className="blocks-meta mt-1.5">
-              <Location cwd={where.cwd} host={where.host} />
+              <Location cwd={where.cwd} host={where.host} remoteId={where.remoteId} />
               {branch && <span className="truncate">{branch}</span>}
               <span className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
                 {status}
@@ -312,7 +329,7 @@ function RunningBlock({
 function BlockHeader({ block, branch, children }: { block: Block; branch: string | null | undefined; children: React.ReactNode }) {
   return (
     <div className="blocks-meta block-header">
-      <Location cwd={block.cwd} host={block.host} />
+      <Location cwd={block.cwd} host={block.host} remoteId={block.remoteId} />
       {branch && <span className="truncate">{branch}</span>}
       <span className="ml-auto" />
       {children}
@@ -429,21 +446,30 @@ function RunSpan({ run }: { run: Run }) {
   );
 }
 
-/** A directory, as `host:path` when it is on another machine. */
-function Location({ cwd, host }: { cwd: string | undefined; host: string | undefined }) {
-  if (!host) return cwd ? <span className="truncate">{displayPath(cwd)}</span> : null;
+/** A directory, as `host:path` when it is on another machine, shortening the matching host's home to `~`. */
+function Location({
+  cwd,
+  host,
+  remoteId,
+}: {
+  cwd: string | undefined;
+  host: string | undefined;
+  remoteId?: string;
+}) {
+  const conn = useSshConnection(remoteId ?? null);
+  if (!host) return cwd ? <span className="truncate">{displayPath(cwd, homeDirectory())}</span> : null;
+  const shown =
+    cwd && remoteId
+      ? displayPath(
+          formatRemoteLocation(remoteId, cwd),
+          conn?.remoteHome ? formatRemoteLocation(remoteId, conn.remoteHome) : undefined,
+        )
+      : (cwd ?? "?");
   return (
     <span className="truncate">
-      <span className="block-host">{host}</span>:{cwd ?? "?"}
+      <span className="block-host">{host}</span>:{shown}
     </span>
   );
-}
-
-/** `~`-relative path for display (this machine's only). */
-function displayPath(path: string): string {
-  const home = homeDirectory();
-  if (home && (path === home || path.startsWith(`${home}/`))) return `~${path.slice(home.length)}`;
-  return path;
 }
 
 /** Milliseconds since `start` (a `performance.now()` time), updated every second. */

@@ -20,4 +20,14 @@ describe("terminalTitle", () => {
     expect(terminalTitle(null, undefined, undefined)).toBeUndefined();
     expect(terminalTitle({ ...vim, name: "" }, "/tmp", undefined)).toBe("tmp");
   });
+
+  it("formats remote SSH locations with host label and remote home", () => {
+    const rHome = "ssh://prod-0123456789ab/home/deploy";
+    expect(terminalTitle(shell, "ssh://prod-0123456789ab/home/deploy/api", rHome, "prod")).toBe("prod:api");
+    expect(terminalTitle(shell, "ssh://prod-0123456789ab/home/deploy", rHome, "prod")).toBe("prod:~");
+    expect(terminalTitle(shell, "ssh://prod-0123456789ab/", rHome, "prod")).toBe("prod:/");
+    expect(terminalTitle(vim, "ssh://prod-0123456789ab/home/deploy/api", rHome, "prod")).toBe("prod: vim");
+    // Local home must never shorten a remote location.
+    expect(terminalTitle(shell, "ssh://prod-0123456789ab/Users/me", "/Users/me", "prod")).toBe("prod:me");
+  });
 });

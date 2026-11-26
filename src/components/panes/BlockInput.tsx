@@ -145,8 +145,13 @@ export function BlockInput({
       setCaretAtEnd(caret === next.length);
     });
   };
-  // ⇥ completion; not at a nested shell's prompt, whose files are elsewhere.
-  const completion = useCompletion({ session, inputRef, enabled: scope === "", apply: (edit) => set(edit.value, edit.caret) });
+  // ⇥ completion: works locally and on tracked SSH remotes; disabled in untracked nested shells.
+  const completion = useCompletion({
+    session,
+    inputRef,
+    enabled: !session.isUntrackedNested,
+    apply: (edit) => set(edit.value, edit.caret),
+  });
 
   const accept = () => {
     if (suggested) set(suggested);
