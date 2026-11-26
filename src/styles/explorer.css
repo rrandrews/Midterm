@@ -150,3 +150,23 @@
 .explorer-tree:focus-within .explorer-row.is-cursor:not(.is-selected) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 14%, transparent);
 }
+
+/* File transfer progress tray (src/components/panes/ExplorerTransfers.tsx). */
+.explorer-transfer-indeterminate {
+  animation: explorer-transfer-slide 1.1s ease-in-out infinite;
+}
+@keyframes explorer-transfer-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(270%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .explorer-transfer-indeterminate {
+    animation: none;
+    width: 100%;
+    opacity: 0.45;
+  }
+}

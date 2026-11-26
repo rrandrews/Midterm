@@ -13,8 +13,11 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
+use crate::fs::copy::{CopyError, CopyProgress, PROGRESS_INTERVAL, measure_local_source};
 use crate::fs::ops;
 
 use super::SshManager;
@@ -29,10 +32,78 @@ const MAX_DEPTH: usize = 256;
 static STAGE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 enum NodeKind {
-    File { mode: u32, id: EntryIdentity },
+    File { mode: u32, size: u64, id: EntryIdentity },
     Dir { mode: u32, id: EntryIdentity },
     Symlink { target: String },
     Special,
+}
+
+struct TransferProgress<'a> {
+    bytes_transferred: u64,
+    total_bytes: Option<u64>,
+    files_completed: u64,
+    total_files: Option<u64>,
+    current_file: Option<String>,
+    last_emit: Option<Instant>,
+    emit: &'a mut (dyn FnMut(CopyProgress) + Send),
+}
+
+impl<'a> TransferProgress<'a> {
+    fn new(
+        total_bytes: Option<u64>,
+        total_files: Option<u64>,
+        emit: &'a mut (dyn FnMut(CopyProgress) + Send),
+    ) -> Self {
+        Self {
+            bytes_transferred: 0,
+            total_bytes,
+            files_completed: 0,
+            total_files,
+            current_file: None,
+            last_emit: None,
+            emit,
+        }
+    }
+
+    fn emit_now(&mut self) {
+        self.last_emit = Some(Instant::now());
+        (self.emit)(CopyProgress {
+            bytes_transferred: self.bytes_transferred,
+            total_bytes: self.total_bytes,
+            files_completed: self.files_completed,
+            total_files: self.total_files,
+            current_file: self.current_file.clone(),
+        });
+    }
+
+    fn emit_throttled(&mut self) {
+        if self.last_emit.is_none_or(|t| t.elapsed() >= PROGRESS_INTERVAL) {
+            self.emit_now();
+        }
+    }
+
+    fn start_file(&mut self, name: String) {
+        self.current_file = Some(name);
+        self.emit_throttled();
+    }
+
+    fn add_bytes(&mut self, n: u64) {
+        self.bytes_transferred = self.bytes_transferred.saturating_add(n);
+        self.emit_throttled();
+    }
+
+    fn finish_file(&mut self) {
+        self.files_completed = self.files_completed.saturating_add(1);
+        self.emit_throttled();
+    }
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), CopyError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(CopyError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn candidate_name(name: &str, is_dir: bool, attempt: u32) -> String {
@@ -168,7 +239,11 @@ async fn inspect_source(ssh: &SshManager, loc: &Location) -> Result<NodeKind, St
                     Ok(NodeKind::Dir { mode, id })
                 } else if ft.is_file() {
                     let id = local_identity(&meta).unwrap_or(EntryIdentity { dev: 0, ino: 0 });
-                    Ok(NodeKind::File { mode, id })
+                    Ok(NodeKind::File {
+                        mode,
+                        size: meta.len(),
+                        id,
+                    })
                 } else {
                     Ok(NodeKind::Special)
                 }
@@ -195,6 +270,7 @@ async fn inspect_source(ssh: &SshManager, loc: &Location) -> Result<NodeKind, St
                 }),
                 "file" => Ok(NodeKind::File {
                     mode: meta.mode & 0o777,
+                    size: meta.size,
                     id: EntryIdentity {
                         dev: meta.dev,
                         ino: meta.ino,
@@ -432,6 +508,7 @@ async fn rename_no_replace(
 /// at `dst` in bounded 512 KiB chunks, applying `mode & 0o777` via the open
 /// handle before closing. Records the created file in `created` immediately
 /// upon exclusive creation so failure at any point rolls it back cleanly.
+#[allow(clippy::too_many_arguments)]
 async fn stream_file_to_new(
     ssh: &SshManager,
     src: &Location,
@@ -439,7 +516,10 @@ async fn stream_file_to_new(
     mode: u32,
     expected_src_id: EntryIdentity,
     created: &mut Vec<(Location, bool, Option<EntryIdentity>)>,
-) -> Result<CreateOutcome, String> {
+    cancel: &AtomicBool,
+    progress: &mut TransferProgress<'_>,
+) -> Result<CreateOutcome, CopyError> {
+    check_cancel(cancel)?;
     let masked = mode & 0o777;
     match (src, dst) {
         // Local -> Remote
@@ -477,20 +557,25 @@ async fn stream_file_to_new(
                 Ok::<File, String>(f)
             })
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| CopyError::Failed(e.to_string()))?
+            .map_err(CopyError::Failed)?;
 
-            let client = ssh.client(remote_id).await?;
+            let client = ssh.client(remote_id).await.map_err(CopyError::Failed)?;
             let wh = match client.transfer_open_write(dst_path).await {
                 Ok(w) => w,
                 Err(e) if e == "EEXIST" || e.contains("File exists") => {
                     return Ok(CreateOutcome::Exists);
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(CopyError::Failed(e)),
             };
             let id = EntryIdentity { dev: wh.dev, ino: wh.ino };
             created.push((dst.clone(), false, Some(id)));
 
             loop {
+                if cancel.load(Ordering::Relaxed) {
+                    client.transfer_close(wh.handle).await;
+                    return Err(CopyError::Cancelled);
+                }
                 let read_res = tokio::task::spawn_blocking(move || {
                     let mut buf = vec![0u8; CHUNK_SIZE];
                     match file.read(&mut buf) {
@@ -502,13 +587,13 @@ async fn stream_file_to_new(
                     }
                 })
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| CopyError::Failed(e.to_string()))?;
 
                 let (f_back, chunk) = match read_res {
                     Ok(pair) => pair,
                     Err(e) => {
                         client.transfer_close(wh.handle).await;
-                        return Err(e);
+                        return Err(CopyError::Failed(e));
                     }
                 };
                 file = f_back;
@@ -517,12 +602,13 @@ async fn stream_file_to_new(
                 }
                 if let Err(e) = client.transfer_write(wh.handle, &chunk).await {
                     client.transfer_close(wh.handle).await;
-                    return Err(e);
+                    return Err(CopyError::Failed(e));
                 }
+                progress.add_bytes(chunk.len() as u64);
             }
             if let Err(e) = client.transfer_finish_write(wh.handle, masked).await {
                 client.transfer_close(wh.handle).await;
-                return Err(e);
+                return Err(CopyError::Failed(e));
             }
             Ok(CreateOutcome::Created(Some(id)))
         }
@@ -548,22 +634,28 @@ async fn stream_file_to_new(
                 }
             })
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| CopyError::Failed(e.to_string()))?
+            .map_err(CopyError::Failed)?;
 
             let Some((mut out_file, id)) = local_open else {
                 return Ok(CreateOutcome::Exists);
             };
             created.push((dst.clone(), false, id));
 
-            let client = ssh.client(remote_id).await?;
-            let rhandle = client.transfer_open_read(src_path).await?;
+            let client = ssh.client(remote_id).await.map_err(CopyError::Failed)?;
+            let rhandle = client.transfer_open_read(src_path).await.map_err(CopyError::Failed)?;
 
-            let stream_res: Result<File, String> = async {
+            let stream_res: Result<File, CopyError> = async {
                 loop {
-                    let chunk = client.transfer_read(rhandle, CHUNK_SIZE).await?;
+                    check_cancel(cancel)?;
+                    let chunk = client
+                        .transfer_read(rhandle, CHUNK_SIZE)
+                        .await
+                        .map_err(CopyError::Failed)?;
                     if chunk.is_empty() {
                         break;
                     }
+                    let chunk_len = chunk.len() as u64;
                     out_file = tokio::task::spawn_blocking(move || {
                         out_file
                             .write_all(&chunk)
@@ -571,7 +663,9 @@ async fn stream_file_to_new(
                         Ok::<File, String>(out_file)
                     })
                     .await
-                    .map_err(|e| e.to_string())??;
+                    .map_err(|e| CopyError::Failed(e.to_string()))?
+                    .map_err(CopyError::Failed)?;
+                    progress.add_bytes(chunk_len);
                 }
                 Ok(out_file)
             }
@@ -589,7 +683,8 @@ async fn stream_file_to_new(
                         .map_err(|e| format!("cannot set file permissions: {e}"))
                 })
                 .await
-                .map_err(|e| e.to_string())??;
+                .map_err(|e| CopyError::Failed(e.to_string()))?
+                .map_err(CopyError::Failed)?;
             }
             #[cfg(not(unix))]
             drop(out_file);
@@ -602,14 +697,14 @@ async fn stream_file_to_new(
             Location::Remote { remote_id: src_rid, path: src_path },
             Location::Remote { remote_id: dst_rid, path: dst_path },
         ) => {
-            let src_client = ssh.client(src_rid).await?;
-            let dst_client = ssh.client(dst_rid).await?;
+            let src_client = ssh.client(src_rid).await.map_err(CopyError::Failed)?;
+            let dst_client = ssh.client(dst_rid).await.map_err(CopyError::Failed)?;
             let wh = match dst_client.transfer_open_write(dst_path).await {
                 Ok(w) => w,
                 Err(e) if e == "EEXIST" || e.contains("File exists") => {
                     return Ok(CreateOutcome::Exists);
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(CopyError::Failed(e)),
             };
             let id = EntryIdentity { dev: wh.dev, ino: wh.ino };
             created.push((dst.clone(), false, Some(id)));
@@ -618,17 +713,25 @@ async fn stream_file_to_new(
                 Ok(h) => h,
                 Err(e) => {
                     dst_client.transfer_close(wh.handle).await;
-                    return Err(e);
+                    return Err(CopyError::Failed(e));
                 }
             };
 
-            let stream_res: Result<(), String> = async {
+            let stream_res: Result<(), CopyError> = async {
                 loop {
-                    let chunk = src_client.transfer_read(rhandle, CHUNK_SIZE).await?;
+                    check_cancel(cancel)?;
+                    let chunk = src_client
+                        .transfer_read(rhandle, CHUNK_SIZE)
+                        .await
+                        .map_err(CopyError::Failed)?;
                     if chunk.is_empty() {
                         break;
                     }
-                    dst_client.transfer_write(wh.handle, &chunk).await?;
+                    dst_client
+                        .transfer_write(wh.handle, &chunk)
+                        .await
+                        .map_err(CopyError::Failed)?;
+                    progress.add_bytes(chunk.len() as u64);
                 }
                 Ok(())
             }
@@ -641,14 +744,14 @@ async fn stream_file_to_new(
             }
             if let Err(e) = dst_client.transfer_finish_write(wh.handle, masked).await {
                 dst_client.transfer_close(wh.handle).await;
-                return Err(e);
+                return Err(CopyError::Failed(e));
             }
             Ok(CreateOutcome::Created(Some(id)))
         }
 
-        (Location::Local(_), Location::Local(_)) => {
-            Err("internal error: same-host local copy should use fs::copy".into())
-        }
+        (Location::Local(_), Location::Local(_)) => Err(CopyError::Failed(
+            "internal error: same-host local copy should use fs::copy".into(),
+        )),
     }
 }
 
@@ -687,10 +790,16 @@ async fn publish_staged(
     to_dir: &Location,
     name: &str,
     is_dir: bool,
-) -> Result<String, String> {
+    cancel: &AtomicBool,
+) -> Result<String, CopyError> {
     for attempt in 1u32.. {
-        let dest = join_location(to_dir, &candidate_name(name, is_dir, attempt))?;
-        match rename_no_replace(ssh, stage, &dest, is_dir).await? {
+        check_cancel(cancel)?;
+        let dest = join_location(to_dir, &candidate_name(name, is_dir, attempt))
+            .map_err(CopyError::Failed)?;
+        match rename_no_replace(ssh, stage, &dest, is_dir)
+            .await
+            .map_err(CopyError::Failed)?
+        {
             RenameOutcome::Renamed => return Ok(format_location(&dest)),
             RenameOutcome::Exists => continue,
         }
@@ -706,30 +815,75 @@ pub async fn copy_cross_host(
     from: &Location,
     to_dir: &Location,
 ) -> Result<String, String> {
-    let name = base_name(from)?;
-    ensure_dest_is_dir(ssh, to_dir).await?;
-    let top = inspect_source(ssh, from).await?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    copy_cross_host_with_progress(ssh, from, to_dir, &cancel, &mut |_| {})
+        .await
+        .map_err(CopyError::into_string)
+}
+
+/// Like [`copy_cross_host`], reporting chunk-level progress and honoring `cancel`.
+pub async fn copy_cross_host_with_progress(
+    ssh: &SshManager,
+    from: &Location,
+    to_dir: &Location,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &mut (dyn FnMut(CopyProgress) + Send),
+) -> Result<String, CopyError> {
+    check_cancel(cancel)?;
+    let name = base_name(from).map_err(CopyError::Failed)?;
+    ensure_dest_is_dir(ssh, to_dir)
+        .await
+        .map_err(CopyError::Failed)?;
+    let top = inspect_source(ssh, from)
+        .await
+        .map_err(CopyError::Failed)?;
 
     match top {
-        NodeKind::Special => Err(format!(
+        NodeKind::Special => Err(CopyError::Failed(format!(
             "cannot copy {}: not a file or directory",
             format_location(from)
-        )),
+        ))),
         NodeKind::Symlink { target } => {
+            let mut progress = TransferProgress::new(Some(0), Some(1), on_progress);
+            progress.start_file(name.clone());
             for attempt in 1u32.. {
-                let dest = join_location(to_dir, &candidate_name(&name, false, attempt))?;
-                match create_dest_symlink(ssh, &dest, &target).await? {
+                check_cancel(cancel)?;
+                let dest = join_location(to_dir, &candidate_name(&name, false, attempt))
+                    .map_err(CopyError::Failed)?;
+                match create_dest_symlink(ssh, &dest, &target)
+                    .await
+                    .map_err(CopyError::Failed)?
+                {
                     CreateOutcome::Exists => continue,
-                    CreateOutcome::Created(_) => return Ok(format_location(&dest)),
+                    CreateOutcome::Created(_) => {
+                        progress.finish_file();
+                        progress.emit_now();
+                        return Ok(format_location(&dest));
+                    }
                 }
             }
             unreachable!()
         }
-        NodeKind::File { mode, id: src_id } => {
+        NodeKind::File { mode, size, id: src_id } => {
+            let mut progress = TransferProgress::new(Some(size), Some(1), on_progress);
+            progress.start_file(name.clone());
             let mut created = Vec::new();
             let stage = loop {
-                let candidate = join_location(to_dir, &unique_stage_name())?;
-                match stream_file_to_new(ssh, from, &candidate, mode, src_id, &mut created).await {
+                check_cancel(cancel)?;
+                let candidate =
+                    join_location(to_dir, &unique_stage_name()).map_err(CopyError::Failed)?;
+                match stream_file_to_new(
+                    ssh,
+                    from,
+                    &candidate,
+                    mode,
+                    src_id,
+                    &mut created,
+                    cancel,
+                    &mut progress,
+                )
+                .await
+                {
                     Ok(CreateOutcome::Exists) => continue,
                     Ok(CreateOutcome::Created(_)) => break candidate,
                     Err(e) => {
@@ -738,8 +892,12 @@ pub async fn copy_cross_host(
                     }
                 }
             };
-            match publish_staged(ssh, &stage, to_dir, &name, false).await {
-                Ok(dest_str) => Ok(dest_str),
+            match publish_staged(ssh, &stage, to_dir, &name, false, cancel).await {
+                Ok(dest_str) => {
+                    progress.finish_file();
+                    progress.emit_now();
+                    Ok(dest_str)
+                }
                 Err(e) => {
                     rollback(ssh, &created).await;
                     Err(e)
@@ -747,12 +905,38 @@ pub async fn copy_cross_host(
             }
         }
         NodeKind::Dir { mode, id: src_root_id } => {
+            let (total_bytes, total_files) = match from {
+                Location::Local(p) => {
+                    let path = p.clone();
+                    let cancel_flag = cancel.clone();
+                    // Measure total size up front for local uploads so progress is determinate.
+                    let measured = tokio::task::spawn_blocking(move || {
+                        measure_local_source(&path, &cancel_flag)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    check_cancel(cancel)?;
+                    match measured {
+                        Some((b, f)) => (Some(b), Some(f)),
+                        None => (None, None),
+                    }
+                }
+                Location::Remote { .. } => (None, None),
+            };
+            let mut progress = TransferProgress::new(total_bytes, total_files, on_progress);
+            progress.start_file(name.clone());
+
             let mut created = Vec::new();
             let mut dir_modes = Vec::new();
             let (stage_name, stage) = loop {
+                check_cancel(cancel)?;
                 let sname = unique_stage_name();
-                let candidate = join_location(to_dir, &sname)?;
-                match create_private_dir(ssh, &candidate).await? {
+                let candidate = join_location(to_dir, &sname).map_err(CopyError::Failed)?;
+                match create_private_dir(ssh, &candidate)
+                    .await
+                    .map_err(CopyError::Failed)?
+                {
                     CreateOutcome::Exists => continue,
                     CreateOutcome::Created(id) => {
                         created.push((candidate.clone(), true, id));
@@ -774,6 +958,8 @@ pub async fn copy_cross_host(
                 &mut active_src_dirs,
                 &mut created,
                 &mut dir_modes,
+                cancel,
+                &mut progress,
             )
             .await;
 
@@ -782,17 +968,36 @@ pub async fn copy_cross_host(
                 return Err(e);
             }
 
-            // Apply directory modes bottom-up before publishing.
+            // Apply directory modes bottom-up before publishing, restoring writable
+            // mode if aborted so rollback can remove staged children cleanly.
+            let mut applied_dirs: Vec<Location> = Vec::new();
             for (d, m) in dir_modes.into_iter().rev() {
-                if let Err(e) = set_dest_mode(ssh, &d, m).await {
+                if let Err(e) = check_cancel(cancel) {
+                    for locked in applied_dirs.iter().rev() {
+                        let _ = set_dest_mode(ssh, locked, 0o700).await;
+                    }
                     rollback(ssh, &created).await;
                     return Err(e);
                 }
+                if let Err(e) = set_dest_mode(ssh, &d, m).await {
+                    for locked in applied_dirs.iter().rev() {
+                        let _ = set_dest_mode(ssh, locked, 0o700).await;
+                    }
+                    rollback(ssh, &created).await;
+                    return Err(CopyError::Failed(e));
+                }
+                applied_dirs.push(d);
             }
 
-            match publish_staged(ssh, &stage, to_dir, &name, true).await {
-                Ok(dest_str) => Ok(dest_str),
+            match publish_staged(ssh, &stage, to_dir, &name, true, cancel).await {
+                Ok(dest_str) => {
+                    progress.emit_now();
+                    Ok(dest_str)
+                }
                 Err(e) => {
+                    for locked in applied_dirs.iter().rev() {
+                        let _ = set_dest_mode(ssh, locked, 0o700).await;
+                    }
                     rollback(ssh, &created).await;
                     Err(e)
                 }
@@ -802,7 +1007,7 @@ pub async fn copy_cross_host(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn copy_tree_contents<'a>(
+fn copy_tree_contents<'a, 'b>(
     ssh: &'a SshManager,
     src_dir: &'a Location,
     dst_dir: &'a Location,
@@ -811,40 +1016,66 @@ fn copy_tree_contents<'a>(
     active_src_dirs: &'a mut HashSet<EntryIdentity>,
     created: &'a mut Vec<(Location, bool, Option<EntryIdentity>)>,
     dir_modes: &'a mut Vec<(Location, u32)>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    cancel: &'a AtomicBool,
+    progress: &'a mut TransferProgress<'b>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), CopyError>> + Send + 'a>> {
     Box::pin(async move {
+        check_cancel(cancel)?;
         if depth >= MAX_DEPTH {
-            return Err("cannot copy directory: maximum nesting depth exceeded".into());
+            return Err(CopyError::Failed(
+                "cannot copy directory: maximum nesting depth exceeded".into(),
+            ));
         }
-        let names = list_source_children(ssh, src_dir).await?;
+        let names = list_source_children(ssh, src_dir)
+            .await
+            .map_err(CopyError::Failed)?;
         for name in names {
+            check_cancel(cancel)?;
             if name == stage_name {
-                return Err(format!(
+                return Err(CopyError::Failed(format!(
                     "cannot copy {} into itself",
                     format_location(src_dir)
-                ));
+                )));
             }
-            let child_src = join_location(src_dir, &name)?;
-            let child_dst = join_location(dst_dir, &name)?;
-            match inspect_source(ssh, &child_src).await? {
-                NodeKind::File { mode, id: src_id } => {
-                    match stream_file_to_new(ssh, &child_src, &child_dst, mode, src_id, created)
-                        .await?
+            let child_src = join_location(src_dir, &name).map_err(CopyError::Failed)?;
+            let child_dst = join_location(dst_dir, &name).map_err(CopyError::Failed)?;
+            match inspect_source(ssh, &child_src)
+                .await
+                .map_err(CopyError::Failed)?
+            {
+                NodeKind::File { mode, id: src_id, .. } => {
+                    progress.start_file(name);
+                    match stream_file_to_new(
+                        ssh,
+                        &child_src,
+                        &child_dst,
+                        mode,
+                        src_id,
+                        created,
+                        cancel,
+                        progress,
+                    )
+                    .await?
                     {
-                        CreateOutcome::Created(_) => {}
+                        CreateOutcome::Created(_) => progress.finish_file(),
                         CreateOutcome::Exists => {
-                            return Err(format!("{} already exists", format_location(&child_dst)));
+                            return Err(CopyError::Failed(format!(
+                                "{} already exists",
+                                format_location(&child_dst)
+                            )));
                         }
                     }
                 }
                 NodeKind::Dir { mode, id } => {
                     if !active_src_dirs.insert(id) {
-                        return Err(format!(
+                        return Err(CopyError::Failed(format!(
                             "cannot copy {}: detected directory cycle",
                             format_location(&child_src)
-                        ));
+                        )));
                     }
-                    let create_res = create_private_dir(ssh, &child_dst).await;
+                    let create_res = create_private_dir(ssh, &child_dst)
+                        .await
+                        .map_err(CopyError::Failed);
                     let nested_res = match create_res {
                         Ok(CreateOutcome::Created(dst_id)) => {
                             created.push((child_dst.clone(), true, dst_id));
@@ -858,22 +1089,35 @@ fn copy_tree_contents<'a>(
                                 active_src_dirs,
                                 created,
                                 dir_modes,
+                                cancel,
+                                progress,
                             )
                             .await
                         }
-                        Ok(CreateOutcome::Exists) => {
-                            Err(format!("{} already exists", format_location(&child_dst)))
-                        }
+                        Ok(CreateOutcome::Exists) => Err(CopyError::Failed(format!(
+                            "{} already exists",
+                            format_location(&child_dst)
+                        ))),
                         Err(e) => Err(e),
                     };
                     active_src_dirs.remove(&id);
                     nested_res?;
                 }
                 NodeKind::Symlink { target } => {
-                    match create_dest_symlink(ssh, &child_dst, &target).await? {
-                        CreateOutcome::Created(dst_id) => created.push((child_dst, false, dst_id)),
+                    progress.start_file(name);
+                    match create_dest_symlink(ssh, &child_dst, &target)
+                        .await
+                        .map_err(CopyError::Failed)?
+                    {
+                        CreateOutcome::Created(dst_id) => {
+                            created.push((child_dst, false, dst_id));
+                            progress.finish_file();
+                        }
                         CreateOutcome::Exists => {
-                            return Err(format!("{} already exists", format_location(&child_dst)));
+                            return Err(CopyError::Failed(format!(
+                                "{} already exists",
+                                format_location(&child_dst)
+                            )));
                         }
                     }
                 }

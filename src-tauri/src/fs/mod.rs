@@ -28,5 +28,6 @@ pub mod ops;
 pub mod search;
 pub mod watch;
 
+pub use copy::TransferManager;
 pub use search::SearchManager;
 pub use watch::WatchManager;

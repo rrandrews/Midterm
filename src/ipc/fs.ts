@@ -133,14 +133,103 @@ export function findEntries(root: string, options: { limit: number; showHidden: 
   return invoke<FoundEntries>("fs_find_entries", { root, limit: options.limit, showHidden: options.showHidden });
 }
 
+export type CopyProgress = {
+  bytesTransferred: number;
+  totalBytes: number | null;
+  filesCompleted: number;
+  totalFiles: number | null;
+  currentFile: string | null;
+};
+
+export type TransferEvent =
+  | ({ type: "progress" } & CopyProgress)
+  | { type: "done"; path: string }
+  | { type: "error"; message: string; cancelled: boolean };
+
+export type CopyOptions = {
+  onProgress?: (progress: CopyProgress) => void;
+  signal?: AbortSignal;
+};
+
+/** Error thrown when a file transfer is cancelled via its `AbortSignal`. */
+export class TransferCancelledError extends Error {
+  constructor(message = "Transfer cancelled") {
+    super(message);
+    this.name = "TransferCancelledError";
+  }
+}
+
+export function isTransferCancelled(error: unknown): boolean {
+  return error instanceof TransferCancelledError || (error instanceof Error && error.name === "AbortError");
+}
+
 /**
  * Copies a file or directory (recursively) into the directory `toDir`, never replacing anything:
  * on a name clash the copy is named as Finder does ("a copy.txt", then "a copy 2.txt", …; "dir copy").
  * Resolves to the new absolute path. Rejects if `from` is a directory and `toDir` is it or inside it.
  */
-export function copyInto(from: string, toDir: string): Promise<string> {
-  if (!isTauri()) return mock.copyInto(from, toDir);
-  return invoke<string>("fs_copy", { from, toDir });
+export function copyInto(from: string, toDir: string, options?: CopyOptions): Promise<string> {
+  if (!isTauri()) return mock.copyInto(from, toDir, options);
+  if (!options?.onProgress && !options?.signal) {
+    return invoke<string>("fs_copy", { from, toDir });
+  }
+  if (options.signal?.aborted) {
+    return Promise.reject(new TransferCancelledError());
+  }
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let transferId: number | null = null;
+    let cancelPending = false;
+    const sendCancel = (id: number) => {
+      void invoke("fs_copy_cancel", { id }).catch((error: unknown) =>
+        console.error("fs_copy_cancel failed:", error),
+      );
+    };
+    const onAbort = () => {
+      if (settled) return;
+      if (transferId !== null) sendCancel(transferId);
+      else cancelPending = true;
+    };
+    const cleanup = () => {
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    const channel = new Channel<TransferEvent>();
+    channel.onmessage = (event) => {
+      if (settled) return;
+      if (event.type === "progress") {
+        options.onProgress?.({
+          bytesTransferred: event.bytesTransferred,
+          totalBytes: event.totalBytes,
+          filesCompleted: event.filesCompleted,
+          totalFiles: event.totalFiles,
+          currentFile: event.currentFile,
+        });
+      } else if (event.type === "done") {
+        settled = true;
+        cleanup();
+        resolve(event.path);
+      } else if (event.type === "error") {
+        settled = true;
+        cleanup();
+        reject(event.cancelled ? new TransferCancelledError(event.message) : new Error(event.message));
+      }
+    };
+
+    invoke<number>("fs_copy_start", { from, toDir, onEvent: channel }).then(
+      (id) => {
+        transferId = id;
+        if ((cancelPending || options.signal?.aborted) && !settled) sendCancel(id);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 export type TextSearchOptions = {

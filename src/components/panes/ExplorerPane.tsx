@@ -43,6 +43,7 @@ import { MenuItems } from "../../plugins/MenuItems";
 import { usePluginSettings } from "../../plugins/settings";
 import { EntryMenuItems, confirmTrash, copyEntries, copyPaths, explorerMenu, pasteInto } from "./ExplorerMenus";
 import { ExplorerSearch, type ExplorerSearchMode } from "./ExplorerSearch";
+import { ExplorerTransfers } from "./ExplorerTransfers";
 import { useExplorerDrag } from "./useExplorerDrag";
 import { FileIcon, drawsIcons } from "../../icons/FileIcon";
 import { useActiveIconSet } from "../../icons/state";
@@ -397,6 +398,7 @@ function ExplorerView({ paneId, model }: { paneId: string; model: ExplorerModel 
           )}
         </ContextMenuContent>
       </ContextMenu>
+      <ExplorerTransfers paneId={paneId} />
       {snap.error && (
         <div role="status" className="border-t border-line px-3 py-1.5 text-meta text-err">
           {snap.error}

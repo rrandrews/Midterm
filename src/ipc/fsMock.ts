@@ -8,6 +8,7 @@ import {
 } from "../files/location";
 import { isMockSshConnected } from "./ssh";
 import type {
+  CopyOptions,
   FileVersion,
   FoundEntries,
   FoundFiles,
@@ -407,13 +408,39 @@ export async function findEntries(
   return { entries: entries.slice(0, limit), truncated: entries.length > limit };
 }
 
-export async function copyInto(from: string, toDir: string): Promise<string> {
+export async function copyInto(from: string, toDir: string, options?: CopyOptions): Promise<string> {
+  if (options?.signal?.aborted) {
+    const err = new Error("Transfer cancelled");
+    err.name = "AbortError";
+    throw err;
+  }
   const node = lookup(from);
   const target = lookup(toDir);
   if (!node) throw new Error(`No such file: ${from}`);
   if (!target?.children) throw new Error(`Not a directory: ${toDir}`);
   if (node.dir && (toDir === from || toDir.startsWith(`${from}/`))) throw new Error(`Cannot copy ${from} into itself`);
   const name = nameOf(from);
+  const measure = (cur: Node, curPath: string): { bytes: number; files: number } => {
+    if (!cur.dir) {
+      return { bytes: new TextEncoder().encode(contentOf(curPath, cur)).length, files: 1 };
+    }
+    let bytes = 0;
+    let files = 0;
+    for (const [childName, child] of cur.children ?? []) {
+      const m = measure(child, `${curPath}/${childName}`);
+      bytes += m.bytes;
+      files += m.files;
+    }
+    return { bytes, files };
+  };
+  const totals = measure(node, from);
+  options?.onProgress?.({
+    bytesTransferred: 0,
+    totalBytes: totals.bytes,
+    filesCompleted: 0,
+    totalFiles: totals.files,
+    currentFile: name,
+  });
   const dot = name.lastIndexOf(".");
   const [stem, ext] = dot > 0 && !node.dir && dot < name.length - 1 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
   let copyName = name;
@@ -425,6 +452,13 @@ export async function copyInto(from: string, toDir: string): Promise<string> {
       : {}),
   });
   target.children.set(copyName, clone(node));
+  options?.onProgress?.({
+    bytesTransferred: totals.bytes,
+    totalBytes: totals.bytes,
+    filesCompleted: totals.files,
+    totalFiles: totals.files,
+    currentFile: name,
+  });
   changed(toDir);
   const { remoteId, posix } = rootFor(toDir);
   return prefixPath(remoteId, `${posix === "/" ? "" : posix}/${copyName}`);

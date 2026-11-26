@@ -6,10 +6,11 @@ import {
   remoteIdOf,
 } from "../files/location";
 import * as fs from "../ipc/fs";
-import type { FsEntry, GitStatus, Watcher } from "../ipc/fs";
+import { isTransferCancelled, type FsEntry, type GitStatus, type Watcher } from "../ipc/fs";
 import type { SshStatus } from "../ipc/ssh";
 import { homeDirectory } from "../ipc/system";
 import { getConnection, hostLabelForLocation, subscribeConnections } from "../ssh/connections";
+import { beginTransfer, cleanupPaneTransfers } from "./transfers";
 import {
   type GitBadges,
   type Listing,
@@ -234,6 +235,7 @@ export class ExplorerModel {
     this.disposed = true;
     this.unsubSsh();
     this.stopWatching();
+    cleanupPaneTransfers(this.paneId);
     clearTimeout(this.gitTimer);
     clearTimeout(this.errorTimer);
     this.listeners.clear();
@@ -582,16 +584,35 @@ export class ExplorerModel {
     const arrived: string[] = [];
     const errors: string[] = [];
     const touched = new Set([dir]);
-    for (const path of topmost(paths)) {
+    const items = topmost(paths);
+    const actionable = items.filter((path) => !(mode === "move" && parentPath(path) === dir));
+    if (actionable.length === 0) return { moves, failed };
+
+    const handle = beginTransfer({ paneId: this.paneId, mode, sources: actionable, destDir: dir });
+    let cancelled = false;
+    for (let index = 0; index < actionable.length; index++) {
+      const path = actionable[index];
+      if (handle.signal.aborted) {
+        cancelled = true;
+        // Preserve unprocessed paths so a cancelled cut can still be retried.
+        if (mode === "move") failed.push(...actionable.slice(index));
+        break;
+      }
       if (isWithin(dir, path)) {
         errors.push(`“${baseName(path)}” cannot go inside itself.`);
         failed.push(path);
+        handle.finishItem();
         continue;
       }
-      if (mode === "move" && parentPath(path) === dir) continue;
+      handle.startItem(path);
       try {
         if (mode === "copy") {
-          arrived.push(await fs.copyInto(path, dir));
+          arrived.push(
+            await fs.copyInto(path, dir, {
+              signal: handle.signal,
+              onProgress: (progress) => handle.onItemProgress(progress),
+            }),
+          );
         } else {
           const to = joinPath(dir, baseName(path));
           await fs.rename(path, to);
@@ -600,12 +621,30 @@ export class ExplorerModel {
           touched.add(parentPath(path));
           this.remap(path, to);
         }
+        handle.finishItem();
       } catch (error) {
+        if (isTransferCancelled(error)) {
+          cancelled = true;
+          break;
+        }
         errors.push(`Could not ${mode} “${baseName(path)}”: ${message(error)}`);
         failed.push(path);
+        handle.finishItem();
       }
     }
-    if (errors.length) this.fail(errors.length === 1 ? errors[0] : `${errors[0]} (and ${errors.length - 1} more)`);
+    const summaryError = errors.length
+      ? errors.length === 1
+        ? errors[0]
+        : `${errors[0]} (and ${errors.length - 1} more)`
+      : null;
+    if (summaryError) {
+      handle.finish({ status: "error", error: summaryError });
+      this.fail(summaryError);
+    } else if (cancelled) {
+      handle.finish({ status: "cancelled" });
+    } else {
+      handle.finish({ status: "done" });
+    }
     if (arrived.length === 0) return { moves, failed };
     // Show what arrived: open the folder it went to, and select it.
     if (dir !== this.root && isWithin(dir, this.root) && !this.expanded.has(dir)) {
@@ -630,14 +669,46 @@ export class ExplorerModel {
   async duplicate(paths: string[]): Promise<void> {
     const errors: string[] = [];
     const arrived: string[] = [];
-    for (const path of topmost(paths)) {
+    const items = topmost(paths);
+    if (items.length === 0) return;
+    const handle = beginTransfer({
+      paneId: this.paneId,
+      mode: "duplicate",
+      sources: items,
+      destDir: parentPath(items[0]),
+    });
+    let cancelled = false;
+    for (const path of items) {
+      if (handle.signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      handle.startItem(path);
       try {
-        arrived.push(await fs.copyInto(path, parentPath(path)));
+        arrived.push(
+          await fs.copyInto(path, parentPath(path), {
+            signal: handle.signal,
+            onProgress: (progress) => handle.onItemProgress(progress),
+          }),
+        );
+        handle.finishItem();
       } catch (error) {
+        if (isTransferCancelled(error)) {
+          cancelled = true;
+          break;
+        }
         errors.push(`Could not duplicate “${baseName(path)}”: ${message(error)}`);
+        handle.finishItem();
       }
     }
-    if (errors.length) this.fail(errors[0]);
+    if (errors.length) {
+      handle.finish({ status: "error", error: errors[0] });
+      this.fail(errors[0]);
+    } else if (cancelled) {
+      handle.finish({ status: "cancelled" });
+    } else {
+      handle.finish({ status: "done" });
+    }
     const parents = [...new Set(arrived.map(parentPath))];
     this.invalidateCached(parents);
     await Promise.all(parents.map((dir) => this.load(dir)));

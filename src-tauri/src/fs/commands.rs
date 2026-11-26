@@ -20,12 +20,14 @@ use std::sync::Arc;
 use tauri::ipc::{Channel, Response};
 use tauri::{State, Window};
 
+use std::sync::atomic::Ordering;
+
 use crate::ssh::SshManager;
 use crate::ssh::location::Location;
-use crate::ssh::transfer::copy_cross_host;
+use crate::ssh::transfer::{copy_cross_host, copy_cross_host_with_progress};
 
 use super::complete::{self, CompletionEntry};
-use super::copy;
+use super::copy::{self, CopyError, CopyProgress, TransferEvent, TransferManager};
 use super::file::{self, FileVersion, TextFile, WriteExpect, WriteResult};
 use super::find::{self, FoundEntries, FoundFiles};
 use super::git::{self, GitStatus};
@@ -218,6 +220,106 @@ pub async fn fs_copy(
         ) if r1 == r2 => ssh.copy_into(r1, a, b).await,
         _ => copy_cross_host(&ssh, &from_loc, &to_loc).await,
     }
+}
+
+/// Starts a copy with streaming progress and cancellation support. Returns the
+/// transfer id immediately; progress, completion (`done`) or `error` arrive on
+/// `on_event`.
+#[tauri::command]
+pub fn fs_copy_start(
+    window: Window,
+    transfers: State<'_, Arc<TransferManager>>,
+    ssh: State<'_, SshManager>,
+    from: String,
+    to_dir: String,
+    on_event: Channel<TransferEvent>,
+) -> Result<u32, String> {
+    let from_loc = Location::parse(&from)?;
+    let to_loc = Location::parse(&to_dir)?;
+    let (id, cancel) = transfers.register(window.label())?;
+    let transfers = transfers.inner().clone();
+    let ssh = ssh.inner().clone();
+
+    tauri::async_runtime::spawn(async move {
+        let result: Result<String, CopyError> = match (&from_loc, &to_loc) {
+            (Location::Local(a), Location::Local(b)) => {
+                let (a, b) = (a.clone(), b.clone());
+                let cancel_flag = cancel.clone();
+                let ch = on_event.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    copy::copy_into_with_progress(&a, &b, &cancel_flag, &mut |progress| {
+                        if ch.send(TransferEvent::Progress(progress)).is_err() {
+                            cancel_flag.store(true, Ordering::Relaxed);
+                        }
+                    })
+                })
+                .await
+                .map_err(|e| CopyError::Failed(format!("background task failed: {e}")))
+                .and_then(|res| res)
+            }
+            (
+                Location::Remote { remote_id: r1, path: a },
+                Location::Remote { remote_id: r2, path: b },
+            ) if r1 == r2 => {
+                let name = a.rsplit('/').next().unwrap_or(a).to_string();
+                let _ = on_event.send(TransferEvent::Progress(CopyProgress {
+                    bytes_transferred: 0,
+                    total_bytes: None,
+                    files_completed: 0,
+                    total_files: None,
+                    current_file: Some(name),
+                }));
+                if cancel.load(Ordering::Relaxed) {
+                    Err(CopyError::Cancelled)
+                } else {
+                    ssh.copy_into(r1, a, b).await.map_err(CopyError::Failed)
+                }
+            }
+            _ => {
+                let ch = on_event.clone();
+                let cancel_flag = cancel.clone();
+                copy_cross_host_with_progress(&ssh, &from_loc, &to_loc, &cancel_flag, &mut |progress| {
+                    if ch.send(TransferEvent::Progress(progress)).is_err() {
+                        cancel_flag.store(true, Ordering::Relaxed);
+                    }
+                })
+                .await
+            }
+        };
+
+        transfers.finish(id);
+        match result {
+            Ok(path) => {
+                let _ = on_event.send(TransferEvent::Done { path });
+            }
+            Err(CopyError::Cancelled) => {
+                let _ = on_event.send(TransferEvent::Error {
+                    message: "Transfer cancelled".into(),
+                    cancelled: true,
+                });
+            }
+            Err(CopyError::Failed(message)) => {
+                let _ = on_event.send(TransferEvent::Error {
+                    message,
+                    cancelled: false,
+                });
+            }
+        }
+    });
+
+    Ok(id)
+}
+
+/// Cancels a running file transfer owned by the calling window. Unknown ids
+/// or ids belonging to another window are ignored.
+#[tauri::command]
+pub fn fs_copy_cancel(
+    window: Window,
+    transfers: State<'_, Arc<TransferManager>>,
+    id: u32,
+) -> Result<(), String> {
+    transfers.cancel_for_window(window.label(), id);
+    Ok(())
 }
 
 /// The file's text, or why it cannot be shown as text; see [`file::read_text`].

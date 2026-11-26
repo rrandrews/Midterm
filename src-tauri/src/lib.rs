@@ -10,10 +10,12 @@ mod secrets;
 mod ssh;
 mod traffic_lights;
 
+use std::sync::Arc;
+
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 
-use fs::{SearchManager, WatchManager};
+use fs::{SearchManager, TransferManager, WatchManager};
 use pty::PtyManager;
 use ssh::SshManager;
 
@@ -105,6 +107,7 @@ pub fn run() {
         .manage(PtyManager::default())
         .manage(WatchManager::default())
         .manage(SearchManager::default())
+        .manage(Arc::new(TransferManager::default()))
         .manage(SshManager::default())
         .manage(ai::AiManager::default())
         .manage(antigravity::AntigravityManager::default())
@@ -142,6 +145,7 @@ pub fn run() {
                 webview.state::<PtyManager>().kill_owned_by(&label);
                 webview.state::<WatchManager>().stop_owned_by(&label);
                 webview.state::<SearchManager>().cancel_owned_by(&label);
+                webview.state::<Arc<TransferManager>>().cancel_owned_by(&label);
                 webview.state::<SshManager>().cleanup_owned_by(&label);
                 webview.state::<ai::AiManager>().acp.close_owned_by(&label);
                 webview.state::<antigravity::AntigravityManager>().close_owned_by(&label);
@@ -193,6 +197,8 @@ pub fn run() {
             fs::commands::fs_complete_list,
             fs::commands::fs_find_entries,
             fs::commands::fs_copy,
+            fs::commands::fs_copy_start,
+            fs::commands::fs_copy_cancel,
             fs::commands::fs_search_text,
             fs::commands::fs_search_cancel,
             fs::commands::fs_watch_start,
@@ -241,6 +247,7 @@ pub fn run() {
             app.state::<PtyManager>().kill_owned_by(&label);
             app.state::<WatchManager>().stop_owned_by(&label);
             app.state::<SearchManager>().cancel_owned_by(&label);
+            app.state::<Arc<TransferManager>>().cancel_owned_by(&label);
             app.state::<SshManager>().cleanup_owned_by(&label);
             app.state::<ai::AiManager>().acp.close_owned_by(&label);
             app.state::<antigravity::AntigravityManager>().close_owned_by(&label);
@@ -255,6 +262,9 @@ pub fn run() {
             app.state::<PtyManager>().kill_all();
             app.state::<WatchManager>().stop_all();
             app.state::<SearchManager>().cancel_all();
+            // Let active transfers roll back remote staging entries before tearing down SSH sockets.
+            app.state::<Arc<TransferManager>>()
+                .cancel_all_and_wait(std::time::Duration::from_secs(2));
             app.state::<SshManager>().shutdown_all();
             app.state::<ai::AiManager>().acp.close_all();
             app.state::<antigravity::AntigravityManager>().close_all();
