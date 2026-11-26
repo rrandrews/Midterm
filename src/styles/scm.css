@@ -40,9 +40,14 @@
 }
 
 .scm-commit-input {
+  display: block;
   height: 58px;
   min-height: 58px;
   max-height: 180px;
+}
+
+.scm-graph-continuation svg {
+  display: block;
 }
 
 /* Draggable vertical accordion split handles between Changes, Graph, and Stashes. */

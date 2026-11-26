@@ -114,11 +114,27 @@ function GraphContinuationCell({ row, maxLanes }: { row: GraphRowLayout; maxLane
 
   return (
     <div style={{ width }} className="scm-graph-continuation relative flex-none self-stretch" aria-hidden="true">
-      <svg className="block h-full w-full overflow-hidden">
+      <svg
+        width={width}
+        viewBox={`0 0 ${width} 100`}
+        preserveAspectRatio="none"
+        className="absolute inset-0 h-full w-full overflow-hidden"
+      >
         {rails.map((rail) => {
           const x = laneX(rail.lane);
           const stroke = GRAPH_LANE_COLORS[rail.colorIndex % GRAPH_LANE_COLORS.length];
-          return <line key={rail.lane} x1={x} y1="0" x2={x} y2="100%" stroke={stroke} strokeWidth={1.6} />;
+          return (
+            <line
+              key={rail.lane}
+              x1={x}
+              y1={0}
+              x2={x}
+              y2={100}
+              stroke={stroke}
+              strokeWidth={1.6}
+              vectorEffect="non-scaling-stroke"
+            />
+          );
         })}
       </svg>
     </div>

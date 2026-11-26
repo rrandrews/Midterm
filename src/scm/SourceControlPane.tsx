@@ -127,7 +127,13 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
     if (event.button !== 0) return;
     event.preventDefault();
     const target = event.currentTarget;
-    target.setPointerCapture?.(event.pointerId);
+    const pointerId = event.pointerId;
+    try {
+      target.setPointerCapture?.(pointerId);
+    } catch {
+      // Inactive real pointer IDs have no matching pointerup/cancel; bail out instead of sticking.
+      if (event.isTrusted) return;
+    }
     const startY = event.clientY;
     const containerHeight = accordionRef.current?.clientHeight || effectiveAccordionHeight;
     const startCollapsed = new Set(model.snapshot().collapsedSections);
@@ -136,6 +142,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
     setDraggingSash(sashIndex);
 
     const onMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
       const result = applyScmSashDrag({
         sashIndex,
         deltaY: moveEvent.clientY - startY,
@@ -146,15 +153,18 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
       });
       model.setSectionLayout(result.collapsed, result.weights);
     };
-    const onEnd = () => {
+    const onEnd = (endEvent: Event) => {
+      if (endEvent instanceof PointerEvent && endEvent.pointerId !== pointerId) return;
       setDraggingSash(null);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);
+      window.removeEventListener("blur", onEnd);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
+    window.addEventListener("blur", onEnd);
   };
 
   const nudgeSash = (sashIndex: 0 | 1, direction: -1 | 1) => {
@@ -525,7 +535,7 @@ function SourceControlView({ paneId, model }: { paneId: string; model: ScmModel 
                 }}
                 placeholder={`Message (⌘↩ to commit${status.branch ? ` on "${status.branch}"` : ""})`}
                 aria-label="Commit message"
-                className="scm-commit-input block w-full resize-y rounded-[6px] border border-line-input bg-field px-2 py-1.5 font-sans text-menu leading-snug text-fg-bright placeholder:text-fg-faint outline-none select-text focus:border-accent"
+                className="scm-commit-input w-full resize-y rounded-[6px] border border-line-input bg-field px-2 py-1.5 font-sans text-menu leading-snug text-fg-bright placeholder:text-fg-faint outline-none select-text focus:border-accent"
               />
               {firstLineLen > 50 && (
                 <Tip content="Subject line length (50–72 chars recommended)" side="left">
