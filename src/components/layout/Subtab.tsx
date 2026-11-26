@@ -1,4 +1,5 @@
-import { memo, useMemo, useState, useSyncExternalStore } from "react";
+import { Popover } from "radix-ui";
+import { memo, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TabRenderProps } from "react-resizable-panels";
 import { renameSubtab } from "../../actions";
 import { focusPane, notePaneFocused, refocusPane } from "../../layout/dock";
@@ -11,6 +12,7 @@ import { useAppStore } from "../../state/store";
 import type { PaneNode } from "../../state/types";
 import { InlineEdit } from "../ui/InlineEdit";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuItem, MenuSeparator } from "../ui/Menu";
+import { Tip } from "../ui/Tooltip";
 import { PaneMenuItems } from "./PaneMenuItems";
 
 /*
@@ -37,6 +39,7 @@ export const Subtab = memo(function Subtab({ pane, props }: { pane: PaneNode; pr
   const label = name ?? auto;
   const iconOnly = !name && plugin?.pane.subtabIconOnly === true;
   const [renaming, setRenaming] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const ctx = useMemo(() => createPaneContext(pane.id, kind), [pane.id, kind]);
   const selected = props["aria-selected"] === true;
 
@@ -46,46 +49,81 @@ export const Subtab = memo(function Subtab({ pane, props }: { pane: PaneNode; pr
     focusPane(pane.id);
   };
 
+  // Always keep `content` truthy so `Tip` never remounts the subtab node when the title length changes.
+  const tipDisabled = renaming || (!iconOnly && label.length <= 24);
+  const finishPopover = () => {
+    const input = popoverRef.current?.querySelector<HTMLInputElement>("input");
+    if (input) input.blur();
+    else setRenaming(false);
+  };
+
   return (
-    // The menu acts on this pane by id; opening it changes neither the selection nor the active pane.
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div
-          {...props}
-          className={`subtab${iconOnly ? " is-icon-only" : ""} ${props.className ?? ""}`}
-          title={iconOnly || label.length > 24 ? label : undefined}
-          aria-label={iconOnly ? label : undefined}
-          onClick={(event) => {
-            props.onClick?.(event);
-            // A click selects it (the library); the pane then takes the keyboard.
-            if (!renaming) queueMicrotask(show);
-          }}
-          onDoubleClick={() => setRenaming(true)}
-        >
-          <PluginIcon icon={plugin?.icon} size={13} className={selected ? "" : "opacity-80"} />
-          {renaming ? (
+    <Popover.Root open={renaming}>
+      {/* The menu acts on this pane by id; opening it changes neither the selection nor the active pane. */}
+      <ContextMenu>
+        <Tip content={label} disabled={tipDisabled} side="bottom">
+          <ContextMenuTrigger asChild>
+            <Popover.Anchor asChild>
+              <div
+                {...props}
+                className={`subtab${iconOnly ? " is-icon-only" : ""}${renaming ? " is-renaming" : ""} ${props.className ?? ""}`}
+                aria-label={iconOnly ? label : undefined}
+                onClick={(event) => {
+                  props.onClick?.(event);
+                  // A click selects it (the library); the pane then takes the keyboard.
+                  if (!renaming) queueMicrotask(show);
+                }}
+                onDoubleClick={() => setRenaming(true)}
+              >
+                <PluginIcon icon={plugin?.icon} size={13} className={selected ? "" : "opacity-80"} />
+                {!iconOnly && <span className="subtab-label">{label}</span>}
+              </div>
+            </Popover.Anchor>
+          </ContextMenuTrigger>
+        </Tip>
+        <ContextMenuContent aria-label="Subtab">
+          {/* Open after the menu finishes closing and releases its focus trap. */}
+          <MenuItem onSelect={() => setTimeout(() => setRenaming(true), 0)}>Rename subtab…</MenuItem>
+          {name && <MenuItem onSelect={() => renameSubtab(pane.id, "")}>Clear subtab name</MenuItem>}
+          <MenuSeparator />
+          <PaneMenuItems paneId={pane.id} ctx={ctx} />
+        </ContextMenuContent>
+      </ContextMenu>
+      {renaming && (
+        <Popover.Portal>
+          <Popover.Content
+            ref={popoverRef}
+            aria-label="Rename subtab"
+            side="bottom"
+            align="start"
+            sideOffset={2}
+            collisionPadding={8}
+            hideWhenDetached
+            className="subtab-rename-popover"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => event.preventDefault()}
+            onEscapeKeyDown={(event) => event.preventDefault()}
+            onPointerDownOutside={finishPopover}
+            onPointerDown={(event) => {
+              // Clicking the icon or padding keeps focus in the text field instead of blurring it.
+              if (!(event.target instanceof HTMLInputElement)) event.preventDefault();
+            }}
+          >
+            <PluginIcon icon={plugin?.icon} size={13} className="text-fg-soft" />
             <InlineEdit
               label="Subtab name (empty to name it automatically)"
               allowEmpty
               value={label}
-              className="max-w-40 text-meta"
+              className="subtab-rename-input"
               onCommit={(next) => renameSubtab(pane.id, next)}
               onDone={() => {
                 setRenaming(false);
                 refocusPane();
               }}
             />
-          ) : (
-            !iconOnly && <span className="subtab-label">{label}</span>
-          )}
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent aria-label="Subtab">
-        <MenuItem onSelect={() => setRenaming(true)}>Rename subtab…</MenuItem>
-        {name && <MenuItem onSelect={() => renameSubtab(pane.id, "")}>Clear subtab name</MenuItem>}
-        <MenuSeparator />
-        <PaneMenuItems paneId={pane.id} ctx={ctx} />
-      </ContextMenuContent>
-    </ContextMenu>
+          </Popover.Content>
+        </Popover.Portal>
+      )}
+    </Popover.Root>
   );
 });

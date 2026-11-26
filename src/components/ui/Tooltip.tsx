@@ -1,6 +1,6 @@
 import { CircleHelp } from "lucide-react";
 import { Tooltip as Primitive } from "radix-ui";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { createPortal } from "react-dom";
 
 /*
@@ -19,16 +19,20 @@ export function Tip({
   children,
   side = "top",
   delay = 350,
+  disabled = false,
 }: {
   content: ReactNode;
   children: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
   delay?: number;
+  /** Suppresses the tooltip without unmounting the trigger tree. */
+  disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   if (!content) return <>{children}</>;
   return (
     <Primitive.Provider delayDuration={delay} skipDelayDuration={200}>
-      <Primitive.Root>
+      <Primitive.Root open={disabled ? false : open} onOpenChange={(next) => setOpen(!disabled && next)}>
         <Primitive.Trigger asChild>{children}</Primitive.Trigger>
         <Primitive.Portal>
           <Primitive.Content side={side} sideOffset={5} collisionPadding={8} className={CONTENT}>

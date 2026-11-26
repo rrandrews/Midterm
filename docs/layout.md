@@ -91,7 +91,9 @@ One-pane frames keep the floating controls and lose no space.
   through `subscribeTitles` in `src/plugins/tabTitles.ts`.
 - **Naming**: right-click → Rename subtab… (or double-click). The name is
   the pane's `title` (`renameSubtab`, `paneName` in `src/state/layout.ts`);
-  an empty name goes back to the automatic label. The menu acts on that
+  an empty name goes back to the automatic label. The rename field opens in
+  a Radix `Popover` anchored to the subtab (`hideWhenDetached`, clamped to
+  the viewport), so tiny or icon-only subtabs never clip the input. The menu acts on that
   pane by id; opening it does not select the subtab. Panes get no title
   otherwise: older builds titled every pane with its kind, and
   `restoreState` drops all titles from files before version 3. The rest of the right-click menu is
